@@ -1,8 +1,11 @@
 import requests
 import json
 import pandas as pd
+from pathlib import Path
 
-df_pricing_records = pd.read_csv("pricing_records.csv")
+session = requests.Session()
+
+df_pricing_records = pd.read_csv(Path("./py/csvs/pricing_records.csv"))
 
 
 def get_current_block_height():
@@ -37,7 +40,7 @@ def get_block(height):
     response = requests.post(url, headers=headers, data=json.dumps(data))
     return response.json()
 
-def read_tx(hash):
+def read_tx(hash, height):
     #global df_pricing_records
 
     url = "http://127.0.0.1:17767/get_transactions"
@@ -49,9 +52,9 @@ def read_tx(hash):
         "txs_hashes": [hash], "decode_as_json": True
     }
 
-    print(hash)
+    # print(hash)
     # print(json.dumps(data))
-    response = requests.post(url, headers=headers, data=json.dumps(data))
+    response = session.post(url, headers=headers, data=json.dumps(data))
     # print(response.text)
     response_data = response.json()
     
@@ -59,13 +62,24 @@ def read_tx(hash):
     tx_data = response_data.get("txs", [{}])[0]
     tx_json = tx_data.get("as_json", {})
 
-    print(tx_json)  # Print the JSON data of the transaction
+    # print(tx_json)  # Print the JSON data of the transaction
     tx_json = json.loads(tx_json)
 
 
     # Check if the transaction is a conversion transaction
-    if "amount_burnt" not in tx_json or "amount_minted" not in tx_json:
-        return None  # Not a conversion transaction
+    if tx_json["amount_burnt"] == 0 or tx_json["amount_minted"] == 0:
+        tx_amount = tx_json["vout"][0]["amount"]
+        if tx_amount > 0:
+            # Block Reward
+            miner_reward = tx_amount * (10**-12)
+            governance_reward = tx_json["vout"][1]["amount"] * (10**-12)
+            reserve_reward = (miner_reward / 0.75) * 0.2
+
+            print("\tBlock reward transaction!")
+            block_reward_info = [int(height), miner_reward, governance_reward, reserve_reward]
+            return None, block_reward_info
+        else:
+            return None, None  # Not a conversion transaction
     
     # Extract asset types for input and output
     input_asset_type = tx_json["vin"][0]["key"]["asset_type"]
@@ -181,10 +195,8 @@ def read_tx(hash):
 
 
     tx_info = [hash, conversion_type, conversion_rate, from_asset, from_amount, to_asset, to_amount, conversion_fee_asset, conversion_fee_amount, tx_fee_asset, tx_fee_amount]
-    return tx_info 
+    return tx_info, None
 
-
-txs = []
 
 def process_tx_per_block(height):
     response_data = get_block(height)
@@ -192,8 +204,12 @@ def process_tx_per_block(height):
         block_data = response_data["result"]
         timestamp = block_data["block_header"]["timestamp"]
         tx_hashes = block_data.get("tx_hashes", [])
+        miner_tx = block_data["miner_tx_hash"]
+        _, block_reward_info = read_tx(miner_tx, height) # only do this when setting HF height to 89300
+        if block_reward_info and height >= block_reward_height_start:
+            block_rewards.append(block_reward_info)
         for hash in tx_hashes:
-            tx_info = read_tx(hash)
+            tx_info,_ = read_tx(hash, height)
             if tx_info:
                 tx_info.append(timestamp)
                 tx_info.append(height)
@@ -203,31 +219,40 @@ def process_tx_per_block(height):
         return None
 
 
-
-
-
-# block = get_block(5054)
-# print(block)    
-
-# process_tx_per_block(5054)
-
-# read_tx("53531a7109c304bb84ef34491b846597ae7d5f5b00d5ef56f7736cd84a4a9456") # mint_stable
-# tx_info = read_tx("0125e463e34ced423c44d05f442a2cdd0a8072d7480ac9b20b495f9883c92a6d") # mint_reserve
-
-# tx_info = ["test", *tx_info]
-# txs.append(tx_info)
+txs = []
+block_rewards = []
 
 current_height = get_current_block_height()
 hf_height = 89300
+starting_height = hf_height
+block_reward_height_start = starting_height
+
+
+try:
+    df_txs = pd.read_csv(Path("./py/csvs/txs.csv"))
+    print("txs.csv exists")
+    input = input("continue from existing txs.csv and block_rewards.csv (y/n): ").lower()
+    if input == "y":
+        txs = df_txs.values.tolist()
+        starting_height = int(txs[-1][1] + 1)
+        print("Starting from block: ", starting_height)
+        block_rewards = pd.read_csv(Path("./py/csvs/block_rewards.csv")).values.tolist()
+        block_reward_height_start = int(block_rewards[-1][0] + 1)
+except Exception as e:
+    print("txs.csv does not exist or error: ", e)
 
 print("Start")
 print("Current Daemon height: ", current_height)
-for i in range(hf_height, current_height):
+for i in range(starting_height, current_height):
     print("Block: ", i, " of ", current_height)
     process_tx_per_block(i)
 
 # print(txs)
 df_txs = pd.DataFrame(txs, columns=["timestamp", "block", "hash", "conversion_type", "conversion_rate", "from_asset", "from_amount", "to_asset", "to_amount", "conversion_fee_asset", "conversion_fee_amount", "tx_fee_asset", "tx_fee_amount", "timestamp", "block"])
 print(df_txs)
-df_txs.to_csv("txs.csv", index=False)
+df_txs.to_csv(Path("./py/csvs/txs.csv"), index=False)
+
+df_block_rewards = pd.DataFrame(block_rewards, columns=["block", "miner_reward", "governance_reward", "reserve_reward"])
+print("saving block rewards")
+df_block_rewards.to_csv(Path("./py/csvs/block_rewards.csv"), index=False)
 

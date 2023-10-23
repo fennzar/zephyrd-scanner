@@ -77,7 +77,7 @@ async function processTx(hash: string) {
     const miner_reward = tx_amount * DEATOMIZE;
     const governance_reward = vout[1]?.amount * DEATOMIZE;
     let reserve_reward = 0;
-    if (block_height > 89300) {
+    if (block_height >= 89300) {
       // HF block
       reserve_reward = (miner_reward / 0.75) * 0.2;
     }

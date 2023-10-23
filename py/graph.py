@@ -1,9 +1,10 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
 # Load the data from the CSV
-df_pricing_records = pd.read_csv("pricing_records.csv")
+df_pricing_records = pd.read_csv(Path("./py/csvs/pricing_records.csv"))
 
 # clear rows where spot == 0
 # df_pricing_records = df_pricing_records[df_pricing_records.spot != 0]
@@ -42,7 +43,7 @@ metric_labels = [
 #     plt.savefig(f'{metric_labels[i][0]}_and_{metric_labels[i][1]}_over_block_height.png')
 
 #     # Show the plot
-#     plt.show()
+#     # plt.show()
 
 ################## GRAPH 1 ##################
 
@@ -126,10 +127,11 @@ for i in range(len(metric_sets)):
     plt.tight_layout()
 
     # Save the figure (optional)
-    plt.savefig(f'{metric_labels[i][0]}_and_{metric_labels[i][1]}_over_block_height.png')
+    figname = f'{metric_labels[i][0]}_and_{metric_labels[i][1]}_over_block_height.png'
+    plt.savefig(Path(f'./py/graphs/{figname}'))
 
     # Show the plot
-    plt.show()
+    # plt.show()
 
 ################## GRAPH 2 ##################
 
@@ -160,10 +162,10 @@ plt.grid(True)
 plt.tight_layout()
 
 # Save the figure (optional)
-plt.savefig('percentage_change_ZEPH_vs_ZephRSV.png')
+plt.savefig(Path('./py/graphs/percentage_change_ZEPH_vs_ZephRSV.png'))
 
 # Show the plot
-plt.show()
+# plt.show()
 
 ################## GRAPH 2 ##################
 
@@ -202,10 +204,10 @@ plt.grid(True)
 plt.tight_layout()
 
 # Save the figure (optional)
-plt.savefig('percentage_change_of_metrics.png')
+plt.savefig(Path('./py/graphs/percentage_change_of_metrics.png'))
 
 # Show the plot
-plt.show()
+# plt.show()
 
 #################
 
@@ -241,10 +243,10 @@ plt.grid(True)
 plt.tight_layout()
 
 # Save the figure (optional)
-plt.savefig('percentage_change_ZEPH_vs_ZephRSV_in_USD.png')
+plt.savefig(Path('./py/graphs/percentage_change_ZEPH_vs_ZephRSV_in_USD.png'))
 
 # Show the plot
-plt.show()
+# plt.show()
 
 
 # Add a new column for ZephRSV in USD
@@ -295,8 +297,8 @@ for start, end in zip(start_blocks, end_blocks):
 
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('ZephRSV_in_USD_spotvsma.png')
-plt.show()
+plt.savefig(Path('./py/graphs/ZephRSV_in_USD_spotvsma.png'))
+# plt.show()
 
 ################## ADDITIONAL GRAPH 2 ##################
 # Plot the value of an initial $10,000 investment in ZephRSV over time
@@ -320,8 +322,8 @@ for start, end in zip(start_blocks, end_blocks):
 
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('Investment_in_ZephRSV_over_time.png')
-plt.show()
+plt.savefig(Path('./py/graphs/Investment_in_ZephRSV_over_time.png'))
+# plt.show()
 
 ################## ADDITIONAL GRAPH 3 ##################
 # Plot the value of an initial $10,000 investment in ZephRSV over time
@@ -344,8 +346,8 @@ for start, end in zip(start_blocks, end_blocks):
         if not outage_label_added:
             outage_label_added = True  # Mark the flag as True after adding the label once
 plt.tight_layout()
-plt.savefig('Investment_in_ZephRSV_vs_ZEPH_over_time.png')
-plt.show()
+plt.savefig(Path('./py/graphs/Investment_in_ZephRSV_vs_ZEPH_over_time.png'))
+# plt.show()
 
 ################## ADDITIONAL GRAPH 4 ##################
 # Plot ZephRSV (in Zeph) vs ZephRSV (in USD)
@@ -368,9 +370,152 @@ for start, end in zip(start_blocks, end_blocks):
         if not outage_label_added:
             outage_label_added = True  # Mark the flag as True after adding the label once
 plt.tight_layout()
-plt.savefig('ZephRSV_in_USD_vs_ZEPH_mas.png')
+plt.savefig(Path('./py/graphs/ZephRSV_in_USD_vs_ZEPH_mas.png'))
+# plt.show()
+
+df_pricing_records.to_csv(Path("./py/csvs/pricing_records_with_graphing_additions.csv"), index=False)
+# save updated df_pricing_records to csv
+df_reserve_stats = pd.read_csv(Path("./py/csvs/reserve_stats.csv"))
+
+################## ADDITIONAL GRAPH 4 ##################
+# Plot reserve_ratio and reserve_ratio_ma over block
+
+plt.figure(figsize=(15, 6))
+plt.plot(df_reserve_stats['block'], df_reserve_stats['reserve_ratio_pct'], label='Reserve Ratio')
+plt.plot(df_reserve_stats['block'], df_reserve_stats['reserve_ratio_ma_pct'], label='Reserve Ratio (MA)')
+
+#y axis range 0->4000
+plt.ylim(0, 3000)
+lastest_block = df_reserve_stats['block'].iloc[-1]
+plt.xlim(89300, lastest_block)
+#draw horizontal lines at 4 and 8
+
+y1 = 400
+y2 = 800
+
+plt.axhline(y=y1, color='green', linestyle='--')
+plt.axhline(y=y2, color='purple', linestyle='--')
+# x_text_pos = df_reserve_stats['block'].median() 
+x_text_pos = 90000
+
+# Adding text directly on the graph
+# You can adjust the x-coordinate (here it's set as a fraction of xlim) and the vertical offset to position the text as needed
+plt.text(x_text_pos, y1-20, 'Minimum Ratio - No ZSD Minting/ZRS Redeeming', color='black', verticalalignment='top')
+plt.text(x_text_pos, y2+20, 'Maximum Ratio - No Additional ZRS Minting', color='black', verticalalignment='bottom')
+
+plt.xlabel('Block Height')
+plt.ylabel('Reserve Ratio %')
+plt.title('Reserve Ratio')
+plt.legend(loc='best')
+plt.grid(True)
+
+plt.tight_layout
+plt.savefig(Path('./py/graphs/Reserve_Ratio.png'))
+
+
+#### VARIATION 1
+
+# plt.figure(figsize=(15, 6))
+
+# # Create the main axis
+# ax1 = plt.gca()  # gets the current axis
+
+# # Create the secondary y-axis for liabilities and assets
+# ax2 = ax1.twinx()
+
+# # Plot and fill for liabilities
+# ax2.plot(df_reserve_stats['block'], df_reserve_stats['liabilities'], color='blue', alpha=0.3, zorder=1)
+# ax2.fill_between(df_reserve_stats['block'], df_reserve_stats['liabilities'], color='blue', alpha=0.15, label='Liabilities (ZSD Circ.)', hatch='//', zorder=1)
+
+# # Plot and fill for assets on top of liabilities
+# ax2.plot(df_reserve_stats['block'], df_reserve_stats['assets'] + df_reserve_stats['liabilities'], color='green', alpha=0.3, zorder=1)
+# ax2.fill_between(df_reserve_stats['block'], df_reserve_stats['liabilities'], df_reserve_stats['assets'] + df_reserve_stats['liabilities'], color='green', alpha=0.15, label='Assets (Zeph in Reserve * Price)', hatch='//', zorder=1)
+
+# ax2.set_ylabel('Liabilities & Assets $', color='black')
+# ax2.tick_params(axis='y', labelcolor='black')
+# ax2.legend(loc='upper right')
+# ax2_ylim = ax2.get_ylim()[1] * 1.1
+# ax2.set_ylim(0, ax2_ylim)
+
+# ax1.plot(df_reserve_stats['block'], df_reserve_stats['reserve_ratio_pct'], label='Reserve Ratio', zorder=3)
+# ax1.plot(df_reserve_stats['block'], df_reserve_stats['reserve_ratio_ma_pct'], label='Reserve Ratio (MA)', zorder=3)
+
+# # Set limits and labels for the primary y-axis
+# ax1.set_ylim(0, 3000)
+# ax1.set_ylabel('Reserve Ratio %')
+# ax1.legend(loc='upper left')
+# ax1.grid(True, zorder=2)  # Grid with a higher z-order to be on top of ax2 but below ax1 lines
+
+# # Draw the horizontal lines and text annotations
+# y1 = 400
+# y2 = 800
+# ax1.axhline(y=y1, color='green', linestyle='--', zorder=3)
+# ax1.axhline(y=y2, color='purple', linestyle='--', zorder=3)
+# x_text_pos = 90000
+# ax1.text(x_text_pos, y1-20, 'Minimum Ratio - No ZSD Minting/ZRS Redeeming', color='black', verticalalignment='top')
+# ax1.text(x_text_pos, y2+20, 'Maximum Ratio - No Additional ZRS Minting', color='black', verticalalignment='bottom')
+
+# # Set x-axis and title
+# plt.xlabel('Block Height')
+# plt.title('Reserve Ratio with Assets and Liabilities Overlay')
+
+# plt.tight_layout()
+# plt.savefig(Path('./py/graphs/Reserve_Ratio_Assets_Liabilities_Overlay.png'))
+
+
+### variation 2
+
+plt.figure(figsize=(15, 6))
+
+# Create the main axis for liabilities and assets
+ax1 = plt.gca()  # gets the current axis
+
+# Plot and fill for liabilities
+ax1.plot(df_reserve_stats['block'], df_reserve_stats['liabilities'], color='blue', alpha=0.3)
+ax1.fill_between(df_reserve_stats['block'], df_reserve_stats['liabilities'], color='blue', alpha=0.15, label='Liabilities (ZSD Circ.)', hatch='//')
+
+# Plot and fill for assets on top of liabilities
+ax1.plot(df_reserve_stats['block'], df_reserve_stats['assets'] + df_reserve_stats['liabilities'], color='green', alpha=0.3)
+ax1.fill_between(df_reserve_stats['block'], df_reserve_stats['liabilities'], df_reserve_stats['assets'] + df_reserve_stats['liabilities'], color='green', alpha=0.15, label='Assets (Zeph in Reserve * Price)', hatch='//')
+
+ax1.set_ylabel('Liabilities & Assets $', color='black')
+ax1.tick_params(axis='y', labelcolor='black')
+ax1.legend(loc='upper center')
+ax1_ylim = ax1.get_ylim()[1] * 1.1
+ax1.set_ylim(0, ax1_ylim)
+
+# Create the secondary y-axis for reserve ratios
+ax2 = ax1.twinx()
+
+ax2.plot(df_reserve_stats['block'], df_reserve_stats['reserve_ratio_pct'], label='Reserve Ratio', color='orange')
+ax2.plot(df_reserve_stats['block'], df_reserve_stats['reserve_ratio_ma_pct'], label='Reserve Ratio (MA)', color='red')
+
+# Set limits and labels for the secondary y-axis
+ax2.set_ylim(0, 3000)
+ax2.set_ylabel('Reserve Ratio %', color='black')
+ax2.tick_params(axis='y', labelcolor='black')
+ax2.legend(loc='upper right')
+ax2.grid(True)
+
+# Draw the horizontal lines and text annotations
+y1 = 400
+y2 = 800
+ax2.axhline(y=y1, color='green', linestyle='--')
+ax2.axhline(y=y2, color='purple', linestyle='--')
+x_text_pos = 90000
+ax2.text(x_text_pos, y1-20, 'Minimum Ratio - No ZSD Minting/ZRS Redeeming', color='black', verticalalignment='top')
+ax2.text(x_text_pos, y2+20, 'Maximum Ratio - No Additional ZRS Minting', color='black', verticalalignment='bottom')
+
+# Set x-axis and title
+plt.xlabel('Block Height')
+plt.title('Reserve Ratio with Assets and Liabilities Overlay')
+lastest_block = df_reserve_stats['block'].iloc[-1]
+plt.xlim(89300, lastest_block)
+plt.tight_layout()
+plt.savefig(Path('./py/graphs/Reserve_Ratio_Assets_Liabilities_Overlay.png'))
+
+
+
+
+# PLOT THEM
 plt.show()
-
-df_pricing_records.to_csv("pricing_records_with_graphing_additions.csv", index=False)
-
-print(df_pricing_records.tail(1))

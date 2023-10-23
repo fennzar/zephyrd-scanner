@@ -1,6 +1,7 @@
 import requests
 import json
 import pandas as pd
+from pathlib import Path
 
 session = requests.Session()
 
@@ -65,19 +66,16 @@ print("Start")
 print("Current Daemon height: ", current_height)
 #check if pricing_records.csv exists
 try:
-    df_pricing_records = pd.read_csv("pricing_records.csv")
+    df_pricing_records = pd.read_csv(Path("./py/csvs/pricing_records.csv"))
     print("pricing_records.csv exists")
     input = input("continue from existing pricing_records.csv? (y/n): ").lower()
     if input == "y":
-        print("1")
         pricing_records = df_pricing_records.values.tolist()
-        print("2")
         starting_height = int(pricing_records[-1][0] + 1)
         print("Starting from block: ", starting_height)
 except Exception as e:
     print("pricing_records.csv does not exist or error: ", e)
     
-estimated_block = starting_height -1
 prev_timestamp = 0
 
 for i in range(starting_height, current_height):
@@ -87,18 +85,6 @@ for i in range(starting_height, current_height):
     if pricing_record:
         block = i
         timestamp = pricing_record["timestamp"] # Unix timestamp
-         # Calculate time difference from previous timestamp
-        time_diff = timestamp - prev_timestamp
-        
-        # If time difference is greater than 1 hour, add 30 records for each hour missing
-        if prev_timestamp > 0 and time_diff > 3600:  # 3600 seconds in an hour
-            missing_hours = time_diff // 3600
-            missing_records_count = 30 * missing_hours
-            for j in range(missing_records_count):
-                estimated_timestamp = prev_timestamp + (j + 1) * (time_diff / missing_records_count)
-                estimated_block += 1  # Increment block
-                print(f"Added missing record for block: {i}")
-                pricing_records.append([estimated_block, estimated_timestamp,0, 0, 0, 0, 0, 0])
 
         spot = pricing_record["spot"] * (10**-12)
         moving_average = pricing_record["moving_average"] * (10**-12)
@@ -107,21 +93,16 @@ for i in range(starting_height, current_height):
         stable = pricing_record["stable"] * (10**-12)
         stable_ma = pricing_record["stable_ma"] * (10**-12)
         # add to priceing_records list
-        estimated_block += 1
-        pricing_records.append([estimated_block, timestamp, spot, moving_average, reserve, reserve_ma, stable, stable_ma])
+        pricing_records.append([block, timestamp, spot, moving_average, reserve, reserve_ma, stable, stable_ma])
 
         # Update prev_timestamp
         prev_timestamp = timestamp
     else:
-        estimated_block += 1
-        pricing_records.append([estimated_block, 0, 0, 0, 0, 0, 0, 0])
+        pricing_records.append([block, 0, 0, 0, 0, 0, 0, 0])
         print("No pricing record for block: ", i)
 
 
 df_pricing_records = pd.DataFrame(pricing_records, columns=["block","timestamp", "spot", "moving_average", "reserve", "reserve_ma", "stable", "stable_ma"])
 print(df_pricing_records)
 
-df_pricing_records.to_csv("pricing_records.csv", index=False)
-
-
-
+df_pricing_records.to_csv(Path("./py/csvs/pricing_records.csv"), index=False)

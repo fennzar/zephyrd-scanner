@@ -1,6 +1,7 @@
 import pandas as pd
+from pathlib import Path
 
-df = pd.read_csv("txs.csv")
+df = pd.read_csv(Path("./py/csvs/txs.csv"))
 
 # get useful info from this df
 
