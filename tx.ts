@@ -47,7 +47,7 @@ async function saveBlockRewardInfo(
 
 async function processTx(hash: string) {
   console.log(`\tProcessing tx: ${hash}`);
-  const response_data = await readTx(hash);
+  const response_data: any = await readTx(hash);
   if (!response_data) {
     console.error("Failed to retrieve transaction data.");
     return;
@@ -221,7 +221,7 @@ export async function scanTransactions() {
   console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
 
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
-    const block = await getBlock(height);
+    const block: any = await getBlock(height);
     if (!block) {
       console.log(`${height}/${rpcHeight - 1} - No block`);
       await setRedisHeight(height);

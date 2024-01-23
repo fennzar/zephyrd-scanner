@@ -20,8 +20,8 @@ metric_sets = [
 
 metric_labels = [
     ["ZEPH", "ZEPH MA"],
-    ["ZephRSV", "ZephRSV MA"],
-    ["ZephUSD", "ZephUSD MA"]
+    ["ZRS (Reserve Share)", "ZRS (Reserve Share) MA"],
+    ["ZSD (Stable Dollar)", "ZSD (Stable Dollar) MA"]
 
 ]
 
@@ -515,6 +515,56 @@ plt.tight_layout()
 plt.savefig(Path('./py/graphs/Reserve_Ratio_Assets_Liabilities_Overlay.png'))
 
 
+
+
+
+# Plot zephusd_circ over block
+plt.figure(figsize=(15, 6))
+plt.plot(df_reserve_stats['block'], df_reserve_stats['zephusd_circ'], label='ZSD Circulation')
+plt.xlabel('Block Height')
+
+#y axis range 0->4000
+# plt.ylim(0, 400000)
+lastest_block = df_reserve_stats['block'].iloc[-1]
+plt.xlim(89300, lastest_block)
+
+plt.ylabel('ZSD Circulation')
+plt.title('ZSD Circulation')
+plt.legend(loc='best')
+plt.grid(True)
+
+plt.tight_layout
+plt.savefig(Path('./py/graphs/ZSD_Circulation.png'))
+
+
+##################
+
+plt.figure(figsize=(15, 6))
+
+# Main axis for ZRS price in ZEPH
+ax1 = plt.gca()
+ax1.plot(df_pricing_records['block'], df_pricing_records['reserve'], color='blue', label='ZRS Price in ZEPH')
+ax1.set_xlabel('Block Height')
+ax1.set_ylabel('ZRS Price in ZEPH', color='blue')
+ax1.tick_params(axis='y', labelcolor='blue')
+ax1.legend(loc='upper left')
+
+# Secondary axis for ZEPH price
+ax2 = ax1.twinx()
+ax2.plot(df_pricing_records['block'], df_pricing_records['spot'], color='green', label='ZEPH Price')
+ax2.set_ylabel('ZEPH Price', color='green')
+ax2.tick_params(axis='y', labelcolor='green')
+ax2.legend(loc='upper right')
+
+plt.title('ZRS Price in ZEPH and ZEPH Price over Block Height')
+plt.grid(True)
+plt.tight_layout()
+
+# Save the figure (optional)
+plt.savefig(Path('./py/graphs/ZRS_Price_ZEPH_and_ZEPH_Price.png'))
+
+# Show the plot
+plt.show()
 
 
 # PLOT THEM
