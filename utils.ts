@@ -86,6 +86,42 @@ export async function getTotalsFromRedis() {
   return totals;
 }
 
+export async function getProtocolStatsFromRedis(scale: "block" | "hour" | "day", from?: string, to?: string) {
+  let redisKey = "";
+  switch (scale) {
+    case "block":
+      redisKey = "protocol_stats";
+      let start = from ? parseInt(from) : 0;
+      let end = to ? parseInt(to) : Number(await redis.get("height_aggregator"));
+      let blockData = [];
+      for (let i = start; i <= end; i++) {
+        const statsJson = await redis.hget(redisKey, i.toString());
+        if (statsJson) {
+          const stats = JSON.parse(statsJson);
+          blockData.push({ block_height: i, data: stats });
+        }
+      }
+      return blockData;
+
+    case "hour":
+    case "day":
+      redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
+      let startScore = from ? parseInt(from) : "-inf";
+      let endScore = to ? parseInt(to) : "+inf";
+      // console.log(`calling redis with: ${redisKey}, ${startScore}, ${endScore}`);
+      let results = await redis.zrangebyscore(redisKey, startScore, endScore, "WITHSCORES");
+      return formatZrangeResults(results);
+  }
+}
+
+function formatZrangeResults(results: any) {
+  let formattedResults = [];
+  for (let i = 0; i < results.length; i += 2) {
+    formattedResults.push({ timestamp: results[i + 1], data: JSON.parse(results[i]) });
+  }
+  return formattedResults;
+}
+
 // Example usage
 
 // (async () => {

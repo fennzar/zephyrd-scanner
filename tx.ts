@@ -88,6 +88,12 @@ async function processTx(hash: string) {
 
   // Conversion transaction!
   console.log("\tConversion transaction!");
+  // Add the hash to the txs_by_block for the specific block height
+  const txsByBlockHashes = await redis.hget("txs_by_block", block_height.toString());
+  let hashes: string[] = txsByBlockHashes ? JSON.parse(txsByBlockHashes) : [];
+  hashes.push(hash);
+  await redis.hset("txs_by_block", block_height.toString(), JSON.stringify(hashes));
+
   await redis.hincrbyfloat("totals", "conversion_transactions", 1);
 
   const input_asset_type = vin[0]?.key?.asset_type || undefined;
