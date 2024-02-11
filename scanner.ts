@@ -28,7 +28,7 @@ async function main() {
 
 const app = express();
 app.use(express.json());
-const port = 3000;
+const port = 4000;
 
 app.get("/", async (_, res: Response) => {
   res.send("zephyrdscanner reached");
