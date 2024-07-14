@@ -34,6 +34,55 @@ export async function getCurrentBlockHeight(): Promise<number> {
   }
 }
 
+interface GetBlockResponse {
+  id: string;
+  jsonrpc: string;
+  result: {
+    blob: string;
+    block_header: {
+      block_size: number;
+      block_weight: number;
+      cumulative_difficulty: number;
+      cumulative_difficulty_top64: number;
+      depth: number;
+      difficulty: number;
+      difficulty_top64: number;
+      hash: string;
+      height: number;
+      long_term_weight: number;
+      major_version: number;
+      miner_tx_hash: string;
+      minor_version: number;
+      nonce: number;
+      num_txes: number;
+      orphan_status: boolean;
+      pow_hash: string;
+      prev_hash: string;
+      pricing_record: {
+        moving_average: number;
+        reserve: number;
+        reserve_ma: number;
+        signature: string;
+        spot: number;
+        stable: number;
+        stable_ma: number;
+        timestamp: number;
+      };
+      reward: number;
+      timestamp: number;
+      wide_cumulative_difficulty: string;
+      wide_difficulty: string;
+    };
+    credits: number;
+    json: string;
+    miner_tx_hash: string;
+    status: string;
+    top_hash: string;
+    tx_hashes: string[];
+    untrusted: boolean;
+  };
+}
+
 export async function getBlock(height: number) {
   try {
     const response = await fetch(`${RPC_URL}/json_rpc`, {
@@ -47,7 +96,7 @@ export async function getBlock(height: number) {
       }),
     });
 
-    return await response.json();
+    return await response.json() as GetBlockResponse;
   } catch (e) {
     console.log(e);
     return;

@@ -2,6 +2,7 @@ import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
 
 const DEATOMIZE = 10 ** -12;
+const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 
 async function getRedisHeight() {
   const height = await redis.get("height_txs");
@@ -132,8 +133,10 @@ async function processTx(hash: string) {
       to_asset = "ZEPHUSD";
       to_amount = amount_minted * DEATOMIZE;
 
+      const mint_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001;
+
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.98) * 0.02;
+      conversion_fee_amount = (to_amount / 0.98) * mint_stable_conversion_fee;
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "mint_stable_count", 1);
       await redis.hincrbyfloat("totals", "mint_stable_volume", to_amount);
@@ -147,8 +150,10 @@ async function processTx(hash: string) {
       to_asset = "ZEPH";
       to_amount = amount_minted * DEATOMIZE;
 
+      const redeem_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001;
+
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.98) * 0.02;
+      conversion_fee_amount = (to_amount / 0.98) * redeem_stable_conversion_fee;
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "redeem_stable_count", 1);
       await redis.hincrbyfloat("totals", "redeem_stable_volume", to_amount);
@@ -162,8 +167,11 @@ async function processTx(hash: string) {
       to_asset = "ZEPHRSV";
       to_amount = amount_minted * DEATOMIZE;
 
-      conversion_fee_asset = "N/A";
-      conversion_fee_amount = 0;
+      const mint_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01;
+
+      conversion_fee_asset = to_asset;
+      conversion_fee_amount = (to_amount / 0.99) * mint_reserve_conversion_fee;
+
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "mint_reserve_count", 1);
       await redis.hincrbyfloat("totals", "mint_reserve_volume", to_amount);
@@ -176,8 +184,10 @@ async function processTx(hash: string) {
       to_asset = "ZEPH";
       to_amount = amount_minted * DEATOMIZE;
 
+      const redeem_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01;
+
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.98) * 0.02;
+      conversion_fee_amount = (to_amount / 0.98) * redeem_reserve_conversion_fee;
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "redeem_reserve_count", 1);
       await redis.hincrbyfloat("totals", "redeem_reserve_volume", to_amount);
