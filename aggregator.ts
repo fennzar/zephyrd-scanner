@@ -207,6 +207,7 @@ async function aggregateBlock(height_to_process: number) {
     yield_price: pr ? pr.yield_price : 0, // Get yield price from pricing record
     zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
     zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
+    zeph_circ: prevBlockData.zeph_circ || 0, // Initialize from previous block or 0
     zephusd_circ: prevBlockData.zephusd_circ || 0, // Initialize from previous block or 0
     zephrsv_circ: prevBlockData.zephrsv_circ || 0, // Initialize from previous block or 0
     zyield_circ: prevBlockData.zyield_circ || 0, // Initialize from previous block or 0
@@ -252,6 +253,12 @@ async function aggregateBlock(height_to_process: number) {
   // console.log(block_txs);
 
   blockData.zeph_in_reserve += bri.reserve_reward;
+  // should instead capture the total_reward! This is so that we don't have redo "saveBlockRewardInfo"
+  blockData.zeph_circ +=
+    (bri?.miner_reward ?? 0) +
+    (bri?.governance_reward ?? 0) +
+    (bri?.reserve_reward ?? 0) +
+    (bri?.yield_reward ?? 0);
 
   if (block_txs.length != 0) {
     console.log(`\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`);
