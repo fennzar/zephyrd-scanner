@@ -104,6 +104,16 @@ export async function getBlock(height: number) {
   }
 }
 
+export async function getPricingRecordFromBlock(height: number) {
+  const blockData = await getBlock(height);
+  if (!blockData) {
+    return;
+  }
+
+  const pricingRecord = blockData.result.block_header.pricing_record;
+  return pricingRecord;
+}
+
 export async function readTx(hash: string) {
   try {
     const response = await fetch(`${RPC_URL}/get_transactions`, {

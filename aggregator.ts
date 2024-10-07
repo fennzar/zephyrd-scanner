@@ -8,8 +8,8 @@ const HF_VERSION_1_TIMESTAMP = 1696152427;
 
 const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 
-const HF_VERSION_2_HEIGHT = 360000;
-const HF_VERSION_2_TIMESTAMP = 1728817200; // ESTIMATED TO BE UPDATED?
+const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
+const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
 
 async function getRedisHeight() {
   const height = await redis.get("height_aggregator");
@@ -217,6 +217,8 @@ async function aggregateBlock(height_to_process: number) {
     equity_ma: prevBlockData.equity_ma || 0, // Initialize from previous block or 0
     reserve_ratio: prevBlockData.reserve_ratio || 0, // Initialize from previous block or 0
     reserve_ratio_ma: prevBlockData.reserve_ratio_ma || 0, // Initialize from previous block or 0
+    zsd_accrued_in_yield_reserve_from_yield_reward: prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward || 0, // Initialize from previous block or 0
+    zsd_minted_for_yield: 0,
     conversion_transactions_count: 0,
     yield_conversion_transactions_count: 0,
     mint_reserve_count: 0,
@@ -329,6 +331,16 @@ async function aggregateBlock(height_to_process: number) {
   // Calculate reserve ratio
   blockData.reserve_ratio = blockData.liabilities > 0 ? blockData.assets / blockData.liabilities : 0;
   blockData.reserve_ratio_ma = blockData.liabilities > 0 ? blockData.assets_ma / blockData.liabilities : 0;
+
+  // Calculate ZSD Yield Reserve Accrual and ZSD Minted this block
+  if (height_to_process >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
+    if (blockData.reserve_ratio >= 2 && blockData.reserve_ratio_ma >= 2) {
+      const yield_reward_zeph = bri.yield_reward;
+      const zsd_auto_minted = blockData.spot * yield_reward_zeph;
+      blockData.zsd_minted_for_yield = zsd_auto_minted;
+      blockData.zsd_accrued_in_yield_reserve_from_yield_reward += zsd_auto_minted;
+    }
+  }
 
   await redis.hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData));
   // console.log(`Protocol stats aggregated for block ${height_to_process}`);
