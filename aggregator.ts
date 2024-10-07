@@ -431,6 +431,10 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       zsd_in_yield_reserve_high: 0,
       zsd_in_yield_reserve_low: Infinity,
       // Circulating Supply
+      zeph_circ_open: 0,
+      zeph_circ_close: 0,
+      zeph_circ_high: 0,
+      zeph_circ_low: Infinity,
       zephusd_circ_open: 0,
       zephusd_circ_close: 0,
       zephusd_circ_high: 0,
@@ -593,6 +597,12 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       aggregatedData.zsd_in_yield_reserve_low = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
       aggregatedData.zsd_in_yield_reserve_close = protocolStatsWindow[protocolStatsWindow.length - 1].zsd_in_yield_reserve ?? 0;
 
+      // zeph_circ
+      aggregatedData.zeph_circ_open = protocolStatsWindow[0].zeph_circ ?? 0;
+      aggregatedData.zeph_circ_high = protocolStatsWindow[0].zeph_circ ?? 0;
+      aggregatedData.zeph_circ_low = protocolStatsWindow[0].zeph_circ ?? 0;
+      aggregatedData.zeph_circ_close = protocolStatsWindow[protocolStatsWindow.length - 1].zeph_circ ?? 0;
+
       // zephusd_circ
       aggregatedData.zephusd_circ_open = protocolStatsWindow[0].zephusd_circ ?? 0;
       aggregatedData.zephusd_circ_high = protocolStatsWindow[0].zephusd_circ ?? 0;
@@ -681,6 +691,9 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
 
         aggregatedData.zsd_in_yield_reserve_high = Math.max(aggregatedData.zsd_in_yield_reserve_high, blockData.zsd_in_yield_reserve);
         aggregatedData.zsd_in_yield_reserve_low = Math.min(aggregatedData.zsd_in_yield_reserve_low, blockData.zsd_in_yield_reserve);
+
+        aggregatedData.zeph_circ_high = Math.max(aggregatedData.zeph_circ_high, blockData.zeph_circ);
+        aggregatedData.zeph_circ_low = Math.min(aggregatedData.zeph_circ_low, blockData.zeph_circ);
 
         aggregatedData.zephusd_circ_high = Math.max(aggregatedData.zephusd_circ_high, blockData.zephusd_circ);
         aggregatedData.zephusd_circ_low = Math.min(aggregatedData.zephusd_circ_low, blockData.zephusd_circ);
