@@ -69,7 +69,7 @@ async function getRedisTransactionHashesByBlock(blockHeight: number): Promise<st
     // Fetch the JSON string of transaction hashes for the given block height
     const txHashesJson = await redis.hget("txs_by_block", blockHeight.toString());
     if (!txHashesJson) {
-      console.log(`No transactions found for block ${blockHeight}.`);
+      // console.log(`No transactions found for block ${blockHeight}.`);
       return [];
     }
 
@@ -252,6 +252,7 @@ async function aggregateBlock(height_to_process: number) {
   blockData.zeph_in_reserve += bri.reserve_reward;
 
   if (block_txs.length != 0) {
+    console.log(`\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`);
     for (const tx_hash of block_txs) {
       const tx: Transaction = await getRedisTransaction(tx_hash);
 
@@ -330,7 +331,7 @@ async function aggregateBlock(height_to_process: number) {
   blockData.reserve_ratio_ma = blockData.liabilities > 0 ? blockData.assets_ma / blockData.liabilities : 0;
 
   await redis.hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData));
-  console.log(`Protocol stats aggregated for block ${height_to_process}`);
+  // console.log(`Protocol stats aggregated for block ${height_to_process}`);
   // console.log(blockData);
   // console.log(`\n\n`);
   setRedisHeight(height_to_process);
