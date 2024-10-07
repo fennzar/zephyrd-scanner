@@ -47,6 +47,7 @@ export async function scanPricingRecords() {
         reserve_ma: 0,
         stable: 0,
         stable_ma: 0,
+        yield_price: 0,
       };
 
       const pr_to_save_json = JSON.stringify(pr_to_save);
@@ -66,6 +67,7 @@ export async function scanPricingRecords() {
     const reserve_ma = pricingRecord.reserve_ma * DEATOMIZE;
     const stable = pricingRecord.stable * DEATOMIZE;
     const stable_ma = pricingRecord.stable_ma * DEATOMIZE;
+    const yield_price = pricingRecord.yield_price ? pricingRecord.yield_price * DEATOMIZE : 0;
 
     let pr_to_save = {
       height: height,
@@ -76,6 +78,7 @@ export async function scanPricingRecords() {
       reserve_ma: reserve_ma,
       stable: stable,
       stable_ma: stable_ma,
+      yield_price: yield_price,
     };
 
     const pr_to_save_json = JSON.stringify(pr_to_save);

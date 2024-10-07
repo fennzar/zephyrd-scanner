@@ -6,6 +6,11 @@ import { getCurrentBlockHeight } from "./utils";
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
 
+const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
+
+const HF_VERSION_2_HEIGHT = 360000;
+const HF_VERSION_2_TIMESTAMP = 1728817200; // ESTIMATED TO BE UPDATED?
+
 async function getRedisHeight() {
   const height = await redis.get("height_aggregator");
   if (!height) {
@@ -148,7 +153,7 @@ export async function aggregate() {
 
   // by block
   const height_by_block = await getRedisHeight(); // where we are at in the data aggregation
-  const height_to_process = Math.max(height_by_block + 1, HF_VERSION_1_HEIGHT);
+  const height_to_process = Math.max(height_by_block + 1, HF_VERSION_1_HEIGHT); // only process from HF_VERSION_1_HEIGHT
 
   console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs - 1}`);
 
@@ -199,9 +204,12 @@ async function aggregateBlock(height_to_process: number) {
     reserve_ma: pr ? pr.reserve_ma : 0, // Get reserve moving average from pricing record
     stable: pr ? pr.stable : 0, // Get stable from pricing record
     stable_ma: pr ? pr.stable_ma : 0, // Get stable moving average from pricing record
+    yield_price: pr ? pr.yield_price : 0, // Get yield price from pricing record
     zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
+    zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
     zephusd_circ: prevBlockData.zephusd_circ || 0, // Initialize from previous block or 0
     zephrsv_circ: prevBlockData.zephrsv_circ || 0, // Initialize from previous block or 0
+    zyield_circ: prevBlockData.zyield_circ || 0, // Initialize from previous block or 0
     assets: prevBlockData.assets || 0, // Initialize from previous block or 0
     assets_ma: prevBlockData.assets_ma || 0, // Initialize from previous block or 0
     liabilities: prevBlockData.liabilities || 0, // Initialize from previous block or 0
@@ -209,17 +217,25 @@ async function aggregateBlock(height_to_process: number) {
     equity_ma: prevBlockData.equity_ma || 0, // Initialize from previous block or 0
     reserve_ratio: prevBlockData.reserve_ratio || 0, // Initialize from previous block or 0
     reserve_ratio_ma: prevBlockData.reserve_ratio_ma || 0, // Initialize from previous block or 0
-    conversion_transactions_count: 0, // Initialize count as 0
-    mint_reserve_count: 0, // Initialize count as 0
-    mint_reserve_volume: 0, // Initialize volume as 0
-    redeem_reserve_count: 0, // Initialize count as 0
-    redeem_reserve_volume: 0, // Initialize volume as 0
-    fees_zephusd: 0, // Initialize fees as 0
-    mint_stable_count: 0, // Initialize count as 0
-    mint_stable_volume: 0, // Initialize volume as 0
-    redeem_stable_count: 0, // Initialize count as 0
-    redeem_stable_volume: 0, // Initialize volume as 0
-    fees_zeph: 0, // Initialize fees as 0
+    conversion_transactions_count: 0,
+    yield_conversion_transactions_count: 0,
+    mint_reserve_count: 0,
+    mint_reserve_volume: 0,
+    fees_zephrsv: 0, // conversion fees from minting zeph -> zrs
+    redeem_reserve_count: 0,
+    redeem_reserve_volume: 0,
+    fees_zephusd: 0, // conversion fees from minting zeph -> zsd
+    mint_stable_count: 0,
+    mint_stable_volume: 0,
+    redeem_stable_count: 0,
+    redeem_stable_volume: 0,
+    fees_zeph: 0, // conversion fees from redeeming zsd -> zeph && redeeming zrs -> zeph
+    mint_yield_count: 0,
+    mint_yield_volume: 0,
+    redeem_yield_count: 0,
+    redeem_yield_volume: 0,
+    fees_zephusd_yield: 0, // conversion fees from redeeming zys -> zsd
+    fees_zyield: 0, // conversion fees from minting zsd -> zys
   };
 
   // console.log(`pr`);
@@ -239,10 +255,11 @@ async function aggregateBlock(height_to_process: number) {
     for (const tx_hash of block_txs) {
       const tx: Transaction = await getRedisTransaction(tx_hash);
 
-      blockData.conversion_transactions_count += 1;
-
       switch (tx.conversion_type) {
         case "mint_stable":
+          blockData.conversion_transactions_count += 1;
+          // to = ZEPHUSD (ZSD)
+          // from = ZEPH
           blockData.mint_stable_count += 1;
           blockData.mint_stable_volume += tx.to_amount;
           blockData.fees_zephusd += tx.conversion_fee_amount;
@@ -250,6 +267,9 @@ async function aggregateBlock(height_to_process: number) {
           blockData.zeph_in_reserve += tx.from_amount;
           break;
         case "redeem_stable":
+          blockData.conversion_transactions_count += 1;
+          // to = ZEPH
+          // from = ZEPHUSD (ZSD)
           blockData.redeem_stable_count += 1;
           blockData.redeem_stable_volume += tx.from_amount;
           blockData.fees_zeph += tx.conversion_fee_amount;
@@ -257,19 +277,43 @@ async function aggregateBlock(height_to_process: number) {
           blockData.zephusd_circ -= tx.from_amount;
           break;
         case "mint_reserve":
+          blockData.conversion_transactions_count += 1;
+          // to = ZEPHRSV (ZRS)
+          // from = ZEPH
           blockData.mint_reserve_count += 1;
           blockData.mint_reserve_volume += tx.to_amount;
           blockData.zeph_in_reserve += tx.from_amount;
           blockData.zephrsv_circ += tx.to_amount;
-          // no fees for minting reserve
+          blockData.fees_zephrsv += tx.conversion_fee_amount
           break;
         case "redeem_reserve":
+          blockData.conversion_transactions_count += 1;
+          // to = ZEPH
+          // from = ZEPHRSV (ZRS)
           blockData.redeem_reserve_count += 1;
           blockData.redeem_reserve_volume += tx.from_amount;
           blockData.zeph_in_reserve -= tx.to_amount;
           blockData.zephrsv_circ -= tx.from_amount;
           blockData.fees_zeph += tx.conversion_fee_amount;
           break;
+        case "mint_yield":
+          blockData.yield_conversion_transactions_count += 1;
+          // to = ZYIELD (ZYS)
+          // from = ZEPHUSD (ZSD)
+          blockData.mint_yield_count += 1;
+          blockData.mint_yield_volume += tx.to_amount;
+          blockData.fees_zyield += tx.conversion_fee_amount;
+          blockData.zyield_circ += tx.to_amount;
+          blockData.zsd_in_yield_reserve += tx.from_amount;
+        case "redeem_yield":
+          blockData.yield_conversion_transactions_count += 1;
+          // to = ZEPHUSD (ZSD)
+          // from = ZYIELD (ZYS)
+          blockData.redeem_yield_count += 1;
+          blockData.redeem_yield_volume += tx.from_amount;
+          blockData.fees_zephusd_yield += tx.conversion_fee_amount;
+          blockData.zyield_circ -= tx.from_amount;
+          blockData.zsd_in_yield_reserve -= tx.to_amount;
       }
     }
   }
@@ -326,6 +370,7 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
     // Increment the window index
     windowIndex++;
     let aggregatedData = {
+      // Prices
       spot_open: 0,
       spot_close: 0,
       spot_high: 0,
@@ -350,10 +395,22 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       stable_ma_close: 0,
       stable_ma_high: 0,
       stable_ma_low: Infinity,
+      zyield_price_open: 0,
+      zyield_price_close: 0,
+      zyield_price_high: 0,
+      zyield_price_low: Infinity,
+      // Circulating Reserve Amounts
+      // DJED Reserve
       zeph_in_reserve_open: 0,
       zeph_in_reserve_close: 0,
       zeph_in_reserve_high: 0,
       zeph_in_reserve_low: Infinity,
+      // Yield Reserve
+      zsd_in_yield_reserve_open: 0,
+      zsd_in_yield_reserve_close: 0,
+      zsd_in_yield_reserve_high: 0,
+      zsd_in_yield_reserve_low: Infinity,
+      // Circulating Supply
       zephusd_circ_open: 0,
       zephusd_circ_close: 0,
       zephusd_circ_high: 0,
@@ -362,6 +419,11 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       zephrsv_circ_close: 0,
       zephrsv_circ_high: 0,
       zephrsv_circ_low: Infinity,
+      zyield_circ_open: 0,
+      zyield_circ_close: 0,
+      zyield_circ_high: 0,
+      zyield_circ_low: Infinity,
+      // Djed Mechanics Stats
       assets_open: 0,
       assets_close: 0,
       assets_high: 0,
@@ -390,9 +452,12 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       reserve_ratio_ma_close: 0,
       reserve_ratio_ma_high: 0,
       reserve_ratio_ma_low: Infinity,
+      // Conversion Stats
       conversion_transactions_count: 0,
+      yield_conversion_transactions_count: 0,
       mint_reserve_count: 0,
       mint_reserve_volume: 0,
+      fees_zephrsv: 0,
       redeem_reserve_count: 0,
       redeem_reserve_volume: 0,
       fees_zephusd: 0,
@@ -401,6 +466,12 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       redeem_stable_count: 0,
       redeem_stable_volume: 0,
       fees_zeph: 0,
+      mint_yield_count: 0,
+      mint_yield_volume: 0,
+      fees_zyield: 0,
+      redeem_yield_count: 0,
+      redeem_yield_volume: 0,
+      fees_zephusd_yield: 0,
     };
 
     let protocolStatsWindow = [];
@@ -484,11 +555,23 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       aggregatedData.stable_ma_low = protocolStatsWindow[0].stable_ma ?? 0;
       aggregatedData.stable_ma_close = protocolStatsWindow[protocolStatsWindow.length - 1].stable_ma ?? 0;
 
+      // zyield_price
+      aggregatedData.zyield_price_open = protocolStatsWindow[0].yield_price ?? 0;
+      aggregatedData.zyield_price_high = protocolStatsWindow[0].yield_price ?? 0;
+      aggregatedData.zyield_price_low = protocolStatsWindow[0].yield_price ?? 0;
+      aggregatedData.zyield_price_close = protocolStatsWindow[protocolStatsWindow.length - 1].yield_price ?? 0;
+
       // zeph_in_reserve
       aggregatedData.zeph_in_reserve_open = protocolStatsWindow[0].zeph_in_reserve ?? 0;
       aggregatedData.zeph_in_reserve_high = protocolStatsWindow[0].zeph_in_reserve ?? 0;
       aggregatedData.zeph_in_reserve_low = protocolStatsWindow[0].zeph_in_reserve ?? 0;
       aggregatedData.zeph_in_reserve_close = protocolStatsWindow[protocolStatsWindow.length - 1].zeph_in_reserve ?? 0;
+
+      // zsd_in_yield_reserve
+      aggregatedData.zsd_in_yield_reserve_open = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
+      aggregatedData.zsd_in_yield_reserve_high = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
+      aggregatedData.zsd_in_yield_reserve_low = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
+      aggregatedData.zsd_in_yield_reserve_close = protocolStatsWindow[protocolStatsWindow.length - 1].zsd_in_yield_reserve ?? 0;
 
       // zephusd_circ
       aggregatedData.zephusd_circ_open = protocolStatsWindow[0].zephusd_circ ?? 0;
@@ -501,6 +584,12 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
       aggregatedData.zephrsv_circ_high = protocolStatsWindow[0].zephrsv_circ ?? 0;
       aggregatedData.zephrsv_circ_low = protocolStatsWindow[0].zephrsv_circ ?? 0;
       aggregatedData.zephrsv_circ_close = protocolStatsWindow[protocolStatsWindow.length - 1].zephrsv_circ ?? 0;
+
+      // zyield_circ
+      aggregatedData.zyield_circ_open = protocolStatsWindow[0].zyield_circ ?? 0;
+      aggregatedData.zyield_circ_high = protocolStatsWindow[0].zyield_circ ?? 0;
+      aggregatedData.zyield_circ_low = protocolStatsWindow[0].zyield_circ ?? 0;
+      aggregatedData.zyield_circ_close = protocolStatsWindow[protocolStatsWindow.length - 1].zyield_circ ?? 0;
 
       // assets
       aggregatedData.assets_open = protocolStatsWindow[0].assets ?? 0;
@@ -564,14 +653,23 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
         aggregatedData.stable_ma_high = Math.max(aggregatedData.stable_ma_high, blockData.stable_ma);
         aggregatedData.stable_ma_low = Math.min(aggregatedData.stable_ma_low, blockData.stable_ma);
 
+        aggregatedData.zyield_price_high = Math.max(aggregatedData.zyield_price_high, blockData.yield_price);
+        aggregatedData.zyield_price_low = Math.min(aggregatedData.zyield_price_low, blockData.yield_price);
+
         aggregatedData.zeph_in_reserve_high = Math.max(aggregatedData.zeph_in_reserve_high, blockData.zeph_in_reserve);
         aggregatedData.zeph_in_reserve_low = Math.min(aggregatedData.zeph_in_reserve_low, blockData.zeph_in_reserve);
+
+        aggregatedData.zsd_in_yield_reserve_high = Math.max(aggregatedData.zsd_in_yield_reserve_high, blockData.zsd_in_yield_reserve);
+        aggregatedData.zsd_in_yield_reserve_low = Math.min(aggregatedData.zsd_in_yield_reserve_low, blockData.zsd_in_yield_reserve);
 
         aggregatedData.zephusd_circ_high = Math.max(aggregatedData.zephusd_circ_high, blockData.zephusd_circ);
         aggregatedData.zephusd_circ_low = Math.min(aggregatedData.zephusd_circ_low, blockData.zephusd_circ);
 
         aggregatedData.zephrsv_circ_high = Math.max(aggregatedData.zephrsv_circ_high, blockData.zephrsv_circ);
         aggregatedData.zephrsv_circ_low = Math.min(aggregatedData.zephrsv_circ_low, blockData.zephrsv_circ);
+
+        aggregatedData.zyield_circ_high = Math.max(aggregatedData.zyield_circ_high, blockData.zyield_circ);
+        aggregatedData.zyield_circ_low = Math.min(aggregatedData.zyield_circ_low, blockData.zyield_circ);
 
         aggregatedData.assets_high = Math.max(aggregatedData.assets_high, blockData.assets);
         aggregatedData.assets_low = Math.min(aggregatedData.assets_low, blockData.assets);
@@ -599,8 +697,10 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
 
         // counters
         aggregatedData.conversion_transactions_count += blockData.conversion_transactions_count;
+        aggregatedData.yield_conversion_transactions_count += blockData.yield_conversion_transactions_count;
         aggregatedData.mint_reserve_count += blockData.mint_reserve_count;
         aggregatedData.mint_reserve_volume += blockData.mint_reserve_volume;
+        aggregatedData.fees_zephrsv += blockData.fees_zephrsv;
         aggregatedData.redeem_reserve_count += blockData.redeem_reserve_count;
         aggregatedData.redeem_reserve_volume += blockData.redeem_reserve_volume;
         aggregatedData.fees_zephusd += blockData.fees_zephusd;
@@ -609,6 +709,13 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
         aggregatedData.redeem_stable_count += blockData.redeem_stable_count;
         aggregatedData.redeem_stable_volume += blockData.redeem_stable_volume;
         aggregatedData.fees_zeph += blockData.fees_zeph;
+        aggregatedData.mint_yield_count += blockData.mint_yield_count;
+        aggregatedData.mint_yield_volume += blockData.mint_yield_volume;
+        aggregatedData.fees_zyield += blockData.fees_zyield;
+        aggregatedData.redeem_yield_count += blockData.redeem_yield_count;
+        aggregatedData.redeem_yield_volume += blockData.redeem_yield_volume;
+        aggregatedData.fees_zephusd_yield += blockData.fees_zephusd_yield;
+
       });
 
       // Store the aggregated data for the hour

@@ -66,6 +66,7 @@ interface GetBlockResponse {
         spot: number;
         stable: number;
         stable_ma: number;
+        yield_price?: number;
         timestamp: number;
       };
       reward: number;

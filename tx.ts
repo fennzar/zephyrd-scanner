@@ -2,7 +2,9 @@ import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
 
 const DEATOMIZE = 10 ** -12;
+const HF_V1_BLOCK_HEIGHT = 89300;
 const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
+const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 async function getRedisHeight() {
   const height = await redis.get("height_txs");
@@ -28,13 +30,15 @@ async function saveBlockRewardInfo(
   height: number,
   miner_reward: number,
   governance_reward: number,
-  reserve_reward: number
+  reserve_reward: number,
+  yield_reward: number,
 ) {
   let block_reward_info = {
     height: height,
     miner_reward: miner_reward,
     governance_reward: governance_reward,
     reserve_reward: reserve_reward,
+    yield_reward: yield_reward,
   };
 
   const block_reward_info_json = JSON.stringify(block_reward_info);
@@ -44,6 +48,7 @@ async function saveBlockRewardInfo(
   await redis.hincrbyfloat("totals", "miner_reward", miner_reward);
   await redis.hincrbyfloat("totals", "governance_reward", governance_reward);
   await redis.hincrbyfloat("totals", "reserve_reward", reserve_reward);
+  await redis.hincrbyfloat("totals", "yield_reward", yield_reward);
 }
 
 async function processTx(hash: string) {
@@ -76,14 +81,46 @@ async function processTx(hash: string) {
 
     // Miner reward transaction!
     const miner_reward = tx_amount * DEATOMIZE;
-    const governance_reward = vout[1]?.amount * DEATOMIZE;
-    let reserve_reward = 0;
-    if (block_height >= 89300) {
-      // HF block
-      reserve_reward = (miner_reward / 0.75) * 0.2;
+
+    // Prior to HF V6 / Version 2 - ZSD Yield.
+    if (block_height < VERSION_2_HF_V6_BLOCK_HEIGHT) {
+
+      // v0 -> v1 DJED Implementation
+      let log_message = "\tBlock reward transaction!";
+      // Miner Reward = 95%
+      // Governance Reward = 5%
+      const governance_reward = vout[1]?.amount * DEATOMIZE;
+
+      let reserve_reward = 0;
+      const yield_reward = 0
+      if (block_height >= HF_V1_BLOCK_HEIGHT) {
+        log_message += " v1 DJED Implementation";
+        // Miner Reward = 95% -> 75%
+        // Governance Reward = 5%
+        // Reserve Reward = 0% -> 20% (added)
+        // Yield Reward = 0% (not implemented)
+        const total_reward = miner_reward / 0.75;
+        reserve_reward = total_reward * 0.2;
+      }
+      console.log(log_message);
+      await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward, yield_reward);
     }
-    console.log("\tBlock reward transaction!");
-    await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward);
+
+    // Post HF V6 / Version 2 - ZSD Yield.
+    if (block_height >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
+      // Miner reward = 75% -> 65%
+      // Reserve Reward = 20% -> 30%
+      // Governance Reward = 5% -> 0% (removed)
+      // Yield Reward = 0% -> 5% (added)
+
+      const total_reward = miner_reward / 0.65;
+      const governance_reward = 0;
+      const reserve_reward = total_reward * 0.3;
+      const yield_reward = total_reward * 0.05;
+
+      console.log("\tBlock reward transaction! v2 ZSD Yield");
+      await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward, yield_reward);
+    }
     return;
   }
 
@@ -114,7 +151,7 @@ async function processTx(hash: string) {
     return;
   }
 
-  const { spot, moving_average, reserve, reserve_ma, stable, stable_ma } = relevant_pr;
+  const { spot, moving_average, reserve, reserve_ma, stable, stable_ma, yield_price } = relevant_pr;
 
   let conversion_rate = 0;
   let from_asset = "";
@@ -133,10 +170,12 @@ async function processTx(hash: string) {
       to_asset = "ZEPHUSD";
       to_amount = amount_minted * DEATOMIZE;
 
-      const mint_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001;
-
+      const mint_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001; // 2% -> 0.1%
+      // conversion fee is always "paid" in terms of the converted to_asset, in a form of a loss on the resulting converted value (to_amount)
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.98) * mint_stable_conversion_fee;
+      // to_amount is the net amount recieved, conversion fee needs to be back calculated
+      conversion_fee_amount = (to_amount / (1 - mint_stable_conversion_fee)) * mint_stable_conversion_fee;
+      // transaction fee is always paid in the from_asset. Thinking: Designed as such as you always have some of this asset since you are converting from it.
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "mint_stable_count", 1);
       await redis.hincrbyfloat("totals", "mint_stable_volume", to_amount);
@@ -150,10 +189,10 @@ async function processTx(hash: string) {
       to_asset = "ZEPH";
       to_amount = amount_minted * DEATOMIZE;
 
-      const redeem_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001;
+      const redeem_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001; // 2% -> 0.1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.98) * redeem_stable_conversion_fee;
+      conversion_fee_amount = (to_amount / (1 - redeem_stable_conversion_fee)) * redeem_stable_conversion_fee;
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "redeem_stable_count", 1);
       await redis.hincrbyfloat("totals", "redeem_stable_volume", to_amount);
@@ -167,14 +206,15 @@ async function processTx(hash: string) {
       to_asset = "ZEPHRSV";
       to_amount = amount_minted * DEATOMIZE;
 
-      const mint_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01;
+      const mint_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01; // 0% -> 1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.99) * mint_reserve_conversion_fee;
+      conversion_fee_amount = (to_amount / 1 - mint_reserve_conversion_fee) * mint_reserve_conversion_fee;
 
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "mint_reserve_count", 1);
       await redis.hincrbyfloat("totals", "mint_reserve_volume", to_amount);
+      await redis.hincrbyfloat("totals", "fees_zephrsv", conversion_fee_amount);
       break;
 
     case "redeem_reserve":
@@ -184,15 +224,52 @@ async function processTx(hash: string) {
       to_asset = "ZEPH";
       to_amount = amount_minted * DEATOMIZE;
 
-      const redeem_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01;
+      const redeem_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.01; // 2% -> 1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 0.98) * redeem_reserve_conversion_fee;
+      conversion_fee_amount = (to_amount / 1 - redeem_reserve_conversion_fee) * redeem_reserve_conversion_fee;
       tx_fee_asset = from_asset;
       await redis.hincrbyfloat("totals", "redeem_reserve_count", 1);
       await redis.hincrbyfloat("totals", "redeem_reserve_volume", to_amount);
       await redis.hincrbyfloat("totals", "fees_zeph", conversion_fee_amount);
       break;
+
+    case "mint_yield":
+      conversion_rate = yield_price;
+      from_asset = "ZEPHUSD";
+      from_amount = amount_burnt * DEATOMIZE;
+      to_asset = "ZYIELD";
+      to_amount = amount_minted * DEATOMIZE;
+
+      const mint_yield_conversion_fee = 0.001; // 0.1%
+
+      conversion_fee_asset = to_asset;
+      conversion_fee_amount = (to_amount / 1 - mint_yield_conversion_fee) * mint_yield_conversion_fee;
+      tx_fee_asset = from_asset;
+
+      await redis.hincrbyfloat("totals", "mint_yield_count", 1);
+      await redis.hincrbyfloat("totals", "mint_yield_volume", to_amount); // ZYS
+      await redis.hincrbyfloat("totals", "fees_zyield", conversion_fee_amount); // effective loss in ZYS for minting ZYIELD
+      break;
+
+    case "redeem_yield":
+      conversion_rate = yield_price;
+      from_asset = "ZYIELD";
+      from_amount = amount_burnt * DEATOMIZE;
+      to_asset = "ZEPHUSD";
+      to_amount = amount_minted * DEATOMIZE;
+
+      const redeem_yield_conversion_fee = 0.001; // 0.1%
+
+      conversion_fee_asset = to_asset;
+      conversion_fee_amount = (to_amount / 1 - redeem_yield_conversion_fee) * redeem_yield_conversion_fee;
+      tx_fee_asset = from_asset;
+
+      await redis.hincrbyfloat("totals", "redeem_yield_count", 1);
+      await redis.hincrbyfloat("totals", "redeem_yield_volume", to_amount); // ZEPHUSD
+      await redis.hincrbyfloat("totals", "fees_zephusd_yield", conversion_fee_amount); // effective loss in ZEPHUSD for redeeming ZYIELD
+      break;
+
   }
 
   const tx_fee_amount = rct_signatures.txnFee * DEATOMIZE;
@@ -223,6 +300,8 @@ function determineConversionType(input: string, outputs: string[]): string {
   if (input === "ZEPHUSD" && outputs.includes("ZEPH")) return "redeem_stable";
   if (input === "ZEPH" && outputs.includes("ZEPHRSV")) return "mint_reserve";
   if (input === "ZEPHRSV" && outputs.includes("ZEPH")) return "redeem_reserve";
+  if (input === "ZEPHUSD" && outputs.includes("ZYIELD")) return "mint_yield";
+  if (input === "ZYIELD" && outputs.includes("ZEPHUSD")) return "redeem_yield";
   return "na";
 }
 
