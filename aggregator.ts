@@ -207,7 +207,7 @@ async function aggregateBlock(height_to_process: number) {
     yield_price: pr ? pr.yield_price : 0, // Get yield price from pricing record
     zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
     zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
-    zeph_circ: prevBlockData.zeph_circ || 0, // Initialize from previous block or 0
+    zeph_circ: prevBlockData.zeph_circ || 1965112.77028345, // Initialize from previous block or circulating supply at HF_VERSION_1_HEIGHT - 1
     zephusd_circ: prevBlockData.zephusd_circ || 0, // Initialize from previous block or 0
     zephrsv_circ: prevBlockData.zephrsv_circ || 0, // Initialize from previous block or 0
     zyield_circ: prevBlockData.zyield_circ || 0, // Initialize from previous block or 0
