@@ -4,7 +4,7 @@ import { aggregate } from "./aggregator";
 import { scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
 import { getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
-import { determineHistoricalReturns, getHistoricalReturnsFromRedis } from "./yield";
+import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
 
 let mainRunning = false;
 async function main() {
@@ -13,10 +13,8 @@ async function main() {
     return;
   }
 
-  // WORKING ON YIELD PROJECTION
 
   mainRunning = true;
-  console.log("Working on yield projection");
   await aggregate(); // needs to be first initally
   console.log("--------------------");
   await scanPricingRecords();
@@ -30,6 +28,8 @@ async function main() {
   const totals = await getTotalsFromRedis();
   console.log(totals);
   console.log("--------------------");
+  await determineHistoricalReturns()
+  await determineProjectedReturns();
   mainRunning = false;
 }
 
@@ -77,6 +77,22 @@ app.get("/historicalreturns", async (req: Request, res: Response) => {
 
   try {
     const result = await getHistoricalReturnsFromRedis(test);
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error retrieving historical returns:", error);
+    res.status(500).send("Internal server error");
+  }
+
+});
+
+app.get("/projectedreturns", async (req: Request, res: Response) => {
+  console.log(`zephyrdscanner /projectedreturns called`);
+  console.log(req.query);
+
+  const test = !!req.query.test // optional query param
+
+  try {
+    const result = await getProjectedReturnsFromRedis(test);
     res.status(200).json(result);
   } catch (error) {
     console.error("Error retrieving historical returns:", error);

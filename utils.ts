@@ -182,6 +182,118 @@ function formatZrangeResults(results: any) {
   return formattedResults;
 }
 
+export interface ProtocolStats {
+  // Prices
+  spot_open: number;
+  spot_close: number;
+  spot_high: number;
+  spot_low: number;
+  moving_average_open: number;
+  moving_average_close: number;
+  moving_average_high: number;
+  moving_average_low: number;
+  reserve_open: number;
+  reserve_close: number;
+  reserve_high: number;
+  reserve_low: number;
+  reserve_ma_open: number;
+  reserve_ma_close: number;
+  reserve_ma_high: number;
+  reserve_ma_low: number;
+  stable_open: number;
+  stable_close: number;
+  stable_high: number;
+  stable_low: number;
+  stable_ma_open: number;
+  stable_ma_close: number;
+  stable_ma_high: number;
+  stable_ma_low: number;
+  zyield_price_open: number;
+  zyield_price_close: number;
+  zyield_price_high: number;
+  zyield_price_low: number;
+
+  // Circulating Reserve Amounts
+  zeph_in_reserve_open: number;
+  zeph_in_reserve_close: number;
+  zeph_in_reserve_high: number;
+  zeph_in_reserve_low: number;
+  zsd_in_yield_reserve_open: number;
+  zsd_in_yield_reserve_close: number;
+  zsd_in_yield_reserve_high: number;
+  zsd_in_yield_reserve_low: number;
+
+  // Circulating Supply
+  zeph_circ_open: number;
+  zeph_circ_close: number;
+  zeph_circ_high: number;
+  zeph_circ_low: number;
+  zephusd_circ_open: number;
+  zephusd_circ_close: number;
+  zephusd_circ_high: number;
+  zephusd_circ_low: number;
+  zephrsv_circ_open: number;
+  zephrsv_circ_close: number;
+  zephrsv_circ_high: number;
+  zephrsv_circ_low: number;
+  zyield_circ_open: number;
+  zyield_circ_close: number;
+  zyield_circ_high: number;
+  zyield_circ_low: number;
+
+  // Djed Mechanics Stats
+  assets_open: number;
+  assets_close: number;
+  assets_high: number;
+  assets_low: number;
+  assets_ma_open: number;
+  assets_ma_close: number;
+  assets_ma_high: number;
+  assets_ma_low: number;
+  liabilities_open: number;
+  liabilities_close: number;
+  liabilities_high: number;
+  liabilities_low: number;
+  equity_open: number;
+  equity_close: number;
+  equity_high: number;
+  equity_low: number;
+  equity_ma_open: number;
+  equity_ma_close: number;
+  equity_ma_high: number;
+  equity_ma_low: number;
+  reserve_ratio_open: number;
+  reserve_ratio_close: number;
+  reserve_ratio_high: number;
+  reserve_ratio_low: number;
+  reserve_ratio_ma_open: number;
+  reserve_ratio_ma_close: number;
+  reserve_ratio_ma_high: number;
+  reserve_ratio_ma_low: number;
+
+  // Conversion Stats
+  conversion_transactions_count: number;
+  yield_conversion_transactions_count: number;
+  mint_reserve_count: number;
+  mint_reserve_volume: number;
+  fees_zephrsv: number;
+  redeem_reserve_count: number;
+  redeem_reserve_volume: number;
+  fees_zephusd: number;
+  mint_stable_count: number;
+  mint_stable_volume: number;
+  redeem_stable_count: number;
+  redeem_stable_volume: number;
+  fees_zeph: number;
+  mint_yield_count: number;
+  mint_yield_volume: number;
+  fees_zyield: number;
+  redeem_yield_count: number;
+  redeem_yield_volume: number;
+  fees_zephusd_yield: number;
+}
+
+
 // Example usage
 
 // (async () => {
