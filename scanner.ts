@@ -25,11 +25,13 @@ async function main() {
   console.log("--------------------");
   await determineHistoricalReturns();
   console.log("--------------------");
+  await determineHistoricalReturns()
+  console.log("--------------------");
+  await determineProjectedReturns();
+  console.log("--------------------");
   const totals = await getTotalsFromRedis();
   console.log(totals);
   console.log("--------------------");
-  await determineHistoricalReturns()
-  await determineProjectedReturns();
   mainRunning = false;
 }
 

@@ -172,11 +172,11 @@ export async function determineHistoricalReturns() {
 
 // Projected Returns:
 export async function determineProjectedReturns(test = false) {
-    async function getStats(currentBlockHeight: Number, test = false) {
+    async function getStats(test = false) {
         if (test) {
             // return dummy protocol stats for testing route
             const dummyProtocolStats = {
-                currentBlockHeight: 360000,
+                currentBlockHeight: VERSION_2_HF_V6_BLOCK_HEIGHT,
                 zeph_price: 1.34,
                 zys_price: 1.00,
                 zsd_circ: 449_132.29,
@@ -187,21 +187,29 @@ export async function determineProjectedReturns(test = false) {
             return dummyProtocolStats;
         }
 
-        // We need to calculate the block rewards for each block and save this info to redis if we don't already have it.
+
+        const currentBlockHeight = await getCurrentBlockHeight();
         const currentProtocolStats = await redis.hget("protocol_stats", currentBlockHeight.toString());
         const currentProtocolStatsData: ProtocolStats = currentProtocolStats ? JSON.parse(currentProtocolStats) : {};
         if (!currentProtocolStatsData) {
             console.log("Error in determineProjectedReturns getting currentProtocolStatsData, ending processing projected returns");
-            return { currentBlockHeight: currentBlockHeight, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
+            return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
         }
 
         const zeph_price = currentProtocolStatsData.spot_close;
-        const zys_price = currentProtocolStatsData.zyield_price_close;
         const zsd_circ = currentProtocolStatsData.zephusd_circ_close;
-        const zys_circ = currentProtocolStatsData.zyield_circ_close;
-
-        const zsd_in_reserve = currentProtocolStatsData.zsd_in_yield_reserve_close;
         const reserve_ratio = currentProtocolStatsData.reserve_ratio_close;
+
+        // Pre 2.0.0 fork height these will be 0
+        let zys_price = currentProtocolStatsData.zyield_price_close;
+        let zys_circ = currentProtocolStatsData.zyield_circ_close;
+        let zsd_in_reserve = currentProtocolStatsData.zsd_in_yield_reserve_close;
+
+        if (currentBlockHeight < VERSION_2_HF_V6_BLOCK_HEIGHT) {
+            zys_price = 1;
+            zys_circ = zsd_circ / 2;
+            zsd_in_reserve = zsd_circ / 2;
+        }
 
         return { currentBlockHeight, zeph_price, zys_price, zsd_circ, zys_circ, zsd_in_reserve, reserve_ratio };
     }
@@ -222,19 +230,8 @@ export async function determineProjectedReturns(test = false) {
     // We can determine a high competition state where a higher percentage of zsd is staked (compared to current, up to 100%) and the reserve ratio is low
     // We can determine a low competition state where a lower percentage of zsd is staked (compared to current, down to say 50%) and the reserve ratio is high
 
-    let currentBlockHeight = 0;
-    if (!test) {
-        currentBlockHeight = await getCurrentBlockHeight();
-        if (currentBlockHeight < VERSION_2_HF_V6_BLOCK_HEIGHT) {
-            console.log("BEFORE 2.0.0 FORK HEIGHT - we have to set test to true");
-            test = true;
-            currentBlockHeight = VERSION_2_HF_V6_BLOCK_HEIGHT
-        }
-    } else {
-        currentBlockHeight = VERSION_2_HF_V6_BLOCK_HEIGHT;
-    }
 
-    const { zeph_price, zys_price, zsd_circ, zys_circ, zsd_in_reserve, reserve_ratio } = await getStats(currentBlockHeight, test);
+    const { currentBlockHeight, zeph_price, zys_price, zsd_circ, zys_circ, zsd_in_reserve, reserve_ratio } = await getStats(test);
     // check none of the values are 0
     if (!currentBlockHeight || !zeph_price || !zys_price || !zsd_circ || !zys_circ || !zsd_in_reserve || !reserve_ratio) {
         console.log("Error in determineProjectedReturns getting stats, ending processing projected returns");
@@ -489,6 +486,11 @@ export async function determineProjectedReturns(test = false) {
 
 
 async function getPrecalculatedBlockRewards(current_block_height: number) {
+
+    // For pre 2.0.0 fork to do the projections before the fork
+    if (current_block_height < VERSION_2_HF_V6_BLOCK_HEIGHT) {
+        current_block_height = VERSION_2_HF_V6_BLOCK_HEIGHT;
+    }
     // Calculate the block rewards for each block and save this info to redis if we don't already have it
     // We need to calculate over 1 year in advance to get the projected returns for 1 year.
     // We may as well calculate 5 years in advance.
