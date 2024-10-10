@@ -1,7 +1,7 @@
 // Take all data and aggregate into a single redis key done by block, hourly and daily.
 
 import redis from "./redis";
-import { getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly, getRedisTransaction, setRedisHeight } from "./utils";
+import { AggregatedData, ProtocolStats, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly, getRedisTransaction, setRedisHeight } from "./utils";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -144,7 +144,7 @@ async function aggregateBlock(height_to_process: number) {
   let prevBlockData = prevBlockDataJson ? JSON.parse(prevBlockDataJson) : {};
 
   // initialize the block data
-  let blockData = {
+  let blockData: ProtocolStats = {
     block_height: height_to_process,
     block_timestamp: pr ? pr.timestamp : null, // Get timestamp from pricing record
     spot: pr ? pr.spot : 0, // Get spot from pricing record
@@ -338,7 +338,7 @@ async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: num
     const windowEnd = windowStart + timestampWindow;
     // Increment the window index
     windowIndex++;
-    let aggregatedData = {
+    let aggregatedData: AggregatedData = {
       // Prices
       spot_open: 0,
       spot_close: 0,

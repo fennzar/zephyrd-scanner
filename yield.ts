@@ -196,16 +196,17 @@ export async function determineProjectedReturns(test = false) {
             return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
         }
 
-        const zeph_price = currentProtocolStatsData.spot_close;
-        const zsd_circ = currentProtocolStatsData.zephusd_circ_close;
-        const reserve_ratio = currentProtocolStatsData.reserve_ratio_close;
+        const zeph_price = currentProtocolStatsData.spot
+        const zsd_circ = currentProtocolStatsData.zephusd_circ;
+        const reserve_ratio = currentProtocolStatsData.reserve_ratio;
 
         // Pre 2.0.0 fork height these will be 0
-        let zys_price = currentProtocolStatsData.zyield_price_close;
-        let zys_circ = currentProtocolStatsData.zyield_circ_close;
-        let zsd_in_reserve = currentProtocolStatsData.zsd_in_yield_reserve_close;
+        let zys_price = currentProtocolStatsData.yield_price;
+        let zys_circ = currentProtocolStatsData.zyield_circ;
+        let zsd_in_reserve = currentProtocolStatsData.zsd_in_yield_reserve;
 
         if (currentBlockHeight < VERSION_2_HF_V6_BLOCK_HEIGHT) {
+            // Setting some values in order to calculate projected returns pre-fork
             zys_price = 1;
             zys_circ = zsd_circ / 2;
             zsd_in_reserve = zsd_circ / 2;

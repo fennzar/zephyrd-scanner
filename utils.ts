@@ -183,6 +183,53 @@ function formatZrangeResults(results: any) {
 }
 
 export interface ProtocolStats {
+  block_height: number;
+  block_timestamp: number | null; // Timestamp or null if not available
+  spot: number;
+  moving_average: number;
+  reserve: number;
+  reserve_ma: number;
+  stable: number;
+  stable_ma: number;
+  yield_price: number;
+  zeph_in_reserve: number;
+  zsd_in_yield_reserve: number;
+  zeph_circ: number;
+  zephusd_circ: number;
+  zephrsv_circ: number;
+  zyield_circ: number;
+  assets: number;
+  assets_ma: number;
+  liabilities: number;
+  equity: number;
+  equity_ma: number;
+  reserve_ratio: number;
+  reserve_ratio_ma: number;
+  zsd_accrued_in_yield_reserve_from_yield_reward: number;
+  zsd_minted_for_yield: number;
+  conversion_transactions_count: number;
+  yield_conversion_transactions_count: number;
+  mint_reserve_count: number;
+  mint_reserve_volume: number;
+  fees_zephrsv: number;
+  redeem_reserve_count: number;
+  redeem_reserve_volume: number;
+  fees_zephusd: number;
+  mint_stable_count: number;
+  mint_stable_volume: number;
+  redeem_stable_count: number;
+  redeem_stable_volume: number;
+  fees_zeph: number;
+  mint_yield_count: number;
+  mint_yield_volume: number;
+  redeem_yield_count: number;
+  redeem_yield_volume: number;
+  fees_zephusd_yield: number;
+  fees_zyield: number;
+}
+
+
+export interface AggregatedData {
   // Prices
   spot_open: number;
   spot_close: number;
