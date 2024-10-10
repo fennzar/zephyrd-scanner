@@ -2,7 +2,7 @@
 // Yield Reserve circ, ZYS price and circ, yield conversions count and fees, are all available in /stats and are handled in aggregator.ts
 // This is for populating historical returns and projected returns.
 import redis from "./redis";
-import { ProtocolStats, getCurrentBlockHeight, getPricingRecordFromBlock } from "./utils";
+import { ProtocolStats, getCurrentBlockHeight, getPricingRecordFromBlock, getRedisHeight } from "./utils";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
@@ -20,7 +20,7 @@ export async function determineHistoricalReturns() {
     // -----------------------------------------------------------
 
     try {
-        const currentBlockHeight = await getCurrentBlockHeight();
+        const currentBlockHeight = await getRedisHeight();
 
         if (currentBlockHeight < VERSION_2_HF_V6_BLOCK_HEIGHT) {
             console.log("BEFORE 2.0.0 FORK HEIGHT");
@@ -188,7 +188,7 @@ export async function determineProjectedReturns(test = false) {
         }
 
 
-        const currentBlockHeight = await getCurrentBlockHeight();
+        const currentBlockHeight = await getRedisHeight();
         const currentProtocolStats = await redis.hget("protocol_stats", currentBlockHeight.toString());
         const currentProtocolStatsData: ProtocolStats = currentProtocolStats ? JSON.parse(currentProtocolStats) : {};
         if (!currentProtocolStatsData) {

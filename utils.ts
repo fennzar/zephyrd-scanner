@@ -293,6 +293,58 @@ export interface ProtocolStats {
   fees_zephusd_yield: number;
 }
 
+export async function getRedisHeight() {
+  const height = await redis.get("height_aggregator");
+  if (!height) {
+    return 0;
+  }
+  return parseInt(height);
+}
+
+export async function getRedisTimestampHourly() {
+  const height = await redis.get("timestamp_aggregator_hourly");
+  if (!height) {
+    return 0;
+  }
+  return parseInt(height);
+}
+
+export async function getRedisTimestampDaily() {
+  const height = await redis.get("timestamp_aggregator_daily");
+  if (!height) {
+    return 0;
+  }
+  return parseInt(height);
+}
+
+export async function setRedisHeight(height: number) {
+  await redis.set("height_aggregator", height);
+}
+
+export async function getRedisPricingRecord(height: number) {
+  const pr = await redis.hget("pricing_records", height.toString());
+  if (!pr) {
+    return null;
+  }
+  return JSON.parse(pr);
+}
+
+export async function getRedisBlockRewardInfo(height: number) {
+  const bri = await redis.hget("block_rewards", height.toString());
+  if (!bri) {
+    return null;
+  }
+  return JSON.parse(bri);
+}
+
+export async function getRedisTransaction(hash: string) {
+  const txs = await redis.hget("txs", hash);
+  if (!txs) {
+    return null;
+  }
+  return JSON.parse(txs);
+}
+
 
 // Example usage
 

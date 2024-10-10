@@ -1,7 +1,7 @@
 // Take all data and aggregate into a single redis key done by block, hourly and daily.
 
 import redis from "./redis";
-import { getCurrentBlockHeight } from "./utils";
+import { getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly, getRedisTransaction, setRedisHeight } from "./utils";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -11,57 +11,6 @@ const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
 
-async function getRedisHeight() {
-  const height = await redis.get("height_aggregator");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
-}
-
-async function getRedisTimestampHourly() {
-  const height = await redis.get("timestamp_aggregator_hourly");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
-}
-
-async function getRedisTimestampDaily() {
-  const height = await redis.get("timestamp_aggregator_daily");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
-}
-
-async function setRedisHeight(height: number) {
-  await redis.set("height_aggregator", height);
-}
-
-async function getRedisPricingRecord(height: number) {
-  const pr = await redis.hget("pricing_records", height.toString());
-  if (!pr) {
-    return null;
-  }
-  return JSON.parse(pr);
-}
-
-async function getRedisBlockRewardInfo(height: number) {
-  const bri = await redis.hget("block_rewards", height.toString());
-  if (!bri) {
-    return null;
-  }
-  return JSON.parse(bri);
-}
-
-async function getRedisTransaction(hash: string) {
-  const txs = await redis.hget("txs", hash);
-  if (!txs) {
-    return null;
-  }
-  return JSON.parse(txs);
-}
 
 // Function to get transaction hashes by block height
 async function getRedisTransactionHashesByBlock(blockHeight: number): Promise<string[]> {
