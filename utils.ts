@@ -444,7 +444,7 @@ export async function getLiveStats() {
     // get accurate circ from the explorer api
     // we can get current and previous circ amounts from the aggregated data to get 24h change
 
-    const currentBlockHeight = await getCurrentBlockHeight();
+    const currentBlockHeight = await getRedisHeight()
     const pr = await getPricingRecordFromBlock(currentBlockHeight);
 
     if (!pr) {
@@ -464,16 +464,15 @@ export async function getLiveStats() {
     const { zeph_circ, zsd_circ, zrs_circ, zys_circ } = await getCirculatingSuppliesFromExplorer();
 
     // to calcuate the 24hr circulating supply change we can use the aggregated data, most recent protocol stats and 720 records ago
-    const aggregatorHeight = await getRedisHeight();
     // Fetch previous block's data for initialization
-    const currentBlockProtocolStatsData = await redis.hget("protocol_stats", (aggregatorHeight).toString());
+    const currentBlockProtocolStatsData = await redis.hget("protocol_stats", (currentBlockHeight).toString());
     const currentBlockProtocolStats: ProtocolStats | null = currentBlockProtocolStatsData ? JSON.parse(currentBlockProtocolStatsData) : null;
 
-    const onedayagoBlockProtocolStatsData = await redis.hget("protocol_stats", (aggregatorHeight - 720).toString());
+    const onedayagoBlockProtocolStatsData = await redis.hget("protocol_stats", (currentBlockHeight - 720).toString());
     const onedayagoBlockProtocolStats: ProtocolStats | null = onedayagoBlockProtocolStatsData ? JSON.parse(onedayagoBlockProtocolStatsData) : null;
 
     if (!onedayagoBlockProtocolStats || !currentBlockProtocolStats) {
-      console.log(`getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${aggregatorHeight} & ${aggregatorHeight - 720}`);
+      console.log(`getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${currentBlockHeight} & ${currentBlockHeight - 720}`);
       return;
     }
 
