@@ -452,12 +452,15 @@ export async function getLiveStats() {
       return;
     }
 
-    const zeph_price = Number(pr.spot.toFixed(2));
-    const zsd_rate = Number(pr.stable.toFixed(2));
+    const DEATOMIZE = 10 ** -12;
+
+    const zeph_price = Number((pr.spot * DEATOMIZE).toFixed(2));
+    const zsd_rate = Number((pr.stable * DEATOMIZE).toFixed(2));
     const zsd_price = Number((zsd_rate * zeph_price).toFixed(2));
-    const zrs_rate = Number(pr.reserve.toFixed(2));
+    const zrs_rate = Number((pr.reserve * DEATOMIZE).toFixed(2));
     const zrs_price = Number((zrs_rate * zeph_price).toFixed(2));
-    const zys_price = Number(pr.yield_price?.toFixed(2)) ?? 1;
+    const zys_price = pr.yield_price ? Number((pr.yield_price * DEATOMIZE).toFixed(2)) : 1;
+
 
 
     // Fetch and destructure the circulating supply values
@@ -497,7 +500,9 @@ export async function getLiveStats() {
 
     return {
       zeph_price,
+      zsd_rate,
       zsd_price,
+      zrs_rate,
       zrs_price,
       zys_price,
       zeph_circ,
@@ -510,8 +515,8 @@ export async function getLiveStats() {
       zys_circ_daily_change,
       zeph_in_reserve,
       zeph_in_reserve_value,
-      zsd_in_yield_reserve,
       zeph_in_reserve_percent,
+      zsd_in_yield_reserve,
       zsd_in_yield_reserve_percent
     }
 
