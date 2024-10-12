@@ -392,6 +392,136 @@ export async function getRedisTransaction(hash: string) {
   return JSON.parse(txs);
 }
 
+async function getCirculatingSuppliesFromExplorer() {
+  try {
+    // Fetch Zeph circulating supply
+    const zephResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating');
+    const zeph_circ = Number(await zephResponse.json());
+
+    // Fetch ZSD circulating supply
+    const zsdResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zsd');
+    const zsd_circ = Number(await zsdResponse.json());
+
+    // Fetch ZRS circulating supply
+    const zrsResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zrs');
+    const zrs_circ = Number(await zrsResponse.json());
+
+    // Fetch ZYS circulating supply
+    const zysResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zys');
+    const zys_circ = Number(await zysResponse.json());
+
+    // Logging all the results
+    console.log('Zeph Circulating Supply:', zeph_circ);
+    console.log('ZSD Circulating Supply:', zsd_circ);
+    console.log('ZRS Circulating Supply:', zrs_circ);
+    console.log('ZYS Circulating Supply:', zys_circ);
+
+    return {
+      zeph_circ,
+      zsd_circ,
+      zrs_circ,
+      zys_circ
+    };
+
+  } catch (error) {
+    console.error('Error fetching circulating supplies:', error);
+    return {
+      zeph_circ: 0,
+      zsd_circ: 0,
+      zrs_circ: 0,
+      zys_circ: 0
+    }
+  }
+}
+
+
+
+export async function getLiveStats() {
+  try {
+
+
+    // we can get prices from the pr?
+    // get accurate circ from the explorer api
+    // we can get current and previous circ amounts from the aggregated data to get 24h change
+
+    const currentBlockHeight = await getCurrentBlockHeight();
+    const pr = await getPricingRecordFromBlock(currentBlockHeight);
+
+    if (!pr) {
+      console.log(`getLiveStats: No pricing record found for block ${currentBlockHeight}`);
+      return;
+    }
+
+    const zeph_price = Number(pr.spot.toFixed(2));
+    const zsd_rate = Number(pr.stable.toFixed(2));
+    const zsd_price = Number((zsd_rate * zeph_price).toFixed(2));
+    const zrs_rate = Number(pr.reserve.toFixed(2));
+    const zrs_price = Number((zrs_rate * zeph_price).toFixed(2));
+    const zys_price = Number(pr.yield_price?.toFixed(2)) ?? 1;
+
+
+    // Fetch and destructure the circulating supply values
+    const { zeph_circ, zsd_circ, zrs_circ, zys_circ } = await getCirculatingSuppliesFromExplorer();
+
+    // to calcuate the 24hr circulating supply change we can use the aggregated data, most recent protocol stats and 720 records ago
+    const aggregatorHeight = await getRedisHeight();
+    // Fetch previous block's data for initialization
+    const currentBlockProtocolStatsData = await redis.hget("protocol_stats", (aggregatorHeight).toString());
+    const currentBlockProtocolStats: ProtocolStats | null = currentBlockProtocolStatsData ? JSON.parse(currentBlockProtocolStatsData) : null;
+
+    const onedayagoBlockProtocolStatsData = await redis.hget("protocol_stats", (aggregatorHeight - 720).toString());
+    const onedayagoBlockProtocolStats: ProtocolStats | null = onedayagoBlockProtocolStatsData ? JSON.parse(onedayagoBlockProtocolStatsData) : null;
+
+    if (!onedayagoBlockProtocolStats || !currentBlockProtocolStats) {
+      console.log(`getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${aggregatorHeight} & ${aggregatorHeight - 720}`);
+      return;
+    }
+
+    // We don't use the accurate circulating supply from the explorer api as there may be an issue with the aggregated data
+    const zeph_circ_daily_change = currentBlockProtocolStats.zeph_circ - onedayagoBlockProtocolStats.zeph_circ;
+    const zsd_circ_daily_change = currentBlockProtocolStats.zephusd_circ - onedayagoBlockProtocolStats.zephusd_circ;
+    const zrs_circ_daily_change = currentBlockProtocolStats.zephrsv_circ - onedayagoBlockProtocolStats.zephrsv_circ;
+    const zys_circ_daily_change = currentBlockProtocolStats.zyield_circ - onedayagoBlockProtocolStats.zyield_circ;
+
+    if (zeph_circ_daily_change < 0) {
+      console.log(`getLiveStats: zeph_circ_daily_change is negative: ${zeph_circ_daily_change}`);
+    }
+
+    const zeph_in_reserve = currentBlockProtocolStats.zeph_in_reserve;
+    const zeph_in_reserve_value = zeph_in_reserve * zeph_price;
+    const zsd_in_yield_reserve = currentBlockProtocolStats.zsd_in_yield_reserve;
+
+
+    const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
+    const zsd_in_yield_reserve_percent = zsd_in_yield_reserve / zsd_circ;
+
+
+    return {
+      zeph_price,
+      zsd_price,
+      zrs_price,
+      zys_price,
+      zeph_circ,
+      zsd_circ,
+      zrs_circ,
+      zys_circ,
+      zeph_circ_daily_change,
+      zsd_circ_daily_change,
+      zrs_circ_daily_change,
+      zys_circ_daily_change,
+      zeph_in_reserve,
+      zeph_in_reserve_value,
+      zsd_in_yield_reserve,
+      zeph_in_reserve_percent,
+      zsd_in_yield_reserve_percent
+    }
+
+  } catch (error) {
+    console.error('Error fetching live stats:', error);
+    return;
+  }
+}
+
 
 // Example usage
 

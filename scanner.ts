@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { aggregate } from "./aggregator";
 import { scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
-import { getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
+import { getLiveStats, getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
 import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
 
 let mainRunning = false;
@@ -12,7 +12,6 @@ async function main() {
     console.log("Main already running, skipping this run");
     return;
   }
-
 
   mainRunning = true;
   await aggregate(); // needs to be first initally
@@ -101,6 +100,17 @@ app.get("/projectedreturns", async (req: Request, res: Response) => {
     res.status(500).send("Internal server error");
   }
 
+});
+
+app.get("/livestats", async (_, res: Response) => {
+  console.log(`zephyrdscanner /livestats called`);
+  try {
+    const result = await getLiveStats();
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error retrieving live stats:", error);
+    res.status(500).send("Internal server error");
+  }
 });
 
 app.listen(port, () => {
