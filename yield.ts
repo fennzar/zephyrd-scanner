@@ -187,16 +187,17 @@ export async function determineHistoricalReturns() {
 // Projected Returns:
 export async function determineProjectedReturns(test = false) {
     async function getStats(test = false) {
+        test = true
         if (test) {
             // return dummy protocol stats for testing route
             const dummyProtocolStats = {
                 currentBlockHeight: VERSION_2_HF_V6_BLOCK_HEIGHT,
-                zeph_price: 1.34,
+                zeph_price: 1.40,
                 zys_price: 1.00,
                 zsd_circ: 449_132.29,
-                zys_circ: 200_000,
-                zsd_in_reserve: 200_000,
-                reserve_ratio: 5.03,
+                zys_circ: 238_861,
+                zsd_in_reserve: 239_119,
+                reserve_ratio: 5.38,
             };
             return dummyProtocolStats;
         }

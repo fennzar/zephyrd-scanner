@@ -491,7 +491,10 @@ export async function getLiveStats() {
 
     const zeph_in_reserve = currentBlockProtocolStats.zeph_in_reserve;
     const zeph_in_reserve_value = zeph_in_reserve * zeph_price;
-    const zsd_in_yield_reserve = currentBlockProtocolStats.zsd_in_yield_reserve;
+    // ERROR CAUSED FROM AGGREGATED DATA/SCANNER STUFF!
+    // const zsd_in_yield_reserve = currentBlockProtocolStats.zsd_in_yield_reserve; 
+    // Hard coding this value temporarily
+    const zsd_in_yield_reserve = 239_119
 
 
     const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
