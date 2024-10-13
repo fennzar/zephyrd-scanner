@@ -55,6 +55,13 @@ export async function determineHistoricalReturns() {
 
         if (!previousPricingRecord || !onedayagoPricingRecord || !oneweekagoPricingRecord || !onemonthagoPricingRecord || !threemonthsagoPricingRecord || !oneyearagoPricingRecord) {
             console.log("Missing pricing records, ending processing historical returns");
+            console.log("--------------------");
+            console.log("Current Pricing Record:");
+            console.log(currentPricingRecord);
+            console.log("--------------------");
+            console.log("Previous Pricing Record:");
+            console.log(previousPricingRecord);
+            console.log("--------------------");
             return;
         }
 
