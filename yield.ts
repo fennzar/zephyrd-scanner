@@ -71,7 +71,7 @@ export async function determineHistoricalReturns() {
         const onemonthagoZYSPrice = onemonthagoPricingRecord.yield_price;
         const threemonthsagoZYSPrice = threemonthsagoPricingRecord.yield_price;
         const oneyearagoZYSPrice = oneyearagoPricingRecord.yield_price;
-        const initialZYSPrice = 1; // This is the initial price of ZYS in ZSD at the start of the ZSD Yield Update at block 360000.
+        const initialZYSPrice = 1000000000000; // This is the initial price of ZYS in ZSD at the start of the ZSD Yield Update at block 360000.
 
         if (!previousZYSPrice || !onedayagoZYSPrice || !oneweekagoZYSPrice || !onemonthagoZYSPrice || !threemonthsagoZYSPrice || !oneyearagoZYSPrice) {
             console.log("Missing ZYS prices, ending processing historical returns");
