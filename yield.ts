@@ -46,12 +46,12 @@ export async function determineHistoricalReturns() {
         // get the "yield_price" from the pricing records for the block heights, we could have missing rates for some pricing records although it is unlikely.
         // for now if we get any missing pricing records we will just end the processing to wait until the next run to update redis yield info.
 
-        const previousPricingRecord = await getPricingRecordFromBlock(previousBlockHeight);
-        const onedayagoPricingRecord = await getPricingRecordFromBlock(onedayagoBlockHeight);
-        const oneweekagoPricingRecord = await getPricingRecordFromBlock(oneweekagoBlockHeight);
-        const onemonthagoPricingRecord = await getPricingRecordFromBlock(onemonthagoBlockHeight);
-        const threemonthsagoPricingRecord = await getPricingRecordFromBlock(threemonthsagoBlockHeight);
-        const oneyearagoPricingRecord = await getPricingRecordFromBlock(oneyearagoBlockHeight);
+        const previousPricingRecord = await getPricingRecordFromBlock(Math.max(previousBlockHeight, VERSION_2_HF_V6_BLOCK_HEIGHT));
+        const onedayagoPricingRecord = await getPricingRecordFromBlock(Math.max(onedayagoBlockHeight, VERSION_2_HF_V6_BLOCK_HEIGHT));
+        const oneweekagoPricingRecord = await getPricingRecordFromBlock(Math.max(oneweekagoBlockHeight, VERSION_2_HF_V6_BLOCK_HEIGHT));
+        const onemonthagoPricingRecord = await getPricingRecordFromBlock(Math.max(onemonthagoBlockHeight, VERSION_2_HF_V6_BLOCK_HEIGHT));
+        const threemonthsagoPricingRecord = await getPricingRecordFromBlock(Math.max(threemonthsagoBlockHeight, VERSION_2_HF_V6_BLOCK_HEIGHT));
+        const oneyearagoPricingRecord = await getPricingRecordFromBlock(Math.max(oneyearagoBlockHeight, VERSION_2_HF_V6_BLOCK_HEIGHT));
 
         if (!previousPricingRecord || !onedayagoPricingRecord || !oneweekagoPricingRecord || !onemonthagoPricingRecord || !threemonthsagoPricingRecord || !oneyearagoPricingRecord) {
             console.log("Missing pricing records, ending processing historical returns");
@@ -75,6 +75,13 @@ export async function determineHistoricalReturns() {
 
         if (!previousZYSPrice || !onedayagoZYSPrice || !oneweekagoZYSPrice || !onemonthagoZYSPrice || !threemonthsagoZYSPrice || !oneyearagoZYSPrice) {
             console.log("Missing ZYS prices, ending processing historical returns");
+            console.log("--------------------");
+            console.log("Current Pricing Record:");
+            console.log(currentPricingRecord);
+            console.log("--------------------");
+            console.log("Previous Pricing Record:");
+            console.log(previousPricingRecord);
+            console.log("--------------------");
             return;
         }
 
