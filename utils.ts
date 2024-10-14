@@ -454,12 +454,12 @@ export async function getLiveStats() {
 
     const DEATOMIZE = 10 ** -12;
 
-    const zeph_price = Number((pr.spot * DEATOMIZE).toFixed(2));
-    const zsd_rate = Number((pr.stable * DEATOMIZE).toFixed(2));
-    const zsd_price = Number((zsd_rate * zeph_price).toFixed(2));
-    const zrs_rate = Number((pr.reserve * DEATOMIZE).toFixed(2));
-    const zrs_price = Number((zrs_rate * zeph_price).toFixed(2));
-    const zys_price = pr.yield_price ? Number((pr.yield_price * DEATOMIZE).toFixed(2)) : 1;
+    const zeph_price = Number((pr.spot * DEATOMIZE).toFixed(4));
+    const zsd_rate = Number((pr.stable * DEATOMIZE).toFixed(4));
+    const zsd_price = Number((zsd_rate * zeph_price).toFixed(4));
+    const zrs_rate = Number((pr.reserve * DEATOMIZE).toFixed(4));
+    const zrs_price = Number((zrs_rate * zeph_price).toFixed(4));
+    const zys_price = pr.yield_price ? Number((pr.yield_price * DEATOMIZE).toFixed(4)) : 1;
 
 
 
