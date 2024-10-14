@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { aggregate } from "./aggregator";
-import { scanPricingRecords } from "./pr";
+import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
 import { getLiveStats, getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
 import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
@@ -27,6 +27,8 @@ async function main() {
   await determineHistoricalReturns()
   console.log("--------------------");
   await determineProjectedReturns();
+  console.log("--------------------");
+  await processZYSPriceHistory();
   console.log("--------------------");
   const totals = await getTotalsFromRedis();
   console.log(totals);
@@ -109,6 +111,16 @@ app.get("/livestats", async (_, res: Response) => {
     res.status(200).json(result);
   } catch (error) {
     console.error("Error retrieving live stats:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+app.get("/zyspricehistory", async (req, res) => {
+  try {
+    const result = await getZYSPriceHistoryFromRedis();
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error retrieving zys price history:", error);
     res.status(500).send("Internal server error");
   }
 });

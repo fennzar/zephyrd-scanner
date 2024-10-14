@@ -1,7 +1,9 @@
 import { getCurrentBlockHeight, getBlock } from "./utils";
 import redis from "./redis";
+import { get } from "http";
 
 const DEATOMIZE = 10 ** -12;
+const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 async function getPricingRecordFromBlock(height: number) {
   const blockData = await getBlock(height);
@@ -88,6 +90,77 @@ export async function scanPricingRecords() {
     console.log(`Saved pricing record for height ${height}`);
   }
   return;
+}
+
+
+export async function processZYSPriceHistory() {
+  console.log("Processing ZYS price history...");
+  const BLOCK_INTERVAL = 30;
+  const height_prs = await getRedisHeight();
+  const most_recent_zys_price_block = await getMostRecentBlockHeightFromRedis();
+  const start = Math.max(most_recent_zys_price_block + BLOCK_INTERVAL, VERSION_2_HF_V6_BLOCK_HEIGHT);
+  const end = height_prs;
+
+  console.log(`Most recent ZYS price block: ${most_recent_zys_price_block}`);
+  console.log(`Starting ZYS price history processing from block ${start} to ${end}`);
+
+  for (let height = start; height <= end; height += BLOCK_INTERVAL) {
+    const pricing_record = await getPricingRecordFromBlock(height);
+
+    if (!pricing_record || !pricing_record.yield_price) {
+      continue;
+    }
+
+    const zys_price = pricing_record.yield_price;
+    const timestamp = pricing_record.timestamp;
+
+    // Store the ZYS price and block height as a JSON object in the sorted set
+    const data = JSON.stringify({
+      block_height: height,
+      zys_price: zys_price
+    });
+
+    console.log(`\t Block ${height} - ZYS Price: ${zys_price} - Timestamp: ${timestamp}`);
+
+    // Store in a sorted set with the timestamp as the score and the data as the value
+    await redis.zadd("zys_price_history", timestamp, data);
+  }
+}
+
+export async function getZYSPriceHistoryFromRedis() {
+  // Retrieve all records from Redis along with their scores (timestamps)
+  const result = await redis.zrangebyscore("zys_price_history", '-inf', '+inf', 'WITHSCORES');
+
+  const history = [];
+
+  // Loop through the result and pair each entry with its corresponding score
+  for (let i = 0; i < result.length; i += 2) {
+    const entry = JSON.parse(result[i]);  // Parse the JSON entry
+    const timestamp = result[i + 1];      // Get the corresponding timestamp (score)
+
+    history.push({
+      timestamp: Number(timestamp),  // Add the timestamp
+      ...entry,          // Spread the block height and zys_price
+    });
+  }
+
+  return history;
+}
+
+
+// Function to retrieve the most recent block height from Redis
+export async function getMostRecentBlockHeightFromRedis() {
+  // Fetch the last (highest) scored element from the sorted set (which is the latest timestamp)
+  const most_recent = await redis.zrevrange("zys_price_history", 0, 0);
+
+  if (!most_recent || most_recent.length === 0) {
+    // If there's no history, return 0 (i.e., no previous block recorded)
+    return 0;
+  }
+
+  // Parse the JSON and return the block height
+  const most_recent_data = JSON.parse(most_recent[0]);
+  return most_recent_data.block_height;
 }
 
 // (async () => {
