@@ -2,7 +2,7 @@
 // Yield Reserve circ, ZYS price and circ, yield conversions count and fees, are all available in /stats and are handled in aggregator.ts
 // This is for populating historical returns and projected returns.
 import redis from "./redis";
-import { ProtocolStats, getCurrentBlockHeight, getPricingRecordFromBlock, getRedisHeight } from "./utils";
+import { getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
@@ -187,7 +187,7 @@ export async function determineHistoricalReturns() {
 // Projected Returns:
 export async function determineProjectedReturns(test = false) {
     async function getStats(test = false) {
-        test = true
+        // test = true // uncomment to force dummy data
         if (test) {
             // return dummy protocol stats for testing route
             const dummyProtocolStats = {
@@ -202,23 +202,42 @@ export async function determineProjectedReturns(test = false) {
             return dummyProtocolStats;
         }
 
-
         const currentBlockHeight = await getRedisHeight();
-        const currentProtocolStats = await redis.hget("protocol_stats", currentBlockHeight.toString());
-        const currentProtocolStatsData: ProtocolStats = currentProtocolStats ? JSON.parse(currentProtocolStats) : {};
-        if (!currentProtocolStatsData) {
-            console.log("Error in determineProjectedReturns getting currentProtocolStatsData, ending processing projected returns");
+        // OLD: Using Protocol Stats from Redis
+
+        // const currentProtocolStats = await redis.hget("protocol_stats", currentBlockHeight.toString());
+        // const currentProtocolStatsData: ProtocolStats = currentProtocolStats ? JSON.parse(currentProtocolStats) : {};
+        // if (!currentProtocolStatsData) {
+        //     console.log("Error in determineProjectedReturns getting currentProtocolStatsData, ending processing projected returns");
+        //     return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
+        // }
+
+        // const zeph_price = currentProtocolStatsData.spot
+        // const zsd_circ = currentProtocolStatsData.zephusd_circ;
+        // const reserve_ratio = currentProtocolStatsData.reserve_ratio;
+
+        // // Pre 2.0.0 fork height these will be 0
+        // let zys_price = currentProtocolStatsData.yield_price;
+        // let zys_circ = currentProtocolStatsData.zyield_circ;
+        // let zsd_in_reserve = currentProtocolStatsData.zsd_in_yield_reserve;
+
+        // Use Reserve Info from Daemon
+        const reserveInfo = await getReserveInfo();
+
+        // leave early if we don't have reserve info
+        if (!reserveInfo) {
+            console.log("Error in determineProjectedReturns getting reserveInfo, ending processing projected returns");
             return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
         }
 
-        const zeph_price = currentProtocolStatsData.spot
-        const zsd_circ = currentProtocolStatsData.zephusd_circ;
-        const reserve_ratio = currentProtocolStatsData.reserve_ratio;
+        const DEATOMIZE = 10 ** -12;
 
-        // Pre 2.0.0 fork height these will be 0
-        let zys_price = currentProtocolStatsData.yield_price;
-        let zys_circ = currentProtocolStatsData.zyield_circ;
-        let zsd_in_reserve = currentProtocolStatsData.zsd_in_yield_reserve;
+        const zeph_price = Number((reserveInfo.result.pr.spot * DEATOMIZE).toFixed(4));
+        let zys_price = Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4))
+        let zsd_circ = Number((Number(reserveInfo.result.num_stables) * DEATOMIZE).toFixed(4));
+        let zys_circ = Number((Number(reserveInfo.result.num_zyield) * DEATOMIZE).toFixed(4));
+        let zsd_in_reserve = Number((Number(reserveInfo.result.zyield_reserve) * DEATOMIZE).toFixed(4));
+        const reserve_ratio = Number(reserveInfo.result.reserve_ratio);
 
         if (currentBlockHeight < VERSION_2_HF_V6_BLOCK_HEIGHT) {
             // Setting some values in order to calculate projected returns pre-fork
@@ -381,14 +400,21 @@ export async function determineProjectedReturns(test = false) {
     const low_projection_sixmonths_zys_price = (zsd_in_reserve_high_competition + sixmonths_accured_zsd.low) / (zys_circ + additional_zys);
     const low_projection_oneyear_zys_price = (zsd_in_reserve_high_competition + oneyear_accured_zsd.low) / (zys_circ + additional_zys);
 
-    // Calculate higher bound
     const zsd_in_reserve_low_competition = zsd_circ / 2; // 50% of all ZSD is staked
+
+    // zys price = (zsd staked in reserve + zsd accured in the future) / zys in circulation
+    const simulated_zys_circ = zsd_in_reserve_low_competition / zys_price;
+    // Calculate higher bound
     // Reserve Ratio = 800%
-    const high_projection_oneweek_zys_price = (zsd_in_reserve_low_competition + oneweek_accured_zsd.high) / zys_circ;
-    const high_projection_onemonth_zys_price = (zsd_in_reserve_low_competition + onemonth_accured_zsd.high) / zys_circ;
-    const high_projection_threemonths_zys_price = (zsd_in_reserve_low_competition + threemonths_accured_zsd.high) / zys_circ;
-    const high_projection_sixmonths_zys_price = (zsd_in_reserve_low_competition + sixmonths_accured_zsd.high) / zys_circ;
-    const high_projection_oneyear_zys_price = (zsd_in_reserve_low_competition + oneyear_accured_zsd.high) / zys_circ;
+    const high_projection_oneweek_zys_price = (zsd_in_reserve_low_competition + oneweek_accured_zsd.high) / simulated_zys_circ;
+    const high_projection_onemonth_zys_price = (zsd_in_reserve_low_competition + onemonth_accured_zsd.high) / simulated_zys_circ;
+    const high_projection_threemonths_zys_price = (zsd_in_reserve_low_competition + threemonths_accured_zsd.high) / simulated_zys_circ;
+    const high_projection_sixmonths_zys_price = (zsd_in_reserve_low_competition + sixmonths_accured_zsd.high) / simulated_zys_circ;
+    const high_projection_oneyear_zys_price = (zsd_in_reserve_low_competition + oneyear_accured_zsd.high) / simulated_zys_circ;
+
+    console.log("zsd_in_reserve_low_competition: ", zsd_in_reserve_low_competition)
+    console.log("oneweek_accured_zsd.high: ", oneweek_accured_zsd.high)
+    console.log("zys_circ: ", zys_circ)
 
 
     // Lets determine the percentage returns for each time period

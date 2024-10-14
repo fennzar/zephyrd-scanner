@@ -104,6 +104,59 @@ export async function getBlock(height: number) {
   }
 }
 
+interface ReserveInfoResponse {
+  id: string;
+  jsonrpc: string;
+  result: {
+    assets: string;
+    assets_ma: string;
+    equity: string;
+    equity_ma: string;
+    height: number;
+    hf_version: number;
+    liabilities: string;
+    num_reserves: string;
+    num_stables: string;
+    num_zyield: string;
+    pr: {
+      moving_average: number;
+      reserve: number;
+      reserve_ma: number;
+      reserve_ratio: number;
+      reserve_ratio_ma: number;
+      signature: string;
+      spot: number;
+      stable: number;
+      stable_ma: number;
+      timestamp: number;
+      yield_price: number;
+    };
+    reserve_ratio: string;
+    reserve_ratio_ma: string;
+    status: string;
+    zeph_reserve: string;
+    zyield_reserve: string;
+  };
+}
+
+export async function getReserveInfo() {
+  try {
+    const response = await fetch(`${RPC_URL}/json_rpc`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "0",
+        method: "get_reserve_info",
+      }),
+    });
+
+    return await response.json() as ReserveInfoResponse;
+  } catch (e) {
+    console.log(e);
+    return;
+  }
+}
 export async function getPricingRecordFromBlock(height: number) {
   const blockData = await getBlock(height);
   if (!blockData) {
@@ -398,38 +451,40 @@ async function getCirculatingSuppliesFromExplorer() {
     const zephResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating');
     const zeph_circ = Number(await zephResponse.json());
 
-    // Fetch ZSD circulating supply
-    const zsdResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zsd');
-    const zsd_circ = Number(await zsdResponse.json());
+    // WE CAN GET THIS FROM /get_reserve_info RPC COMMAND
 
-    // Fetch ZRS circulating supply
-    const zrsResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zrs');
-    const zrs_circ = Number(await zrsResponse.json());
+    // // Fetch ZSD circulating supply
+    // const zsdResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zsd');
+    // const zsd_circ = Number(await zsdResponse.json());
 
-    // Fetch ZYS circulating supply
-    const zysResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zys');
-    const zys_circ = Number(await zysResponse.json());
+    // // Fetch ZRS circulating supply
+    // const zrsResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zrs');
+    // const zrs_circ = Number(await zrsResponse.json());
+
+    // // Fetch ZYS circulating supply
+    // const zysResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zys');
+    // const zys_circ = Number(await zysResponse.json());
 
     // Logging all the results
-    console.log('Zeph Circulating Supply:', zeph_circ);
-    console.log('ZSD Circulating Supply:', zsd_circ);
-    console.log('ZRS Circulating Supply:', zrs_circ);
-    console.log('ZYS Circulating Supply:', zys_circ);
+    // console.log('Zeph Circulating Supply:', zeph_circ);
+    // console.log('ZSD Circulating Supply:', zsd_circ);
+    // console.log('ZRS Circulating Supply:', zrs_circ);
+    // console.log('ZYS Circulating Supply:', zys_circ);
 
     return {
       zeph_circ,
-      zsd_circ,
-      zrs_circ,
-      zys_circ
+      // zsd_circ,
+      // zrs_circ,
+      // zys_circ
     };
 
   } catch (error) {
     console.error('Error fetching circulating supplies:', error);
     return {
       zeph_circ: 0,
-      zsd_circ: 0,
-      zrs_circ: 0,
-      zys_circ: 0
+      // zsd_circ: 0,
+      // zrs_circ: 0,
+      // zys_circ: 0
     }
   }
 }
@@ -445,26 +500,28 @@ export async function getLiveStats() {
     // we can get current and previous circ amounts from the aggregated data to get 24h change
 
     const currentBlockHeight = await getRedisHeight()
-    const pr = await getPricingRecordFromBlock(currentBlockHeight);
 
-    if (!pr) {
-      console.log(`getLiveStats: No pricing record found for block ${currentBlockHeight}`);
+    const reserveInfo = await getReserveInfo();
+
+    if (!reserveInfo) {
+      console.log(`getLiveStats: No reserve info returned from daemon`);
       return;
     }
 
     const DEATOMIZE = 10 ** -12;
 
-    const zeph_price = Number((pr.spot * DEATOMIZE).toFixed(4));
-    const zsd_rate = Number((pr.stable * DEATOMIZE).toFixed(4));
+    const zeph_price = Number((reserveInfo.result.pr.spot * DEATOMIZE).toFixed(4));
+    const zsd_rate = Number((reserveInfo.result.pr.stable * DEATOMIZE).toFixed(4));
     const zsd_price = Number((zsd_rate * zeph_price).toFixed(4));
-    const zrs_rate = Number((pr.reserve * DEATOMIZE).toFixed(4));
+    const zrs_rate = Number((reserveInfo.result.pr.reserve * DEATOMIZE).toFixed(4));
     const zrs_price = Number((zrs_rate * zeph_price).toFixed(4));
-    const zys_price = pr.yield_price ? Number((pr.yield_price * DEATOMIZE).toFixed(4)) : 1;
-
-
+    const zys_price = reserveInfo.result.pr.yield_price ? Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4)) : 1;
 
     // Fetch and destructure the circulating supply values
-    const { zeph_circ, zsd_circ, zrs_circ, zys_circ } = await getCirculatingSuppliesFromExplorer();
+    const { zeph_circ } = await getCirculatingSuppliesFromExplorer();
+    const zsd_circ = Number(reserveInfo.result.num_stables) * DEATOMIZE;
+    const zrs_circ = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
+    const zys_circ = Number(reserveInfo.result.num_zyield) * DEATOMIZE;
 
     // to calcuate the 24hr circulating supply change we can use the aggregated data, most recent protocol stats and 720 records ago
     // Fetch previous block's data for initialization
@@ -479,7 +536,7 @@ export async function getLiveStats() {
       return;
     }
 
-    // We don't use the accurate circulating supply from the explorer api as there may be an issue with the aggregated data
+    // We don't use the accurate current circulating supply from the explorer api to comapre to as there may be an issue with the aggregated data
     const zeph_circ_daily_change = currentBlockProtocolStats.zeph_circ - onedayagoBlockProtocolStats.zeph_circ;
     const zsd_circ_daily_change = currentBlockProtocolStats.zephusd_circ - onedayagoBlockProtocolStats.zephusd_circ;
     const zrs_circ_daily_change = currentBlockProtocolStats.zephrsv_circ - onedayagoBlockProtocolStats.zephrsv_circ;
@@ -489,17 +546,13 @@ export async function getLiveStats() {
       console.log(`getLiveStats: zeph_circ_daily_change is negative: ${zeph_circ_daily_change}`);
     }
 
-    const zeph_in_reserve = currentBlockProtocolStats.zeph_in_reserve;
+    const zeph_in_reserve = Number(reserveInfo.result.zeph_reserve) * DEATOMIZE;
     const zeph_in_reserve_value = zeph_in_reserve * zeph_price;
-    // ERROR CAUSED FROM AGGREGATED DATA/SCANNER STUFF!
-    // const zsd_in_yield_reserve = currentBlockProtocolStats.zsd_in_yield_reserve; 
-    // Hard coding this value temporarily
-    const zsd_in_yield_reserve = 239_119
 
+    const zsd_in_yield_reserve = Number(reserveInfo.result.zyield_reserve) * DEATOMIZE;
 
     const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
     const zsd_in_yield_reserve_percent = zsd_in_yield_reserve / zsd_circ;
-
 
     return {
       zeph_price,
