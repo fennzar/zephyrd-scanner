@@ -311,6 +311,11 @@ export async function retallyTotals() {
 
   // set all the totals to redis
   for (const [key, value] of Object.entries(totals)) {
+    // check if value is NaN
+    if (isNaN(value)) {
+      console.log(`Value for ${key} is NaN, skipping...`);
+      continue
+    }
     await redis.hincrbyfloat("totals", key, value);
   }
 
