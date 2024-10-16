@@ -51,8 +51,8 @@ async function saveBlockRewardInfo(
   await redis.hincrbyfloat("totals", "yield_reward", yield_reward);
 }
 
-async function processTx(hash: string) {
-  console.log(`\tProcessing tx: ${hash}`);
+async function processTx(hash: string, verbose_logs: boolean) {
+  if (verbose_logs) console.log(`\tProcessing tx: ${hash}`);
   const response_data: any = await readTx(hash);
   if (!response_data) {
     console.error("Failed to retrieve transaction data.");
@@ -75,7 +75,7 @@ async function processTx(hash: string) {
   if (!(amount_burnt && amount_minted)) {
     const tx_amount = vout[0]?.amount || 0;
     if (tx_amount == 0) {
-      console.log("\t\tSKIP -> Not a conversion transaction or block reward transaction");
+      if (verbose_logs) console.log("\t\tSKIP -> Not a conversion transaction or block reward transaction");
       return;
     }
 
@@ -102,7 +102,7 @@ async function processTx(hash: string) {
         const total_reward = miner_reward / 0.75;
         reserve_reward = total_reward * 0.2;
       }
-      console.log(log_message);
+      if (verbose_logs) console.log(log_message);
       await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward, yield_reward);
     }
 
@@ -118,14 +118,14 @@ async function processTx(hash: string) {
       const reserve_reward = total_reward * 0.3;
       const yield_reward = total_reward * 0.05;
 
-      console.log("\tBlock reward transaction! v2 ZSD Yield");
+      if (verbose_logs) console.log("\tBlock reward transaction! v2 ZSD Yield");
       await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward, yield_reward);
     }
     return;
   }
 
   // Conversion transaction!
-  console.log("\tConversion transaction!");
+  if (verbose_logs) console.log("\tConversion transaction!");
   // Add the hash to the txs_by_block for the specific block height
   const txsByBlockHashes = await redis.hget("txs_by_block", block_height.toString());
   let hashes: string[] = txsByBlockHashes ? JSON.parse(txsByBlockHashes) : [];
@@ -290,7 +290,7 @@ async function processTx(hash: string) {
     tx_fee_amount,
   };
 
-  console.log(tx_info);
+  if (verbose_logs) console.log(tx_info);
 
   return tx_info;
 }
@@ -305,15 +305,34 @@ function determineConversionType(input: string, outputs: string[]): string {
   return "na";
 }
 
-export async function scanTransactions() {
+export async function scanTransactions(reset = false) {
   const hfHeight = 89300; // if we just want to scan from the v1.0.0 HF block
   const rpcHeight = await getCurrentBlockHeight();
   const redisHeight = await getRedisHeight();
 
-  const startingHeight = Math.max(redisHeight + 1, hfHeight);
+  let startingHeight = Math.max(redisHeight + 1, hfHeight);
+  if (reset) {
+    startingHeight = hfHeight;
+    // clear totals
+    await redis.del("totals");
+    // clear txs
+    await redis.del("txs");
+    // clear txs_by_block
+    await redis.del("txs_by_block");
+    // clear block_rewards
+    await redis.del("block_rewards");
+    // reset scanner height
+    await setRedisHeight(hfHeight);
+  }
 
   console.log("Fired tx scanner...");
   console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
+
+  let verbose_logs = false;
+  if (rpcHeight - startingHeight > 1000) {
+    console.log("This is a large scan, verbose logs are disabled.");
+    verbose_logs = false;
+  }
 
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
     const block: any = await getBlock(height);
@@ -322,18 +341,19 @@ export async function scanTransactions() {
       await setRedisHeight(height);
       continue;
     }
-    console.log(`SCANNING BLOCK: ${height}/${rpcHeight - 1}`);
+    const percentComplete = (((height - startingHeight) / (rpcHeight - startingHeight)) * 100).toFixed(2);
+    console.log(`TXs SCANNING BLOCK: ${height}/${rpcHeight - 1} \t | ${percentComplete}%`);
 
     const txs = block.result.tx_hashes;
     const miner_tx = block.result.miner_tx_hash;
-    await processTx(miner_tx);
+    await processTx(miner_tx, verbose_logs);
     if (!txs) {
-      console.log(`\t - No Additional txs`);
+      if (verbose_logs) console.log(`\t - No Additional txs`);
       await setRedisHeight(height);
       continue;
     }
     for (const hash of txs) {
-      const tx_info = await processTx(hash);
+      const tx_info = await processTx(hash, verbose_logs);
       if (tx_info) {
         await redis.hset("txs", hash, JSON.stringify(tx_info));
       }

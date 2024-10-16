@@ -5,6 +5,7 @@ import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords
 import { scanTransactions } from "./tx";
 import { getLiveStats, getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
 import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
+import { detectAndHandleReorg, rollbackScanner } from "./rollback";
 
 let mainRunning = false;
 async function main() {
@@ -14,25 +15,29 @@ async function main() {
   }
 
   mainRunning = true;
+  // wait for 3 seconds to allow for route calls
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await detectAndHandleReorg()
+  console.log("---------| MAIN |-----------");
   await aggregate(); // needs to be first initally
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await scanPricingRecords();
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await scanTransactions();
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await aggregate();
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await determineHistoricalReturns();
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await determineHistoricalReturns()
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await determineProjectedReturns();
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   await processZYSPriceHistory();
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   const totals = await getTotalsFromRedis();
   console.log(totals);
-  console.log("--------------------");
+  console.log("---------| MAIN |-----------");
   mainRunning = false;
 }
 
@@ -44,6 +49,7 @@ app.get("/", async (_, res: Response) => {
   res.send("zephyrdscanner reached");
 });
 
+
 app.get("/stats", async (req: Request, res: Response) => {
   console.log(`zephyrdscanner /stats called`);
   console.log(req.query);
@@ -52,20 +58,26 @@ app.get("/stats", async (req: Request, res: Response) => {
   const from = req.query.from as string;
   const to = req.query.to as string;
 
+  let fields: string[] = [];
+
+  // Only handle if fields is provided as a string
+  if (typeof req.query.fields === 'string') {
+    fields = req.query.fields.split(",");  // If it's a string, split it into an array
+  }
+
   if (!scale) {
     res.status(400).send("scale query param is required");
     return;
   }
 
-  if (scale != "block" && scale != "hour" && scale != "day") {
+  if (scale !== "block" && scale !== "hour" && scale !== "day") {
     res.status(400).send("scale query param must be 'block', 'hour', or 'day'");
     return;
   }
 
   try {
-    const result = await getProtocolStatsFromRedis(scale, from, to);
+    const result = await getProtocolStatsFromRedis(scale, from, to, fields);
     res.status(200).json(result);
-    // res.status(200).json({ scale, from, to });
   } catch (error) {
     console.error("Error retrieving protocol stats:", error);
     res.status(500).send("Internal server error");
@@ -116,6 +128,7 @@ app.get("/livestats", async (_, res: Response) => {
 });
 
 app.get("/zyspricehistory", async (req, res) => {
+  console.log(`zephyrdscanner /zyspricehistory called`);
   try {
     const result = await getZYSPriceHistoryFromRedis();
     res.status(200).json(result);
@@ -123,6 +136,29 @@ app.get("/zyspricehistory", async (req, res) => {
     console.error("Error retrieving zys price history:", error);
     res.status(500).send("Internal server error");
   }
+});
+
+app.get("/rollback", async (req: Request, res: Response) => {
+  mainRunning = true;
+  console.log(`zephyrdscanner /rollback called`);
+  console.log(req.query);
+
+  const height = Number(req.query.height)
+  if (!height) {
+    res.status(400).send("height query param is required");
+    return;
+  }
+
+  try {
+    const result = await rollbackScanner(height);
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("/rollback - Error in rollbackScanner:", error);
+    res.status(500).send("Internal server error");
+  }
+
+  mainRunning = false;
+
 });
 
 app.listen(port, () => {

@@ -211,69 +211,88 @@ async function aggregateBlock(height_to_process: number) {
 
   if (block_txs.length != 0) {
     console.log(`\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`);
-    for (const tx_hash of block_txs) {
-      const tx: Transaction = await getRedisTransaction(tx_hash);
+    let failureCount = 0;
+    let failureTxs: string[] = [];
 
-      switch (tx.conversion_type) {
-        case "mint_stable":
-          blockData.conversion_transactions_count += 1;
-          // to = ZEPHUSD (ZSD)
-          // from = ZEPH
-          blockData.mint_stable_count += 1;
-          blockData.mint_stable_volume += tx.to_amount;
-          blockData.fees_zephusd += tx.conversion_fee_amount;
-          blockData.zephusd_circ += tx.to_amount;
-          blockData.zeph_in_reserve += tx.from_amount;
-          break;
-        case "redeem_stable":
-          blockData.conversion_transactions_count += 1;
-          // to = ZEPH
-          // from = ZEPHUSD (ZSD)
-          blockData.redeem_stable_count += 1;
-          blockData.redeem_stable_volume += tx.from_amount;
-          blockData.fees_zeph += tx.conversion_fee_amount;
-          blockData.zeph_in_reserve -= tx.to_amount;
-          blockData.zephusd_circ -= tx.from_amount;
-          break;
-        case "mint_reserve":
-          blockData.conversion_transactions_count += 1;
-          // to = ZEPHRSV (ZRS)
-          // from = ZEPH
-          blockData.mint_reserve_count += 1;
-          blockData.mint_reserve_volume += tx.to_amount;
-          blockData.zeph_in_reserve += tx.from_amount;
-          blockData.zephrsv_circ += tx.to_amount;
-          blockData.fees_zephrsv += tx.conversion_fee_amount
-          break;
-        case "redeem_reserve":
-          blockData.conversion_transactions_count += 1;
-          // to = ZEPH
-          // from = ZEPHRSV (ZRS)
-          blockData.redeem_reserve_count += 1;
-          blockData.redeem_reserve_volume += tx.from_amount;
-          blockData.zeph_in_reserve -= tx.to_amount;
-          blockData.zephrsv_circ -= tx.from_amount;
-          blockData.fees_zeph += tx.conversion_fee_amount;
-          break;
-        case "mint_yield":
-          blockData.yield_conversion_transactions_count += 1;
-          // to = ZYIELD (ZYS)
-          // from = ZEPHUSD (ZSD)
-          blockData.mint_yield_count += 1;
-          blockData.mint_yield_volume += tx.to_amount;
-          blockData.fees_zyield += tx.conversion_fee_amount;
-          blockData.zyield_circ += tx.to_amount;
-          blockData.zsd_in_yield_reserve += tx.from_amount;
-        case "redeem_yield":
-          blockData.yield_conversion_transactions_count += 1;
-          // to = ZEPHUSD (ZSD)
-          // from = ZYIELD (ZYS)
-          blockData.redeem_yield_count += 1;
-          blockData.redeem_yield_volume += tx.from_amount;
-          blockData.fees_zephusd_yield += tx.conversion_fee_amount;
-          blockData.zyield_circ -= tx.from_amount;
-          blockData.zsd_in_yield_reserve -= tx.to_amount;
+
+    for (const tx_hash of block_txs) {
+      try {
+        const tx: Transaction = await getRedisTransaction(tx_hash);
+        switch (tx.conversion_type) {
+          case "mint_stable":
+            blockData.conversion_transactions_count += 1;
+            // to = ZEPHUSD (ZSD)
+            // from = ZEPH
+            blockData.mint_stable_count += 1;
+            blockData.mint_stable_volume += tx.to_amount;
+            blockData.fees_zephusd += tx.conversion_fee_amount;
+            blockData.zephusd_circ += tx.to_amount;
+            blockData.zeph_in_reserve += tx.from_amount;
+            break;
+          case "redeem_stable":
+            blockData.conversion_transactions_count += 1;
+            // to = ZEPH
+            // from = ZEPHUSD (ZSD)
+            blockData.redeem_stable_count += 1;
+            blockData.redeem_stable_volume += tx.from_amount;
+            blockData.fees_zeph += tx.conversion_fee_amount;
+            blockData.zeph_in_reserve -= tx.to_amount;
+            blockData.zephusd_circ -= tx.from_amount;
+            break;
+          case "mint_reserve":
+            blockData.conversion_transactions_count += 1;
+            // to = ZEPHRSV (ZRS)
+            // from = ZEPH
+            blockData.mint_reserve_count += 1;
+            blockData.mint_reserve_volume += tx.to_amount;
+            blockData.zeph_in_reserve += tx.from_amount;
+            blockData.zephrsv_circ += tx.to_amount;
+            blockData.fees_zephrsv += tx.conversion_fee_amount
+            break;
+          case "redeem_reserve":
+            blockData.conversion_transactions_count += 1;
+            // to = ZEPH
+            // from = ZEPHRSV (ZRS)
+            blockData.redeem_reserve_count += 1;
+            blockData.redeem_reserve_volume += tx.from_amount;
+            blockData.zeph_in_reserve -= tx.to_amount;
+            blockData.zephrsv_circ -= tx.from_amount;
+            blockData.fees_zeph += tx.conversion_fee_amount;
+            break;
+          case "mint_yield":
+            blockData.yield_conversion_transactions_count += 1;
+            // to = ZYIELD (ZYS)
+            // from = ZEPHUSD (ZSD)
+            blockData.mint_yield_count += 1;
+            blockData.mint_yield_volume += tx.to_amount;
+            blockData.fees_zyield += tx.conversion_fee_amount;
+            blockData.zyield_circ += tx.to_amount;
+            blockData.zsd_in_yield_reserve += tx.from_amount;
+            break;
+          case "redeem_yield":
+            blockData.yield_conversion_transactions_count += 1;
+            // to = ZEPHUSD (ZSD)
+            // from = ZYIELD (ZYS)
+            blockData.redeem_yield_count += 1;
+            blockData.redeem_yield_volume += tx.from_amount;
+            blockData.fees_zephusd_yield += tx.conversion_fee_amount;
+            blockData.zyield_circ -= tx.from_amount;
+            blockData.zsd_in_yield_reserve -= tx.to_amount;
+          default:
+            console.log(`Unknown conversion type: ${tx.conversion_type}`);
+            console.log(tx);
+            break;
+        }
+      } catch (error) {
+        console.error(`Error processing conversion transactions for block ${height_to_process}: ${error}`);
+        failureCount++;
+        failureTxs.push(tx_hash);
       }
+    }
+
+    if (failureCount > 0) {
+      console.log(`Failed to process ${failureCount} conversion transactions for block ${height_to_process}`);
+      console.log(failureTxs);
     }
   }
 

@@ -23,7 +23,7 @@ async function getRedisHeight() {
   return parseInt(height);
 }
 
-async function setRedisHeight(height: number) {
+export async function setRedisHeightPRs(height: number) {
   await redis.set("height_prs", height);
 }
 
@@ -37,7 +37,15 @@ export async function scanPricingRecords() {
   console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
 
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
-    const pricingRecord = await getPricingRecordFromBlock(height);
+    // const pricingRecord = await getPricingRecordFromBlock(height);
+    const block = await getBlock(height);
+    if (!block) {
+      console.log(`${height}/${rpcHeight - 1} - No block`);
+      continue;
+    }
+    // Save the block hash to redis to reference later to determine if there has been a rollback 
+    await redis.hset("block_hashes", height, block.result.block_header.hash);
+    const pricingRecord = block.result.block_header.pricing_record;
     if (!pricingRecord) {
       console.log(`${height}/${rpcHeight - 1} - No pricing record`);
       let pr_to_save = {
@@ -54,10 +62,11 @@ export async function scanPricingRecords() {
 
       const pr_to_save_json = JSON.stringify(pr_to_save);
       await redis.hset("pricing_records", height, pr_to_save_json);
-      await setRedisHeight(height);
+      await setRedisHeightPRs(height);
       continue;
     }
-    console.log(`SCANNING BLOCK: ${height}/${rpcHeight - 1}`);
+    const percentComplete = (height / rpcHeight - 1) * 100;
+    console.log(`PRs SCANNING BLOCK: ${height}/${rpcHeight - 1}  \t | ${percentComplete.toFixed(2)}%`);
 
     // const pricingRecordJson = JSON.stringify(pricingRecord);
 
@@ -85,9 +94,10 @@ export async function scanPricingRecords() {
 
     const pr_to_save_json = JSON.stringify(pr_to_save);
     await redis.hset("pricing_records", height, pr_to_save_json);
-    await setRedisHeight(height);
+    await setRedisHeightPRs(height);
 
     console.log(`Saved pricing record for height ${height}`);
+
   }
   return;
 }

@@ -199,7 +199,7 @@ export async function getTotalsFromRedis() {
   return totals;
 }
 
-export async function getProtocolStatsFromRedis(scale: "block" | "hour" | "day", from?: string, to?: string) {
+export async function getProtocolStatsFromRedis(scale: "block" | "hour" | "day", from?: string, to?: string, fields?: string[]) {
   let redisKey = "";
   switch (scale) {
     case "block":
@@ -210,7 +210,13 @@ export async function getProtocolStatsFromRedis(scale: "block" | "hour" | "day",
       for (let i = start; i <= end; i++) {
         const statsJson = await redis.hget(redisKey, i.toString());
         if (statsJson) {
-          const stats = JSON.parse(statsJson);
+          let stats = JSON.parse(statsJson);
+
+          // If specific fields are requested, filter the data
+          if (fields && fields.length > 0) {
+            stats = filterFields(stats, fields);
+          }
+
           blockData.push({ block_height: i, data: stats });
         }
       }
@@ -221,18 +227,37 @@ export async function getProtocolStatsFromRedis(scale: "block" | "hour" | "day",
       redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
       let startScore = from ? parseInt(from) : "-inf";
       let endScore = to ? parseInt(to) : "+inf";
-      // console.log(`calling redis with: ${redisKey}, ${startScore}, ${endScore}`);
       let results = await redis.zrangebyscore(redisKey, startScore, endScore, "WITHSCORES");
-      return formatZrangeResults(results);
+
+      // Apply filtering when processing the results
+      return formatZrangeResults(results, fields);
   }
 }
 
-function formatZrangeResults(results: any) {
+function formatZrangeResults(results: any, fields?: string[]) {
   let formattedResults = [];
   for (let i = 0; i < results.length; i += 2) {
-    formattedResults.push({ timestamp: results[i + 1], data: JSON.parse(results[i]) });
+    let data = JSON.parse(results[i]);
+
+    // If specific fields are requested, filter the data
+    if (fields && fields.length > 0) {
+      data = filterFields(data, fields);
+    }
+
+    formattedResults.push({ timestamp: results[i + 1], data });
   }
   return formattedResults;
+}
+
+// Helper function to filter data points based on requested fields
+function filterFields(data: any, fields: string[]): { [key: string]: any } {
+  let filteredData: { [key: string]: any } = {};
+  for (const field of fields) {
+    if (data && data.hasOwnProperty(field)) {
+      filteredData[field] = data[field];
+    }
+  }
+  return filteredData;
 }
 
 export interface ProtocolStats {
