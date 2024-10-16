@@ -2,7 +2,7 @@
 // This is not only for debugging purposes, but also for when the chain reorgs.
 import redis from "./redis";
 import { scanTransactions } from "./tx";
-import { getBlock, getCurrentBlockHeight } from "./utils";
+import { getBlock, getCurrentBlockHeight, getProtocolStatsFromRedis, getRedisHeight } from "./utils";
 
 
 export async function rollbackScanner(rollBackHeight: number) {
@@ -94,7 +94,7 @@ export async function rollbackScanner(rollBackHeight: number) {
   // ----------------------- Totals -----------------------
   // ------------------------------------------------------
   console.log(`\t Recalculating totals by rescanning all transactions...`);
-  // await scanTransactions(true);
+  await retallyTotals();
 
 
   // ------------------------------------------------------
@@ -179,6 +179,132 @@ async function setBlockHashesIfEmpty() {
 
   console.log("block_hashes set successfully.");
 }
+
+export async function retallyTotals() {
+  console.log(`Recalculating totals...`);
+  // we can do this from loking at the day aggregation records
+  // get all the day aggregation records
+  const relevantFields = [
+    "conversion_transactions_count",
+    "yield_conversion_transactions_count",
+    "mint_reserve_count",
+    "mint_reserve_volume",
+    "fees_zephrsv",
+    "redeem_reserve_count",
+    "redeem_reserve_volume",
+    "fees_zephusd",
+    "mint_stable_count",
+    "mint_stable_volume",
+    "redeem_stable_count",
+    "redeem_stable_volume",
+    "fees_zeph",
+    "mint_yield_count",
+    "mint_yield_volume",
+    "fees_zyield",
+    "redeem_yield_count",
+    "redeem_yield_volume",
+    "fees_zephusd_yield",
+  ]
+  const aggregatedData = await getProtocolStatsFromRedis("hour", undefined, undefined, relevantFields)
+
+  // calculate the totals
+  const totals = {
+    conversion_transactions: 0,
+    yield_conversion_transactions: 0,
+    mint_reserve_count: 0,
+    mint_reserve_volume: 0,
+    fees_zephrsv: 0,
+    redeem_reserve_count: 0,
+    redeem_reserve_volume: 0,
+    fees_zephusd: 0,
+    mint_stable_count: 0,
+    mint_stable_volume: 0,
+    redeem_stable_count: 0,
+    redeem_stable_volume: 0,
+    fees_zeph: 0,
+    mint_yield_count: 0,
+    mint_yield_volume: 0,
+    fees_zyield: 0,
+    redeem_yield_count: 0,
+    redeem_yield_volume: 0,
+    fees_zephusd_yield: 0,
+  }
+
+  for (const record of aggregatedData) {
+    totals.conversion_transactions += record.data.conversion_transactions_count;
+    totals.yield_conversion_transactions += record.data.yield_conversion_transactions_count;
+    totals.mint_reserve_count += record.data.mint_reserve_count;
+    totals.mint_reserve_volume += record.data.mint_reserve_volume;
+    totals.fees_zephrsv += record.data.fees_zephrsv;
+    totals.redeem_reserve_count += record.data.redeem_reserve_count;
+    totals.redeem_reserve_volume += record.data.redeem_reserve_volume;
+    totals.fees_zephusd += record.data.fees_zephusd;
+    totals.mint_stable_count += record.data.mint_stable_count;
+    totals.mint_stable_volume += record.data.mint_stable_volume;
+    totals.redeem_stable_count += record.data.redeem_stable_count;
+    totals.redeem_stable_volume += record.data.redeem_stable_volume;
+    totals.fees_zeph += record.data.fees_zeph;
+    totals.mint_yield_count += record.data.mint_yield_count;
+    totals.mint_yield_volume += record.data.mint_yield_volume;
+    totals.fees_zyield += record.data.fees_zyield;
+    totals.redeem_yield_count += record.data.redeem_yield_count;
+    totals.redeem_yield_volume += record.data.redeem_yield_volume;
+    totals.fees_zephusd_yield += record.data.fees_zephusd_yield;
+  }
+
+
+  const lastEntry = aggregatedData[aggregatedData.length - 1];
+
+  // Check if the last entry contains 'timestamp'
+  const lastTimestamp = 'timestamp' in lastEntry ? lastEntry.timestamp : undefined;
+
+  // now we need to figure out the the block hieght we need to process from, from the last availble timestamp.
+  // it's only going to be max 720 blocks back
+
+  // get the current block height from aggreagtor
+  const currentBlockHeight = await getRedisHeight()
+
+  const protocolStats = await getProtocolStatsFromRedis("block", (currentBlockHeight - 720).toString(), undefined, relevantFields);
+
+  for (const record of protocolStats) {
+    if (record.data.timestamp < lastTimestamp) {
+      continue;
+    }
+    totals.conversion_transactions += record.data.conversion_transactions_count;
+    totals.yield_conversion_transactions += record.data.yield_conversion_transactions_count;
+    totals.mint_reserve_count += record.data.mint_reserve_count;
+    totals.mint_reserve_volume += record.data.mint_reserve_volume;
+    totals.fees_zephrsv += record.data.fees_zephrsv;
+    totals.redeem_reserve_count += record.data.redeem_reserve_count;
+    totals.redeem_reserve_volume += record.data.redeem_reserve_volume;
+    totals.fees_zephusd += record.data.fees_zephusd;
+    totals.mint_stable_count += record.data.mint_stable_count;
+    totals.mint_stable_volume += record.data.mint_stable_volume;
+    totals.redeem_stable_count += record.data.redeem_stable_count;
+    totals.redeem_stable_volume += record.data.redeem_stable_volume;
+    totals.fees_zeph += record.data.fees_zeph;
+    totals.mint_yield_count += record.data.mint_yield_count;
+    totals.mint_yield_volume += record.data.mint_yield_volume;
+    totals.fees_zyield += record.data.fees_zyield;
+    totals.redeem_yield_count += record.data.redeem_yield_count;
+    totals.redeem_yield_volume += record.data.redeem_yield_volume;
+    totals.fees_zephusd_yield += record.data.fees_zephusd_yield;
+
+  }
+
+  // delete the totals key
+  await redis.del("totals");
+
+  // set all the totals to redis
+  for (const [key, value] of Object.entries(totals)) {
+    await redis.hincrbyfloat("totals", key, value);
+  }
+
+  console.log(`Totals recalculated successfully.`);
+  console.log(totals);
+
+}
+
 
 
 
