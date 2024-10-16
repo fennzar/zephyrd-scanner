@@ -65,7 +65,7 @@ export async function scanPricingRecords() {
       await setRedisHeightPRs(height);
       continue;
     }
-    const percentComplete = (height / rpcHeight - 1) * 100;
+    const percentComplete = ((height - startingHeight) / (rpcHeight - startingHeight)) * 100;
     console.log(`PRs SCANNING BLOCK: ${height}/${rpcHeight - 1}  \t | ${percentComplete.toFixed(2)}%`);
 
     // const pricingRecordJson = JSON.stringify(pricingRecord);
