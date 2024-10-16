@@ -2,8 +2,8 @@
 // This is not only for debugging purposes, but also for when the chain reorgs.
 import redis from "./redis";
 import { scanTransactions } from "./tx";
-import { getBlock, getCurrentBlockHeight, getProtocolStatsFromRedis, getRedisHeight } from "./utils";
-
+import { getBlock, getCurrentBlockHeight, getProtocolStatsFromRedis, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord } from "./utils";
+const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 export async function rollbackScanner(rollBackHeight: number) {
   const daemon_height = await getCurrentBlockHeight();
@@ -105,7 +105,7 @@ export async function rollbackScanner(rollBackHeight: number) {
     await redis.hdel("block_hashes", height_to_process.toString());
   }
 
-  console.log(`Rollback to height ${rollBackHeight} completed successfully. Still will need to rescan transactions.`);
+  console.log(`Rollback to height ${rollBackHeight} completed successfully`);
 }
 
 
@@ -228,6 +228,10 @@ export async function retallyTotals() {
     redeem_yield_count: 0,
     redeem_yield_volume: 0,
     fees_zephusd_yield: 0,
+    miner_reward: 0,
+    governance_reward: 0,
+    reserve_reward: 0,
+    yield_reward: 0,
   }
 
   for (const record of aggregatedData) {
@@ -290,6 +294,16 @@ export async function retallyTotals() {
     totals.redeem_yield_volume += record.data.redeem_yield_volume;
     totals.fees_zephusd_yield += record.data.fees_zephusd_yield;
 
+  }
+
+  // now populate the totals with the rewards
+  const starting_height = 89300;
+  for (let height = starting_height; height <= currentBlockHeight; height++) {
+    const bri = await getRedisBlockRewardInfo(height);
+    totals.miner_reward += bri.miner_reward;
+    totals.governance_reward += bri.governance_reward;
+    totals.reserve_reward += bri.reserve_reward;
+    totals.yield_reward += bri.yield_reward;
   }
 
   // delete the totals key
