@@ -314,6 +314,7 @@ async function aggregateBlock(height_to_process: number) {
       const zsd_auto_minted = blockData.spot * yield_reward_zeph;
       blockData.zsd_minted_for_yield = zsd_auto_minted;
       blockData.zsd_accrued_in_yield_reserve_from_yield_reward += zsd_auto_minted;
+      blockData.zsd_in_yield_reserve += zsd_auto_minted;
     }
   }
 
