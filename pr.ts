@@ -40,8 +40,8 @@ export async function scanPricingRecords() {
     // const pricingRecord = await getPricingRecordFromBlock(height);
     const block = await getBlock(height);
     if (!block) {
-      console.log(`${height}/${rpcHeight - 1} - No block`);
-      continue;
+      console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
+      return;
     }
     // Save the block hash to redis to reference later to determine if there has been a rollback 
     await redis.hset("block_hashes", height, block.result.block_header.hash);

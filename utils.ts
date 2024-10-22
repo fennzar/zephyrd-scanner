@@ -100,6 +100,8 @@ export async function getBlock(height: number) {
     return await response.json() as GetBlockResponse;
   } catch (e) {
     console.log(e);
+    console.log(`getBlock rpc no response - Daemon could be down - waiting 1 second...`);
+    await new Promise((r) => setTimeout(r, 1000));
     return;
   }
 }

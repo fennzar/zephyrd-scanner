@@ -121,8 +121,8 @@ export async function detectAndHandleReorg() {
     const storedBlockHash = await redis.hget("block_hashes", height.toString());
     const daemonBlockInfo = await getBlock(height);
     if (!daemonBlockInfo) {
-      console.log(`Error detectAndHandleReorg - Block at height ${height} not found. Continuing...`);
-      continue;
+      console.log(`Error detectAndHandleReorg - Block at height ${height} not found. Exiting...`);
+      return;
     }
     const daemonBlockHash = daemonBlockInfo.result.block_header.hash;
 
@@ -169,8 +169,8 @@ async function setBlockHashesIfEmpty() {
     console.log(`Setting block hash for height ${height} / ${ending_height} (${(height / ending_height) * 100})%`);
     const block = await getBlock(height);
     if (!block) {
-      console.log(`Block at height ${height} not found, skipping...`);
-      continue;
+      console.log(`Block at height ${height} not found, exiting`);
+      return;
     }
 
     const block_hash = block.result.block_header.hash;
