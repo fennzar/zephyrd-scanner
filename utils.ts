@@ -562,20 +562,7 @@ export async function getLiveStats() {
       return;
     }
 
-    // Fetch and destructure the circulating supply values
-    let zeph_circ = 0;
-    try {
-      const supplyData = await Promise.race([getCirculatingSuppliesFromExplorer(), new Promise((_, reject) => setTimeout(() => reject(new Error("Request timed out")), 2000))]) as {
-        zeph_circ: number;
-      };
-      if (!supplyData || !supplyData.zeph_circ) {
-        throw new Error("Invalid circulating supply value");
-      }
-      zeph_circ = supplyData.zeph_circ;
-    } catch (error) {
-      console.log(`getLiveStats: Error fetching circulating supplies from explorer api - using aggregated data instead`);
-      zeph_circ = currentBlockProtocolStats.zeph_circ;  // Fallback
-    }
+    const zeph_circ = currentBlockProtocolStats.zeph_circ;  // Fallback
 
     // We don't use the accurate current circulating supply from the explorer api to comapre to as there may be an issue with the aggregated data
     const zeph_circ_daily_change = currentBlockProtocolStats.zeph_circ - onedayagoBlockProtocolStats.zeph_circ;
