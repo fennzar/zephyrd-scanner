@@ -544,8 +544,7 @@ export async function getLiveStats() {
     const zrs_price = Number((zrs_rate * zeph_price).toFixed(4));
     const zys_price = reserveInfo.result.pr.yield_price ? Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4)) : 1;
 
-    // Fetch and destructure the circulating supply values
-    const { zeph_circ } = await getCirculatingSuppliesFromExplorer();
+
     const zsd_circ = Number(reserveInfo.result.num_stables) * DEATOMIZE;
     const zrs_circ = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
     const zys_circ = Number(reserveInfo.result.num_zyield) * DEATOMIZE;
@@ -561,6 +560,21 @@ export async function getLiveStats() {
     if (!onedayagoBlockProtocolStats || !currentBlockProtocolStats) {
       console.log(`getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${currentBlockHeight} & ${currentBlockHeight - 720}`);
       return;
+    }
+
+    // Fetch and destructure the circulating supply values
+    let zeph_circ = 0;
+    try {
+      const supplyData = await Promise.race([getCirculatingSuppliesFromExplorer(), new Promise((_, reject) => setTimeout(() => reject(new Error("Request timed out")), 2000))]) as {
+        zeph_circ: number;
+      };
+      if (!supplyData || !supplyData.zeph_circ) {
+        throw new Error("Invalid circulating supply value");
+      }
+      zeph_circ = supplyData.zeph_circ;
+    } catch (error) {
+      console.log(`getLiveStats: Error fetching circulating supplies from explorer api - using aggregated data instead`);
+      zeph_circ = currentBlockProtocolStats.zeph_circ;  // Fallback
     }
 
     // We don't use the accurate current circulating supply from the explorer api to comapre to as there may be an issue with the aggregated data
@@ -581,7 +595,7 @@ export async function getLiveStats() {
     const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
     const zsd_in_yield_reserve_percent = zsd_in_yield_reserve / zsd_circ;
 
-    return {
+    const liveStats = {
       zeph_price,
       zsd_rate,
       zsd_price,
@@ -601,11 +615,28 @@ export async function getLiveStats() {
       zeph_in_reserve_percent,
       zsd_in_yield_reserve,
       zsd_in_yield_reserve_percent
-    }
+    };
+
+    // save all these to redis to be called back in case of daemon/explorer api failure
+    await redis.set("live_stats", JSON.stringify(liveStats));
+
+    return liveStats;
 
   } catch (error) {
     console.error('Error fetching live stats:', error);
-    return;
+    console.log(`getLiveStats: Error fetching live stats - using redis data instead`);
+
+    // Fetch from Redis as a fallback
+    const liveStatsString = await redis.get("live_stats");
+    const liveStats = liveStatsString ? JSON.parse(liveStatsString) : null;
+
+    // Handle case when Redis might return null or empty object
+    if (!liveStats || Object.keys(liveStats).length === 0) {
+      console.error("Failed to retrieve live stats from both API and Redis.");
+      return;
+    }
+
+    return liveStats;
   }
 }
 

@@ -337,9 +337,9 @@ export async function scanTransactions(reset = false) {
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
     const block: any = await getBlock(height);
     if (!block) {
-      console.log(`${height}/${rpcHeight - 1} - No block`);
+      console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
       await setRedisHeight(height);
-      continue;
+      return;
     }
     const percentComplete = (((height - startingHeight) / (rpcHeight - startingHeight)) * 100).toFixed(2);
     console.log(`TXs SCANNING BLOCK: ${height}/${rpcHeight - 1} \t | ${percentComplete}%`);
