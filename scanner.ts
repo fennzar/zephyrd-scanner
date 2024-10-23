@@ -6,9 +6,18 @@ import { scanTransactions } from "./tx";
 import { getLiveStats, getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
 import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
 import { detectAndHandleReorg, rollbackScanner } from "./rollback";
+import dotenv from 'dotenv';
+
+// Load environment variables from .env file
+dotenv.config();
 
 let mainRunning = false;
 async function main() {
+  if (process.env.ONLINE !== "true") {
+    console.log("ONLINE is set to false. Skipping main function execution.");
+    return;
+  }
+
   if (mainRunning) {
     console.log("Main already running, skipping this run");
     return;
@@ -17,9 +26,9 @@ async function main() {
   mainRunning = true;
   // wait for 3 seconds to allow for route calls
   await new Promise((resolve) => setTimeout(resolve, 3000));
-  await detectAndHandleReorg()
+  await detectAndHandleReorg();
   console.log("---------| MAIN |-----------");
-  await aggregate(); // needs to be first initally
+  await aggregate(); // needs to be first initially
   console.log("---------| MAIN |-----------");
   await scanPricingRecords();
   console.log("---------| MAIN |-----------");
@@ -29,7 +38,7 @@ async function main() {
   console.log("---------| MAIN |-----------");
   await determineHistoricalReturns();
   console.log("---------| MAIN |-----------");
-  await determineHistoricalReturns()
+  await determineHistoricalReturns();
   console.log("---------| MAIN |-----------");
   await determineProjectedReturns();
   console.log("---------| MAIN |-----------");
@@ -40,6 +49,7 @@ async function main() {
   console.log("---------| MAIN |-----------");
   mainRunning = false;
 }
+
 
 const app = express();
 app.use(express.json());
