@@ -7,6 +7,7 @@ import { getLiveStats, getProtocolStatsFromRedis, getTotalsFromRedis } from "./u
 import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
 import { detectAndHandleReorg, rollbackScanner } from "./rollback";
 import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -50,15 +51,38 @@ async function main() {
   mainRunning = false;
 }
 
-
 const app = express();
 app.use(express.json());
 const port = 4000;
 
+// Apply rate limiter to all routes except "/rollback"
+const rateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 60, // Limit each IP to 60 requests per hour
+  message: "Rate limited - Too many requests this hour, please try again later.",
+});
+
+// Middleware to allow local IPs to bypass rate limiting
+app.use((req, res, next) => {
+  const clientIp = req.ip;
+
+  // Allow local IPs (IPv4 127.0.0.1 or IPv6 ::1) to bypass rate limiting
+  if (clientIp === '127.0.0.1' || clientIp === '::1') {
+    return next();
+  }
+
+  // Apply rate limiting only to non-local IPs
+  if (req.path !== "/rollback") {
+    rateLimiter(req, res, next);
+  } else {
+    next();
+  }
+});
+
+// Define routes
 app.get("/", async (_, res: Response) => {
   res.send("zephyrdscanner reached");
 });
-
 
 app.get("/stats", async (req: Request, res: Response) => {
   console.log(`zephyrdscanner /stats called`);
@@ -107,7 +131,6 @@ app.get("/historicalreturns", async (req: Request, res: Response) => {
     console.error("Error retrieving historical returns:", error);
     res.status(500).send("Internal server error");
   }
-
 });
 
 app.get("/projectedreturns", async (req: Request, res: Response) => {
@@ -120,10 +143,9 @@ app.get("/projectedreturns", async (req: Request, res: Response) => {
     const result = await getProjectedReturnsFromRedis(test);
     res.status(200).json(result);
   } catch (error) {
-    console.error("Error retrieving historical returns:", error);
+    console.error("Error retrieving projected returns:", error);
     res.status(500).send("Internal server error");
   }
-
 });
 
 app.get("/livestats", async (_, res: Response) => {
@@ -148,12 +170,20 @@ app.get("/zyspricehistory", async (req, res) => {
   }
 });
 
+// Protect /rollback route, make it non-public for non-local IPs
 app.get("/rollback", async (req: Request, res: Response) => {
+  const clientIp = req.ip;
+
+  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+    console.log(`ip ${clientIp} tried to access /rollback and was denied`);
+    return res.status(403).send("Access denied to /rollback. No Public Access.");
+  }
+
   mainRunning = true;
   console.log(`zephyrdscanner /rollback called`);
   console.log(req.query);
 
-  const height = Number(req.query.height)
+  const height = Number(req.query.height);
   if (!height) {
     res.status(400).send("height query param is required");
     return;
@@ -168,7 +198,6 @@ app.get("/rollback", async (req: Request, res: Response) => {
   }
 
   mainRunning = false;
-
 });
 
 app.listen(port, () => {
