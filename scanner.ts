@@ -67,7 +67,7 @@ app.use((req, res, next) => {
   const clientIp = req.ip;
 
   // Allow local IPs (IPv4 127.0.0.1 or IPv6 ::1) to bypass rate limiting
-  if (clientIp === '127.0.0.1' || clientIp === '::1') {
+  if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp !== '::ffff:127.0.0.1') {
     return next();
   }
 
@@ -148,8 +148,9 @@ app.get("/projectedreturns", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/livestats", async (_, res: Response) => {
-  console.log(`zephyrdscanner /livestats called`);
+app.get("/livestats", async (req: Request, res: Response) => {
+  const clientIp = req.ip;
+  console.log(`zephyrdscanner /livestats called from ${clientIp}`);
   try {
     const result = await getLiveStats();
     res.status(200).json(result);
