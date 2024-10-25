@@ -66,8 +66,8 @@ const rateLimiter = rateLimit({
 app.use((req, res, next) => {
   const clientIp = req.ip;
 
-  // Allow local IPs (IPv4 127.0.0.1 or IPv6 ::1) to bypass rate limiting
-  if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp !== '::ffff:127.0.0.1') {
+  // Allow local IPs (IPv4 127.0.0.1, IPv6 ::1, or any local IPv4 mapped to IPv6 like ::ffff:127.0.0.1) to bypass rate limiting
+  if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1') {
     return next();
   }
 
