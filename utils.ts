@@ -200,44 +200,64 @@ export async function getTotalsFromRedis() {
   }
   return totals;
 }
-
-export async function getProtocolStatsFromRedis(scale: "block" | "hour" | "day", from?: string, to?: string, fields?: string[]) {
-  let redisKey = "";
-  switch (scale) {
-    case "block":
-      redisKey = "protocol_stats";
-      let start = from ? parseInt(from) : 0;
-      let end = to ? parseInt(to) : Number(await redis.get("height_aggregator"));
-      let blockData = [];
-      for (let i = start; i <= end; i++) {
-        const statsJson = await redis.hget(redisKey, i.toString());
-        if (statsJson) {
-          let stats = JSON.parse(statsJson);
-
-          // If specific fields are requested, filter the data
-          if (fields && fields.length > 0) {
-            stats = filterFields(stats, fields);
-          }
-
-          blockData.push({ block_height: i, data: stats });
-        }
-      }
-      return blockData;
-
-    case "hour":
-    case "day":
-      redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
-      let startScore = from ? parseInt(from) : "-inf";
-      let endScore = to ? parseInt(to) : "+inf";
-      let results = await redis.zrangebyscore(redisKey, startScore, endScore, "WITHSCORES");
-
-      // Apply filtering when processing the results
-      return formatZrangeResults(results, fields);
-  }
+// Interface for block-level protocol stats response with generic type
+export interface BlockProtocolStatsResponse<T extends keyof ProtocolStats> {
+  block_height: number;
+  data: Pick<ProtocolStats, T>;
 }
 
-function formatZrangeResults(results: any, fields?: string[]) {
-  let formattedResults = [];
+// Interface for hour or day-level protocol stats response with generic type
+export interface AggregatedProtocolStatsResponse<T extends keyof AggregatedData> {
+  timestamp: number; // UNIX timestamp
+  data: Pick<AggregatedData, T>;
+}
+
+
+// Function for block-level stats
+export async function getBlockProtocolStatsFromRedis<T extends keyof ProtocolStats>(
+  from?: string,
+  to?: string,
+  fields?: T[]
+): Promise<BlockProtocolStatsResponse<T>[]> {
+  let redisKey = "protocol_stats";
+  let start = from ? parseInt(from) : 0;
+  let end = to ? parseInt(to) : Number(await redis.get("height_aggregator"));
+  let blockData: BlockProtocolStatsResponse<T>[] = [];
+
+  for (let i = start; i <= end; i++) {
+    const statsJson = await redis.hget(redisKey, i.toString());
+    if (statsJson) {
+      let stats = JSON.parse(statsJson);
+
+      // If specific fields are requested, filter the data
+      if (fields && fields.length > 0) {
+        stats = filterFields(stats, fields);
+      }
+
+      blockData.push({ block_height: i, data: stats });
+    }
+  }
+  return blockData;
+}
+
+// Function for hour/day-level stats
+export async function getAggregatedProtocolStatsFromRedis<T extends keyof AggregatedData>(
+  scale: "hour" | "day",
+  from?: string,
+  to?: string,
+  fields?: T[]
+): Promise<AggregatedProtocolStatsResponse<T>[]> {
+  let redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
+  let startScore = from ? parseInt(from) : "-inf";
+  let endScore = to ? parseInt(to) : "+inf";
+  let results = await redis.zrangebyscore(redisKey, startScore, endScore, "WITHSCORES");
+
+  return formatZrangeResults(results, fields);
+}
+
+// Helper function for formatting results
+function formatZrangeResults<T extends keyof AggregatedData>(results: any, fields?: T[]): AggregatedProtocolStatsResponse<T>[] {
+  let formattedResults: AggregatedProtocolStatsResponse<T>[] = [];
   for (let i = 0; i < results.length; i += 2) {
     let data = JSON.parse(results[i]);
 
@@ -246,25 +266,27 @@ function formatZrangeResults(results: any, fields?: string[]) {
       data = filterFields(data, fields);
     }
 
-    formattedResults.push({ timestamp: results[i + 1], data });
+    formattedResults.push({ timestamp: Number(results[i + 1]), data });
   }
   return formattedResults;
 }
 
 // Helper function to filter data points based on requested fields
-function filterFields(data: any, fields: string[]): { [key: string]: any } {
-  let filteredData: { [key: string]: any } = {};
+function filterFields<T extends string>(data: any, fields: T[]): Pick<typeof data, T> {
+  let filteredData: Partial<typeof data> = {};
   for (const field of fields) {
     if (data && data.hasOwnProperty(field)) {
       filteredData[field] = data[field];
     }
   }
-  return filteredData;
+  return filteredData as Pick<typeof data, T>;
 }
+
+
 
 export interface ProtocolStats {
   block_height: number;
-  block_timestamp: number | null; // Timestamp or null if not available
+  block_timestamp: number;
   spot: number;
   moving_average: number;
   reserve: number;

@@ -3,9 +3,9 @@ import type { Request, Response } from "express";
 import { aggregate } from "./aggregator";
 import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
-import { getLiveStats, getProtocolStatsFromRedis, getTotalsFromRedis } from "./utils";
+import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlockProtocolStatsFromRedis, getLiveStats, getRedisHeight, getTotalsFromRedis } from "./utils";
 import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
-import { detectAndHandleReorg, rollbackScanner } from "./rollback";
+import { detectAndHandleReorg, retallyTotals, rollbackScanner } from "./rollback";
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 
@@ -47,6 +47,9 @@ async function main() {
   console.log("---------| MAIN |-----------");
   const totals = await getTotalsFromRedis();
   console.log(totals);
+  // get as of block height
+  const scannerHeight = await getRedisHeight();
+  console.log("Scanner Height: ", scannerHeight);
   console.log("---------| MAIN |-----------");
   mainRunning = false;
 }
@@ -88,7 +91,7 @@ app.get("/stats", async (req: Request, res: Response) => {
   console.log(`zephyrdscanner /stats called`);
   console.log(req.query);
 
-  const scale = req.query.scale as string;
+  const scale = req.query.scale as "block" | "hour" | "day";
   const from = req.query.from as string;
   const to = req.query.to as string;
 
@@ -110,7 +113,16 @@ app.get("/stats", async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await getProtocolStatsFromRedis(scale, from, to, fields);
+    let result;
+
+    if (scale === "block") {
+      // Call getBlockProtocolStatsFromRedis for block-level data
+      result = await getBlockProtocolStatsFromRedis(from, to, fields as (keyof ProtocolStats)[],);
+    } else {
+      // Call getAggregatedProtocolStatsFromRedis for hour or day-level data
+      result = await getAggregatedProtocolStatsFromRedis(scale, from, to, fields as (keyof AggregatedData)[]);
+    }
+
     res.status(200).json(result);
   } catch (error) {
     console.error("Error retrieving protocol stats:", error);
@@ -199,6 +211,26 @@ app.get("/rollback", async (req: Request, res: Response) => {
   }
 
   mainRunning = false;
+});
+
+// Retally Totals
+app.get("/retallytotals", async (req: Request, res: Response) => {
+  const clientIp = req.ip;
+
+  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+    console.log(`ip ${clientIp} tried to access /retallytotals and was denied`);
+    return res.status(403).send("Access denied to /retallytotals. No Public Access.");
+  }
+
+  console.log(`zephyrdscanner /retallytotals called`);
+
+  try {
+    await retallyTotals();
+    res.status(200).send("Totals retallied successfully");
+  } catch (error) {
+    console.error("/retallytotals - Error in retallyTotals:", error);
+    res.status(500).send("Internal server error");
+  }
 });
 
 app.listen(port, () => {

@@ -1,8 +1,17 @@
 // This file handles rolling the scanner back and removing all data from after the supplied height.
 // This is not only for debugging purposes, but also for when the chain reorgs.
+import { aggregate } from "./aggregator";
+import { scanPricingRecords } from "./pr";
 import redis from "./redis";
 import { scanTransactions } from "./tx";
-import { getBlock, getCurrentBlockHeight, getProtocolStatsFromRedis, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord } from "./utils";
+import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlock, getBlockProtocolStatsFromRedis, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord } from "./utils";
+import * as fs from 'fs';
+
+// Function to append log information to a file
+function writeLogToFile(logContent: string) {
+  fs.appendFileSync('totals_log.txt', logContent + '\n', 'utf8');
+}
+
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 export async function rollbackScanner(rollBackHeight: number) {
@@ -11,6 +20,14 @@ export async function rollbackScanner(rollBackHeight: number) {
   if (!rollback_block_info) {
     console.log(`Block at height ${rollBackHeight} not found`);
     return;
+  }
+
+  // ------------------------------------------------------
+  // -------------------- Block Hashes --------------------
+  // ------------------------------------------------------s
+  console.log(`\t Removing block hashes that we are rolling back: (${rollBackHeight} - ${daemon_height})...`);
+  for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
+    await redis.hdel("block_hashes", height_to_process.toString());
   }
 
   const rollback_timestamp = rollback_block_info.result.block_header.timestamp;
@@ -62,6 +79,10 @@ export async function rollbackScanner(rollBackHeight: number) {
   // Set "height_prs" to the rollBackHeight
   await redis.set("height_prs", rollBackHeight.toString());
 
+  console.log(`\t Rescanning Pricing Records...`);
+  // Refire scanPricingRecords to repopulate the pricing records
+  await scanPricingRecords();
+
   // ------------------------------------------------------
   // -------------------- Transactions --------------------
   // ------------------------------------------------------
@@ -89,6 +110,18 @@ export async function rollbackScanner(rollBackHeight: number) {
   // Set "height_txs" to the rollBackHeight
   await redis.set("height_txs", rollBackHeight.toString());
 
+  console.log(`\t Rescanning Transactions...`);
+
+  // Refire scanTransactions to repopulate the transactions
+  await scanTransactions();
+
+  // ------------------------------------------------------
+  // ------------------- Aggregator -----------------------
+  // ------------------------------------------------------
+
+  console.log(`\t Firing aggregator to repop protocol_stats...`);
+  await aggregate();
+
 
   // ------------------------------------------------------
   // ----------------------- Totals -----------------------
@@ -97,15 +130,7 @@ export async function rollbackScanner(rollBackHeight: number) {
   await retallyTotals();
 
 
-  // ------------------------------------------------------
-  // -------------------- Block Hashes --------------------
-  // ------------------------------------------------------s
-  console.log(`\t Removing block hashes...`);
-  for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    await redis.hdel("block_hashes", height_to_process.toString());
-  }
-
-  console.log(`Rollback to height ${rollBackHeight} completed successfully`);
+  console.log(`Rollback to height ${rollBackHeight} and reset completed successfully`);
 }
 
 
@@ -181,10 +206,18 @@ async function setBlockHashesIfEmpty() {
 }
 
 export async function retallyTotals() {
+
+  // delete the previous log file
+  try {
+    fs.unlinkSync('totals_log.txt');
+  } catch (err) {
+    console.error(err);
+  }
+
   console.log(`Recalculating totals...`);
-  // we can do this from loking at the day aggregation records
-  // get all the day aggregation records
-  const relevantFields = [
+
+  // Define relevant fields to request from aggregated data
+  const relevantAggregatedFields: (keyof AggregatedData)[] = [
     "conversion_transactions_count",
     "yield_conversion_transactions_count",
     "mint_reserve_count",
@@ -204,10 +237,12 @@ export async function retallyTotals() {
     "redeem_yield_count",
     "redeem_yield_volume",
     "fees_zephusd_yield",
-  ]
-  const aggregatedData = await getProtocolStatsFromRedis("hour", undefined, undefined, relevantFields)
+  ];
 
-  // calculate the totals
+  // Get all the day aggregation records
+  const aggregatedData = await getAggregatedProtocolStatsFromRedis("day", undefined, undefined, relevantAggregatedFields);
+
+  // Calculate the totals
   const totals = {
     conversion_transactions: 0,
     yield_conversion_transactions: 0,
@@ -232,97 +267,274 @@ export async function retallyTotals() {
     governance_reward: 0,
     reserve_reward: 0,
     yield_reward: 0,
-  }
+  };
 
+  console.log(`
+    _______________________________________________________
+    Recalculating totals from day-level data... 
+    _______________________________________________________
+    `);
+  writeLogToFile(`
+    _______________________________________________________
+    Recalculating totals from day-level data... 
+    _______________________________________________________
+    `);
+
+  // Aggregate data from the retrieved records
   for (const record of aggregatedData) {
-    totals.conversion_transactions += record.data.conversion_transactions_count;
-    totals.yield_conversion_transactions += record.data.yield_conversion_transactions_count;
-    totals.mint_reserve_count += record.data.mint_reserve_count;
-    totals.mint_reserve_volume += record.data.mint_reserve_volume;
-    totals.fees_zephrsv += record.data.fees_zephrsv;
-    totals.redeem_reserve_count += record.data.redeem_reserve_count;
-    totals.redeem_reserve_volume += record.data.redeem_reserve_volume;
-    totals.fees_zephusd += record.data.fees_zephusd;
-    totals.mint_stable_count += record.data.mint_stable_count;
-    totals.mint_stable_volume += record.data.mint_stable_volume;
-    totals.redeem_stable_count += record.data.redeem_stable_count;
-    totals.redeem_stable_volume += record.data.redeem_stable_volume;
-    totals.fees_zeph += record.data.fees_zeph;
-    totals.mint_yield_count += record.data.mint_yield_count;
-    totals.mint_yield_volume += record.data.mint_yield_volume;
-    totals.fees_zyield += record.data.fees_zyield;
-    totals.redeem_yield_count += record.data.redeem_yield_count;
-    totals.redeem_yield_volume += record.data.redeem_yield_volume;
-    totals.fees_zephusd_yield += record.data.fees_zephusd_yield;
+    // Convert timestamp to human-readable format (assuming record.timestamp is in seconds)
+    const timestampHR = new Date(record.timestamp * 1000).toISOString().replace("T", " ").substring(0, 19);
+
+    // Calculate changes
+    const changeConversionTransactions = record.data.conversion_transactions_count ?? 0;
+    const changeYieldConversionTransactions = record.data.yield_conversion_transactions_count ?? 0;
+    const changeMintReserveCount = record.data.mint_reserve_count ?? 0;
+    const changeMintReserveVolume = record.data.mint_reserve_volume ?? 0;
+    const changeFeesZephrsv = record.data.fees_zephrsv ?? 0;
+    const changeRedeemReserveCount = record.data.redeem_reserve_count ?? 0;
+    const changeRedeemReserveVolume = record.data.redeem_reserve_volume ?? 0;
+    const changeFeesZephusd = record.data.fees_zephusd ?? 0;
+    const changeMintStableCount = record.data.mint_stable_count ?? 0;
+    const changeMintStableVolume = record.data.mint_stable_volume ?? 0;
+    const changeRedeemStableCount = record.data.redeem_stable_count ?? 0;
+    const changeRedeemStableVolume = record.data.redeem_stable_volume ?? 0;
+    const changeFeesZeph = record.data.fees_zeph ?? 0;
+    const changeMintYieldCount = record.data.mint_yield_count ?? 0;
+    const changeMintYieldVolume = record.data.mint_yield_volume ?? 0;
+    const changeFeesZyield = record.data.fees_zyield ?? 0;
+    const changeRedeemYieldCount = record.data.redeem_yield_count ?? 0;
+    const changeRedeemYieldVolume = record.data.redeem_yield_volume ?? 0;
+    const changeFeesZephusdYield = record.data.fees_zephusd_yield ?? 0;
+
+    // Update totals
+    totals.conversion_transactions += changeConversionTransactions;
+    totals.yield_conversion_transactions += changeYieldConversionTransactions;
+    totals.mint_reserve_count += changeMintReserveCount;
+    totals.mint_reserve_volume += changeMintReserveVolume;
+    totals.fees_zephrsv += changeFeesZephrsv;
+    totals.redeem_reserve_count += changeRedeemReserveCount;
+    totals.redeem_reserve_volume += changeRedeemReserveVolume;
+    totals.fees_zephusd += changeFeesZephusd;
+    totals.mint_stable_count += changeMintStableCount;
+    totals.mint_stable_volume += changeMintStableVolume;
+    totals.redeem_stable_count += changeRedeemStableCount;
+    totals.redeem_stable_volume += changeRedeemStableVolume;
+    totals.fees_zeph += changeFeesZeph;
+    totals.mint_yield_count += changeMintYieldCount;
+    totals.mint_yield_volume += changeMintYieldVolume;
+    totals.fees_zyield += changeFeesZyield;
+    totals.redeem_yield_count += changeRedeemYieldCount;
+    totals.redeem_yield_volume += changeRedeemYieldVolume;
+    totals.fees_zephusd_yield += changeFeesZephusdYield;
+
+    // Log the timestamp and changes with the updated totals
+    writeLogToFile(
+      `\nTimestamp: ${record.timestamp} (${timestampHR})\n` +
+      `Totals:\n` +
+      `  Conversion Transactions: ${totals.conversion_transactions} (+${changeConversionTransactions})\n` +
+      `  Yield Conversion Transactions: ${totals.yield_conversion_transactions} (+${changeYieldConversionTransactions})\n` +
+      `  Mint Reserve Count: ${totals.mint_reserve_count} (+${changeMintReserveCount})\n` +
+      `  Mint Reserve Volume: ${totals.mint_reserve_volume} (+${changeMintReserveVolume})\n` +
+      `  Fees Zephrsv: ${totals.fees_zephrsv} (+${changeFeesZephrsv})\n` +
+      `  Redeem Reserve Count: ${totals.redeem_reserve_count} (+${changeRedeemReserveCount})\n` +
+      `  Redeem Reserve Volume: ${totals.redeem_reserve_volume} (+${changeRedeemReserveVolume})\n` +
+      `  Fees Zephusd: ${totals.fees_zephusd} (+${changeFeesZephusd})\n` +
+      `  Mint Stable Count: ${totals.mint_stable_count} (+${changeMintStableCount})\n` +
+      `  Mint Stable Volume: ${totals.mint_stable_volume} (+${changeMintStableVolume})\n` +
+      `  Redeem Stable Count: ${totals.redeem_stable_count} (+${changeRedeemStableCount})\n` +
+      `  Redeem Stable Volume: ${totals.redeem_stable_volume} (+${changeRedeemStableVolume})\n` +
+      `  Fees Zeph: ${totals.fees_zeph} (+${changeFeesZeph})\n` +
+      `  Mint Yield Count: ${totals.mint_yield_count} (+${changeMintYieldCount})\n` +
+      `  Mint Yield Volume: ${totals.mint_yield_volume} (+${changeMintYieldVolume})\n` +
+      `  Fees Zyield: ${totals.fees_zyield} (+${changeFeesZyield})\n` +
+      `  Redeem Yield Count: ${totals.redeem_yield_count} (+${changeRedeemYieldCount})\n` +
+      `  Redeem Yield Volume: ${totals.redeem_yield_volume} (+${changeRedeemYieldVolume})\n` +
+      `  Fees Zephusd Yield: ${totals.fees_zephusd_yield} (+${changeFeesZephusdYield})`
+    );
   }
 
 
-  const lastEntry = aggregatedData[aggregatedData.length - 1];
+  // Get the current block height from aggregator
+  const currentBlockHeight = await getRedisHeight();
 
-  // Check if the last entry contains 'timestamp'
-  const lastTimestamp = 'timestamp' in lastEntry ? lastEntry.timestamp : undefined;
+  // Define relevant fields for block-level data
+  const relevantBlockFields: (keyof ProtocolStats)[] = [
+    "conversion_transactions_count",
+    "yield_conversion_transactions_count",
+    "mint_reserve_count",
+    "mint_reserve_volume",
+    "fees_zephrsv",
+    "redeem_reserve_count",
+    "redeem_reserve_volume",
+    "fees_zephusd",
+    "mint_stable_count",
+    "mint_stable_volume",
+    "redeem_stable_count",
+    "redeem_stable_volume",
+    "fees_zeph",
+    "mint_yield_count",
+    "mint_yield_volume",
+    "fees_zyield",
+    "redeem_yield_count",
+    "redeem_yield_volume",
+    "fees_zephusd_yield",
+  ];
 
-  // now we need to figure out the the block hieght we need to process from, from the last availble timestamp.
-  // it's only going to be max 720 blocks back
+  console.log(`
+  _______________________________________________________
+  Recalculating totals for the last 720 blocks... (from block ${currentBlockHeight - 720} to ${currentBlockHeight})
+  This is to account for any data not get aggregated into the daily stats.
+  _______________________________________________________
+  `);
+  writeLogToFile(`
+  _______________________________________________________
+  Recalculating totals for the last 720 blocks... (from block ${currentBlockHeight - 720} to ${currentBlockHeight})
+  This is to account for any data not get aggregated into the daily stats.
+  _______________________________________________________
+  `);
 
-  // get the current block height from aggreagtor
-  const currentBlockHeight = await getRedisHeight()
+  // Fetch block-level data for the last 720 blocks
+  const protocolStats = await getBlockProtocolStatsFromRedis((currentBlockHeight - 720).toString(), undefined, relevantBlockFields);
 
-  const protocolStats = await getProtocolStatsFromRedis("block", (currentBlockHeight - 720).toString(), undefined, relevantFields);
-
+  let reachedFirstBlock = false;
   for (const record of protocolStats) {
-    if (record.data.timestamp < lastTimestamp) {
+    if (record.data.block_timestamp < (aggregatedData[aggregatedData.length - 1].timestamp || 0)) {
       continue;
     }
-    totals.conversion_transactions += record.data.conversion_transactions_count;
-    totals.yield_conversion_transactions += record.data.yield_conversion_transactions_count;
-    totals.mint_reserve_count += record.data.mint_reserve_count;
-    totals.mint_reserve_volume += record.data.mint_reserve_volume;
-    totals.fees_zephrsv += record.data.fees_zephrsv;
-    totals.redeem_reserve_count += record.data.redeem_reserve_count;
-    totals.redeem_reserve_volume += record.data.redeem_reserve_volume;
-    totals.fees_zephusd += record.data.fees_zephusd;
-    totals.mint_stable_count += record.data.mint_stable_count;
-    totals.mint_stable_volume += record.data.mint_stable_volume;
-    totals.redeem_stable_count += record.data.redeem_stable_count;
-    totals.redeem_stable_volume += record.data.redeem_stable_volume;
-    totals.fees_zeph += record.data.fees_zeph;
-    totals.mint_yield_count += record.data.mint_yield_count;
-    totals.mint_yield_volume += record.data.mint_yield_volume;
-    totals.fees_zyield += record.data.fees_zyield;
-    totals.redeem_yield_count += record.data.redeem_yield_count;
-    totals.redeem_yield_volume += record.data.redeem_yield_volume;
-    totals.fees_zephusd_yield += record.data.fees_zephusd_yield;
 
+    if (!reachedFirstBlock) {
+      console.log(`Skipped until block ${record.block_height} as blocks ${(currentBlockHeight - 720)} - ${record.block_height - 1} already accounted for in daily stats.`);
+      console.log(`Reached first block not accounted for in daily stats: ${record.block_height}. Processing from here...`);
+      writeLogToFile(`Skipped until block ${record.block_height} as blocks ${(currentBlockHeight - 720)} - ${record.block_height - 1} already accounted for in daily stats.`);
+      writeLogToFile(`Reached first block not accounted for in daily stats: ${record.block_height}. Processing from here...`);
+      reachedFirstBlock = true;
+    }
+
+    // Calculate changes
+    const changeConversionTransactions = record.data.conversion_transactions_count ?? 0;
+    const changeYieldConversionTransactions = record.data.yield_conversion_transactions_count ?? 0;
+    const changeMintReserveCount = record.data.mint_reserve_count ?? 0;
+    const changeMintReserveVolume = record.data.mint_reserve_volume ?? 0;
+    const changeFeesZephrsv = record.data.fees_zephrsv ?? 0;
+    const changeRedeemReserveCount = record.data.redeem_reserve_count ?? 0;
+    const changeRedeemReserveVolume = record.data.redeem_reserve_volume ?? 0;
+    const changeFeesZephusd = record.data.fees_zephusd ?? 0;
+    const changeMintStableCount = record.data.mint_stable_count ?? 0;
+    const changeMintStableVolume = record.data.mint_stable_volume ?? 0;
+    const changeRedeemStableCount = record.data.redeem_stable_count ?? 0;
+    const changeRedeemStableVolume = record.data.redeem_stable_volume ?? 0;
+    const changeFeesZeph = record.data.fees_zeph ?? 0;
+    const changeMintYieldCount = record.data.mint_yield_count ?? 0;
+    const changeMintYieldVolume = record.data.mint_yield_volume ?? 0;
+    const changeFeesZyield = record.data.fees_zyield ?? 0;
+    const changeRedeemYieldCount = record.data.redeem_yield_count ?? 0;
+    const changeRedeemYieldVolume = record.data.redeem_yield_volume ?? 0;
+    const changeFeesZephusdYield = record.data.fees_zephusd_yield ?? 0;
+
+    // Update totals
+    totals.conversion_transactions += changeConversionTransactions;
+    totals.yield_conversion_transactions += changeYieldConversionTransactions;
+    totals.mint_reserve_count += changeMintReserveCount;
+    totals.mint_reserve_volume += changeMintReserveVolume;
+    totals.fees_zephrsv += changeFeesZephrsv;
+    totals.redeem_reserve_count += changeRedeemReserveCount;
+    totals.redeem_reserve_volume += changeRedeemReserveVolume;
+    totals.fees_zephusd += changeFeesZephusd;
+    totals.mint_stable_count += changeMintStableCount;
+    totals.mint_stable_volume += changeMintStableVolume;
+    totals.redeem_stable_count += changeRedeemStableCount;
+    totals.redeem_stable_volume += changeRedeemStableVolume;
+    totals.fees_zeph += changeFeesZeph;
+    totals.mint_yield_count += changeMintYieldCount;
+    totals.mint_yield_volume += changeMintYieldVolume;
+    totals.fees_zyield += changeFeesZyield;
+    totals.redeem_yield_count += changeRedeemYieldCount;
+    totals.redeem_yield_volume += changeRedeemYieldVolume;
+    totals.fees_zephusd_yield += changeFeesZephusdYield;
+
+    // Log the block height and changes with the updated totals
+    writeLogToFile(
+      `Block Height: ${record.block_height}\n` +
+      `Totals:\n` +
+      `  Conversion Transactions: ${totals.conversion_transactions} (+${changeConversionTransactions})\n` +
+      `  Yield Conversion Transactions: ${totals.yield_conversion_transactions} (+${changeYieldConversionTransactions})\n` +
+      `  Mint Reserve Count: ${totals.mint_reserve_count} (+${changeMintReserveCount})\n` +
+      `  Mint Reserve Volume: ${totals.mint_reserve_volume} (+${changeMintReserveVolume})\n` +
+      `  Fees Zephrsv: ${totals.fees_zephrsv} (+${changeFeesZephrsv})\n` +
+      `  Redeem Reserve Count: ${totals.redeem_reserve_count} (+${changeRedeemReserveCount})\n` +
+      `  Redeem Reserve Volume: ${totals.redeem_reserve_volume} (+${changeRedeemReserveVolume})\n` +
+      `  Fees Zephusd: ${totals.fees_zephusd} (+${changeFeesZephusd})\n` +
+      `  Mint Stable Count: ${totals.mint_stable_count} (+${changeMintStableCount})\n` +
+      `  Mint Stable Volume: ${totals.mint_stable_volume} (+${changeMintStableVolume})\n` +
+      `  Redeem Stable Count: ${totals.redeem_stable_count} (+${changeRedeemStableCount})\n` +
+      `  Redeem Stable Volume: ${totals.redeem_stable_volume} (+${changeRedeemStableVolume})\n` +
+      `  Fees Zeph: ${totals.fees_zeph} (+${changeFeesZeph})\n` +
+      `  Mint Yield Count: ${totals.mint_yield_count} (+${changeMintYieldCount})\n` +
+      `  Mint Yield Volume: ${totals.mint_yield_volume} (+${changeMintYieldVolume})\n` +
+      `  Fees Zyield: ${totals.fees_zyield} (+${changeFeesZyield})\n` +
+      `  Redeem Yield Count: ${totals.redeem_yield_count} (+${changeRedeemYieldCount})\n` +
+      `  Redeem Yield Volume: ${totals.redeem_yield_volume} (+${changeRedeemYieldVolume})\n` +
+      `  Fees Zephusd Yield: ${totals.fees_zephusd_yield} (+${changeFeesZephusdYield})`
+    );
   }
 
-  // now populate the totals with the rewards
+  console.log(`
+    _______________________________________________________
+    Recalculating totals for block reward info...
+    _______________________________________________________`)
+  writeLogToFile(`
+    _______________________________________________________
+    Recalculating totals for block reward info...
+    _______________________________________________________`)
+
+  // As this scanner only processes from v1, we can add in the accm rewards before then
+  totals.miner_reward = 1391857.1317692809
+  totals.governance_reward = 73255.6385141733
+
+  // Populate the totals with the rewards from block reward info
   const starting_height = 89300;
   for (let height = starting_height; height <= currentBlockHeight; height++) {
     const bri = await getRedisBlockRewardInfo(height);
-    totals.miner_reward += bri.miner_reward;
-    totals.governance_reward += bri.governance_reward;
-    totals.reserve_reward += bri.reserve_reward;
-    totals.yield_reward += bri.yield_reward;
+
+    // Calculate changes
+    const changeMinerReward = bri.miner_reward ?? 0;
+    const changeGovernanceReward = bri.governance_reward ?? 0;
+    const changeReserveReward = bri.reserve_reward ?? 0;
+    const changeYieldReward = bri.yield_reward ?? 0;
+
+    // Update totals
+    totals.miner_reward += changeMinerReward;
+    totals.governance_reward += changeGovernanceReward;
+    totals.reserve_reward += changeReserveReward;
+    totals.yield_reward += changeYieldReward;
+
+    // Log the block height and changes with the updated totals
+    // writeLogToFile(
+    //   `Block Height: ${height}\n` +
+    //   `Totals:\n` +
+    //   `  Miner Reward: ${totals.miner_reward} (+${changeMinerReward})\n` +
+    //   `  Governance Reward: ${totals.governance_reward} (+${changeGovernanceReward})\n` +
+    //   `  Reserve Reward: ${totals.reserve_reward} (+${changeReserveReward})\n` +
+    //   `  Yield Reward: ${totals.yield_reward} (+${changeYieldReward})`
+    // );
   }
 
-  // delete the totals key
+  // Delete the previous totals key in Redis
   await redis.del("totals");
 
-  // set all the totals to redis
+  // Set all the recalculated totals back in Redis
   for (const [key, value] of Object.entries(totals)) {
-    // check if value is NaN
     if (isNaN(value)) {
       console.log(`Value for ${key} is NaN, skipping...`);
-      continue
+      continue;
     }
     await redis.hincrbyfloat("totals", key, value);
   }
 
   console.log(`Totals recalculated successfully.`);
   console.log(totals);
-
 }
+
 
 
 
