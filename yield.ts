@@ -2,7 +2,7 @@
 // Yield Reserve circ, ZYS price and circ, yield conversions count and fees, are all available in /stats and are handled in aggregator.ts
 // This is for populating historical returns and projected returns.
 import redis from "./redis";
-import { getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
+import { AggregatedData, getAggregatedProtocolStatsFromRedis, getCurrentBlockHeight, getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
@@ -670,4 +670,100 @@ export async function getProjectedReturnsFromRedis(test = false) {
         return null;
     }
     return JSON.parse(projectedStats);
+}
+
+
+export async function determineAPYHistory() {
+    console.log("Determining APY history...");
+    // Effectively what we need to do is use the same logic as the projected returns for the "simple" calculation to determine what the effective APY was for each day.
+    // We want to calculate the effective apy daily for all the days we have available from block 360_000 to the current block height.
+    // We can just use the _close figures
+    // We also should calc the current apy using the most recent data like we do in projected returns and include that data
+
+    try {
+        // Define relevant fields to request from aggregated data
+        const relevantAggregatedFields: (keyof AggregatedData)[] = [
+            "spot_close",
+            "zyield_price_close",
+            "zephusd_circ_close",
+            "zsd_in_yield_reserve_close",
+            "zyield_circ_close",
+            "reserve_ratio_close"
+        ];
+
+        // Get historical protocol stats from block 360,000 to the current block height
+        let fromTimestamp = "1728819352"; // ~~360,000 block height
+        let blockHeightPosition = 360_000;
+        const currentRedisAPYHistory = await getAPYHistoryFromRedis() as { timestamp: number; block_height: number; return: number; zys_price: number }[];
+        // If we have historical data, we can start from the 2nd to last timestamp
+        if (currentRedisAPYHistory && currentRedisAPYHistory.length > 1) {
+            fromTimestamp = currentRedisAPYHistory[currentRedisAPYHistory.length - 2].timestamp.toString();
+            blockHeightPosition = currentRedisAPYHistory[currentRedisAPYHistory.length - 2].block_height;
+            console.log(`We have existing APY history, starting from timestamp: ${fromTimestamp} && block height: ${blockHeightPosition}`);
+        }
+        const historicalData = await getAggregatedProtocolStatsFromRedis("day", fromTimestamp, undefined, relevantAggregatedFields);
+
+        if (!historicalData || historicalData.length === 0) {
+            console.log("No historical data found, ending APY calculation");
+            return;
+        }
+
+        // use existing apy history if we have it but remove the last 2 entries
+        // const apyHistory: { timestamp: number; block_height: number; return: number; zys_price: number }[] = [];
+        const apyHistory = currentRedisAPYHistory ? currentRedisAPYHistory.slice(0, -2) : [];
+
+        for (const dataPoint of historicalData) {
+            // we need to run the same calculations as the projected returns to determine the effective APY for each day
+            const precalculatedBlockRewards = await getPrecalculatedBlockRewards(blockHeightPosition);
+            const oneyear_block_height = blockHeightPosition + (720 * 30 * 12);
+            let oneyear_accured_zsd_simple = 0;
+
+            for (let block = blockHeightPosition; block <= oneyear_block_height; block++) {
+                const total_block_reward = precalculatedBlockRewards[block].block_reward;
+                const yield_reward = total_block_reward * 0.05; // 5%
+                const zsd_auto_minted_simple = yield_reward * dataPoint.data.spot_close;
+                oneyear_accured_zsd_simple += zsd_auto_minted_simple;
+            }
+
+            const zsd_in_reserve = dataPoint.data.zsd_in_yield_reserve_close;
+            const zys_cric = dataPoint.data.zyield_circ_close;
+            const zys_price = dataPoint.data.zyield_price_close;
+
+            const simple_projection_oneyear_zys_price = (zsd_in_reserve + oneyear_accured_zsd_simple) / zys_cric;
+            const simple_projection_oneyear_returns = ((simple_projection_oneyear_zys_price - zys_price) / zys_price) * 100;
+
+            apyHistory.push({ timestamp: dataPoint.timestamp, block_height: blockHeightPosition, return: simple_projection_oneyear_returns, zys_price: simple_projection_oneyear_zys_price });
+
+            blockHeightPosition += 720; // 720 blocks per day
+        }
+
+        // Get current effective APY from projected returns (for the "simple" scenario)
+        const projectedReturns = await getProjectedReturnsFromRedis();
+        if (!projectedReturns) {
+            console.log("Unable to get projected returns, ending APY calculation");
+            return;
+        }
+
+        const currentTimestamp = Math.floor(Date.now() / 1000);
+        const currentAPY = projectedReturns.oneYear.simple.return;
+        const predictedZysPrice = projectedReturns.oneYear.simple.zys_price;
+        const redisHieght = await getCurrentBlockHeight();
+        apyHistory.push({ timestamp: currentTimestamp, block_height: redisHieght, return: currentAPY, zys_price: predictedZysPrice });
+
+        // Store APY history to Redis
+        await redis.set("apy_history", JSON.stringify(apyHistory));
+
+        console.log("APY history successfully stored in Redis");
+    } catch (error) {
+        console.error("Error determining APY history:", error);
+    }
+}
+
+
+export async function getAPYHistoryFromRedis() {
+    const apyHistory = await redis.get("apy_history");
+    if (!apyHistory) {
+        return null;
+    }
+    return JSON.parse(apyHistory);
 }

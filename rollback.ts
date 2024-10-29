@@ -4,7 +4,8 @@ import { aggregate } from "./aggregator";
 import { scanPricingRecords } from "./pr";
 import redis from "./redis";
 import { scanTransactions } from "./tx";
-import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlock, getBlockProtocolStatsFromRedis, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord } from "./utils";
+import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlock, getBlockProtocolStatsFromRedis, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight } from "./utils";
+import { determineAPYHistory } from "./yield";
 import * as fs from 'fs';
 
 // Function to append log information to a file
@@ -38,7 +39,6 @@ export async function rollbackScanner(rollBackHeight: number) {
   // ---------------------------------------------------------------------------
   // -------------------- Remove data from "protocol_stats" --------------------
   // ---------------------------------------------------------------------------
-
 
   console.log(`\t Removing data from protocol_stats & protocol_stats_hourly & protocol_stats_daily...`);
   for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
@@ -122,6 +122,14 @@ export async function rollbackScanner(rollBackHeight: number) {
   console.log(`\t Firing aggregator to repop protocol_stats...`);
   await aggregate();
 
+  // ------------------------------------------------------
+  // -------------------- APY Hitory --------------------
+  // ------------------------------------------------------
+  console.log(`\t Removing redis key apy_history...`);
+  await redis.del("apy_history");
+
+  console.log(`\t Recalculating APY History...`);
+  await determineAPYHistory();
 
   // ------------------------------------------------------
   // ----------------------- Totals -----------------------

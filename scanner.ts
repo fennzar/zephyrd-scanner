@@ -4,7 +4,7 @@ import { aggregate } from "./aggregator";
 import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
 import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlockProtocolStatsFromRedis, getLiveStats, getRedisHeight, getTotalsFromRedis } from "./utils";
-import { determineHistoricalReturns, determineProjectedReturns, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
+import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns, getAPYHistoryFromRedis, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
 import { detectAndHandleReorg, retallyTotals, rollbackScanner } from "./rollback";
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
@@ -44,6 +44,8 @@ async function main() {
   await determineProjectedReturns();
   console.log("---------| MAIN |-----------");
   await processZYSPriceHistory();
+  console.log("---------| MAIN |-----------");
+  await determineAPYHistory();
   console.log("---------| MAIN |-----------");
   const totals = await getTotalsFromRedis();
   console.log(totals);
@@ -176,6 +178,17 @@ app.get("/zyspricehistory", async (req, res) => {
   console.log(`zephyrdscanner /zyspricehistory called`);
   try {
     const result = await getZYSPriceHistoryFromRedis();
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error retrieving zys price history:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+app.get("/apyhistory", async (req, res) => {
+  console.log(`zephyrdscanner /apyhistory called`);
+  try {
+    const result = await getAPYHistoryFromRedis();
     res.status(200).json(result);
   } catch (error) {
     console.error("Error retrieving zys price history:", error);
