@@ -1,5 +1,6 @@
 // Take all data and aggregate into a single redis key done by block, hourly and daily.
 
+import e from "express";
 import redis from "./redis";
 import { AggregatedData, ProtocolStats, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly, getRedisTransaction, setRedisHeight } from "./utils";
 // const DEATOMIZE = 10 ** -12;
@@ -10,7 +11,7 @@ const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
-
+const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
 
 // Function to get transaction hashes by block height
 async function getRedisTransactionHashesByBlock(blockHeight: number): Promise<string[]> {
@@ -200,8 +201,17 @@ async function aggregateBlock(height_to_process: number) {
   const block_txs = await getRedisTransactionHashesByBlock(height_to_process);
   // console.log(`block_txs`);
   // console.log(block_txs);
-
   blockData.zeph_in_reserve += bri.reserve_reward;
+
+  // We need to reset circulating supply values to the audited amounts on HFv11
+  if (blockData.block_height === VERSION_2_3_0_HF_V11_BLOCK_HEIGHT + 1) {
+    const audited_zeph_amount = 7828285.273529857474
+    const minted_unauditable_zeph_amount = 1921650; // This is the amount of zeph that was minted after HFv11
+    blockData.zeph_circ = audited_zeph_amount + minted_unauditable_zeph_amount // Audited amount at HFv11
+    blockData.zephusd_circ = 370722.218621489316; // Audited amount at HFv11
+    blockData.zephrsv_circ = 1023512.020210500202; // Audited amount at HFv11
+    blockData.zyield_circ = 185474.354977384066; // Audited amount at HFv11
+  }
   // should instead capture the total_reward! This is so that we don't have redo "saveBlockRewardInfo"
   blockData.zeph_circ +=
     (bri?.miner_reward ?? 0) +
@@ -315,6 +325,8 @@ async function aggregateBlock(height_to_process: number) {
       blockData.zsd_minted_for_yield = zsd_auto_minted;
       blockData.zsd_accrued_in_yield_reserve_from_yield_reward += zsd_auto_minted;
       blockData.zsd_in_yield_reserve += zsd_auto_minted;
+      //add to circ
+      blockData.zephusd_circ += zsd_auto_minted;
     }
   }
 
