@@ -546,9 +546,11 @@ export async function getLiveStats() {
 
     // we can get prices from the pr?
     // get accurate circ from the explorer api
+    // we can get circulating supply for all assets except ZEPH from the reserve info call.
     // we can get current and previous circ amounts from the aggregated data to get 24h change
 
     const currentBlockHeight = await getRedisHeight()
+    console.log(`getLiveStats: Current Block Height: ${currentBlockHeight}`);
 
     const reserveInfo = await getReserveInfo();
 
@@ -584,7 +586,18 @@ export async function getLiveStats() {
       return;
     }
 
-    const zeph_circ = currentBlockProtocolStats.zeph_circ;  // Fallback
+    // DEBUG print out the current and previous block protocol stats
+    // console.log(`getLiveStats: currentBlockProtocolStats:`, currentBlockProtocolStats);
+    // console.log(`getLiveStats: onedayagoBlockProtocolStats:`, onedayagoBlockProtocolStats);
+
+    const zeph_circ_from_explorer = (await getCirculatingSuppliesFromExplorer()).zeph_circ; // Source of "Truth"
+    const zeph_circ_currentBlockProtocolStatus = currentBlockProtocolStats.zeph_circ;  // Fallback
+
+    // warn if explorer and currentBlockProtocolStats differ
+    if (zeph_circ_from_explorer !== zeph_circ_currentBlockProtocolStatus) {
+      console.warn(`getLiveStats: Zeph circulating supply from explorer (${zeph_circ_from_explorer}) does not match currentBlockProtocolStats (${zeph_circ_currentBlockProtocolStatus}) || Differnece: ${Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus)}`);
+    }
+    const zeph_circ = zeph_circ_from_explorer || zeph_circ_currentBlockProtocolStatus; // Use explorer data if available, otherwise fallback to currentBlockProtocolStats
 
     // We don't use the accurate current circulating supply from the explorer api to comapre to as there may be an issue with the aggregated data
     const zeph_circ_daily_change = currentBlockProtocolStats.zeph_circ - onedayagoBlockProtocolStats.zeph_circ;
