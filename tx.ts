@@ -302,6 +302,13 @@ function determineConversionType(input: string, outputs: string[]): string {
   if (input === "ZEPHRSV" && outputs.includes("ZEPH")) return "redeem_reserve";
   if (input === "ZEPHUSD" && outputs.includes("ZYIELD")) return "mint_yield";
   if (input === "ZYIELD" && outputs.includes("ZEPHUSD")) return "redeem_yield";
+  // Asset type V2
+  if (input === "ZPH" && outputs.includes("ZSD")) return "mint_stable";
+  if (input === "ZSD" && outputs.includes("ZPH")) return "redeem_stable";
+  if (input === "ZPH" && outputs.includes("ZRS")) return "mint_reserve";
+  if (input === "ZRS" && outputs.includes("ZPH")) return "redeem_reserve";
+  if (input === "ZSD" && outputs.includes("ZYS")) return "mint_yield";
+  if (input === "ZYS" && outputs.includes("ZSD")) return "redeem_yield";
   return "na";
 }
 
