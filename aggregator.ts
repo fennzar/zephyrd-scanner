@@ -288,6 +288,7 @@ async function aggregateBlock(height_to_process: number) {
             blockData.fees_zephusd_yield += tx.conversion_fee_amount;
             blockData.zyield_circ -= tx.from_amount;
             blockData.zsd_in_yield_reserve -= tx.to_amount;
+            break;
           default:
             console.log(`Unknown conversion type: ${tx.conversion_type}`);
             console.log(tx);
