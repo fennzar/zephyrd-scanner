@@ -1,5 +1,6 @@
 // This file handles rolling the scanner back and removing all data from after the supplied height.
 // This is not only for debugging purposes, but also for when the chain reorgs.
+import { Pipeline } from "ioredis";
 import { aggregate } from "./aggregator";
 import { scanPricingRecords } from "./pr";
 import redis from "./redis";
@@ -25,11 +26,15 @@ export async function rollbackScanner(rollBackHeight: number) {
 
   // ------------------------------------------------------
   // -------------------- Block Hashes --------------------
-  // ------------------------------------------------------s
+  // ------------------------------------------------------
+
   console.log(`\t Removing block hashes that we are rolling back: (${rollBackHeight} - ${daemon_height})...`);
+  let pipeline = redis.pipeline()
   for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    await redis.hdel("block_hashes", height_to_process.toString());
+    pipeline.hdel("block_hashes", height_to_process.toString());
   }
+  console.log(`Redis Pipeling ${pipeline.length} commands to remove block hashes`);
+  await pipeline.exec();
 
   const rollback_timestamp = rollback_block_info.result.block_header.timestamp;
 
@@ -41,9 +46,12 @@ export async function rollbackScanner(rollBackHeight: number) {
   // ---------------------------------------------------------------------------
 
   console.log(`\t Removing data from protocol_stats & protocol_stats_hourly & protocol_stats_daily...`);
+  pipeline = redis.pipeline()
   for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    await redis.hdel("protocol_stats", height_to_process.toString());
+    pipeline.hdel("protocol_stats", height_to_process.toString());
   }
+  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove protocol_stats`);
+  await pipeline.exec();
 
   // Set "height_aggregator" to the rollBackHeight
   await redis.set("height_aggregator", rollBackHeight.toString());
@@ -51,9 +59,12 @@ export async function rollbackScanner(rollBackHeight: number) {
   // Remove data from "protocol_stats_hourly"
   const hourlyResults = await redis.zrangebyscore("protocol_stats_hourly", rollback_timestamp.toString(), "+inf");
   console.log(`\t Removing ${hourlyResults.length} entries from protocol_stats_hourly...`);
+  pipeline = redis.pipeline();
   for (const score of hourlyResults) {
-    await redis.zrem("protocol_stats_hourly", score);
+    pipeline.zrem("protocol_stats_hourly", score);
   }
+  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove protocol_stats_hourly`);
+  await pipeline.exec();
 
   // Set "timestamp_aggregator_hourly" to the rollBackTimestamp
   await redis.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
@@ -61,9 +72,12 @@ export async function rollbackScanner(rollBackHeight: number) {
   // Remove data from "protocol_stats_daily"
   const dailyResults = await redis.zrangebyscore("protocol_stats_daily", rollback_timestamp.toString(), "+inf");
   console.log(`\t Removing ${dailyResults.length} entries from protocol_stats_daily...`);
+  pipeline = redis.pipeline();
   for (const score of dailyResults) {
-    await redis.zrem("protocol_stats_daily", score);
+    pipeline.zrem("protocol_stats_daily", score);
   }
+  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove protocol_stats_daily`);
+  await pipeline.exec();
 
   // Set "timestamp_aggregator_daily" to the rollBackTimestamp
   await redis.set("timestamp_aggregator_daily", rollback_timestamp.toString());
@@ -73,9 +87,12 @@ export async function rollbackScanner(rollBackHeight: number) {
   // ---------------------------------------------------------
 
   console.log(`\t Removing data from pricing_records...`);
+  pipeline = redis.pipeline();
   for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    await redis.hdel("pricing_records", height_to_process.toString());
+    pipeline.hdel("pricing_records", height_to_process.toString());
   }
+  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove pricing_records`);
+  await pipeline.exec();
   // Set "height_prs" to the rollBackHeight
   await redis.set("height_prs", rollBackHeight.toString());
 
@@ -88,10 +105,11 @@ export async function rollbackScanner(rollBackHeight: number) {
   // ------------------------------------------------------
 
   console.log(`\t Removing data from transactions...`);
+  pipeline = redis.pipeline();
 
   for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
     // Remove block rewards
-    await redis.hdel("block_rewards", height_to_process.toString());
+    pipeline.hdel("block_rewards", height_to_process.toString());
 
     // Retrieve txs_by_block for the block being rolled back
     const txsByBlockHashes = await redis.hget("txs_by_block", height_to_process.toString());
@@ -99,13 +117,17 @@ export async function rollbackScanner(rollBackHeight: number) {
       const txs = JSON.parse(txsByBlockHashes);
       // Remove each transaction from "txs" key
       for (const tx_id of txs) {
-        await redis.hdel("txs", tx_id);
+        pipeline.hdel("txs", tx_id);
       }
     }
 
     // Remove the block from "txs_by_block"
-    await redis.hdel("txs_by_block", height_to_process.toString());
+    pipeline.hdel("txs_by_block", height_to_process.toString());
   }
+
+  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove transactions`);
+  await pipeline.exec();
+
 
   // Set "height_txs" to the rollBackHeight
   await redis.set("height_txs", rollBackHeight.toString());
