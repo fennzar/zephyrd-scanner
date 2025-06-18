@@ -502,29 +502,36 @@ export async function retallyTotals() {
   // Populate the totals with the rewards from block reward info
   const starting_height = 89300;
   for (let height = starting_height; height <= currentBlockHeight; height++) {
-    const bri = await getRedisBlockRewardInfo(height);
+    try {
+      const bri = await getRedisBlockRewardInfo(height);
+      if (!bri) {
+        console.log(`Block reward info at height ${height} not found, skipping...`);
+        continue;
+      }
+      // Calculate changes
+      const changeMinerReward = bri.miner_reward ?? 0;
+      const changeGovernanceReward = bri.governance_reward ?? 0;
+      const changeReserveReward = bri.reserve_reward ?? 0;
+      const changeYieldReward = bri.yield_reward ?? 0;
 
-    // Calculate changes
-    const changeMinerReward = bri.miner_reward ?? 0;
-    const changeGovernanceReward = bri.governance_reward ?? 0;
-    const changeReserveReward = bri.reserve_reward ?? 0;
-    const changeYieldReward = bri.yield_reward ?? 0;
+      // Update totals
+      totals.miner_reward += changeMinerReward;
+      totals.governance_reward += changeGovernanceReward;
+      totals.reserve_reward += changeReserveReward;
+      totals.yield_reward += changeYieldReward;
 
-    // Update totals
-    totals.miner_reward += changeMinerReward;
-    totals.governance_reward += changeGovernanceReward;
-    totals.reserve_reward += changeReserveReward;
-    totals.yield_reward += changeYieldReward;
-
-    // Log the block height and changes with the updated totals
-    // writeLogToFile(
-    //   `Block Height: ${height}\n` +
-    //   `Totals:\n` +
-    //   `  Miner Reward: ${totals.miner_reward} (+${changeMinerReward})\n` +
-    //   `  Governance Reward: ${totals.governance_reward} (+${changeGovernanceReward})\n` +
-    //   `  Reserve Reward: ${totals.reserve_reward} (+${changeReserveReward})\n` +
-    //   `  Yield Reward: ${totals.yield_reward} (+${changeYieldReward})`
-    // );
+      // Log the block height and changes with the updated totals
+      // writeLogToFile(
+      //   `Block Height: ${height}\n` +
+      //   `Totals:\n` +
+      //   `  Miner Reward: ${totals.miner_reward} (+${changeMinerReward})\n` +
+      //   `  Governance Reward: ${totals.governance_reward} (+${changeGovernanceReward})\n` +
+      //   `  Reserve Reward: ${totals.reserve_reward} (+${changeReserveReward})\n` +
+      //   `  Yield Reward: ${totals.yield_reward} (+${changeYieldReward})`
+      // );
+    } catch (error) {
+      console.error(`Error: reTallyTotals - block reward info at block height ${height}:`, error);
+    }
   }
 
   // Delete the previous totals key in Redis
