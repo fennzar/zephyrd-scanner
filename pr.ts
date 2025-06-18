@@ -36,18 +36,27 @@ export async function scanPricingRecords() {
   console.log("Fired pricing record scanner...");
   console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
 
+  // Compute interval for approx 1% of blocks (at least 1)
+  const totalBlocks = rpcHeight - startingHeight;
+  const logInterval = Math.max(1, Math.floor(totalBlocks / 100));
+
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
-    // const pricingRecord = await getPricingRecordFromBlock(height);
     const block = await getBlock(height);
     if (!block) {
       console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
       return;
     }
-    // Save the block hash to redis to reference later to determine if there has been a rollback 
     await redis.hset("block_hashes", height, block.result.block_header.hash);
     const pricingRecord = block.result.block_header.pricing_record;
     if (!pricingRecord) {
-      console.log(`${height}/${rpcHeight - 1} - No pricing record`);
+      if (
+        height === startingHeight ||
+        height === rpcHeight - 1 ||
+        (height - startingHeight) % logInterval === 0
+      ) {
+        const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
+        console.log(`PRs SCANNING BLOCK(s): ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
+      }
       let pr_to_save = {
         height: height,
         timestamp: 0,
@@ -59,19 +68,22 @@ export async function scanPricingRecords() {
         stable_ma: 0,
         yield_price: 0,
       };
-
       const pr_to_save_json = JSON.stringify(pr_to_save);
       await redis.hset("pricing_records", height, pr_to_save_json);
       await setRedisHeightPRs(height);
       continue;
     }
-    const percentComplete = ((height - startingHeight) / (rpcHeight - startingHeight)) * 100;
-    console.log(`PRs SCANNING BLOCK: ${height}/${rpcHeight - 1}  \t | ${percentComplete.toFixed(2)}%`);
 
-    // const pricingRecordJson = JSON.stringify(pricingRecord);
+    if (
+      height === startingHeight ||
+      height === rpcHeight - 1 ||
+      (height - startingHeight) % logInterval === 0
+    ) {
+      const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
+      console.log(`PRs SCANNING BLOCK: ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
+    }
 
     const timestamp = pricingRecord.timestamp;
-
     const spot = pricingRecord.spot * DEATOMIZE;
     const moving_average = pricingRecord.moving_average * DEATOMIZE;
     const reserve = pricingRecord.reserve * DEATOMIZE;
@@ -96,11 +108,12 @@ export async function scanPricingRecords() {
     await redis.hset("pricing_records", height, pr_to_save_json);
     await setRedisHeightPRs(height);
 
-    console.log(`Saved pricing record for height ${height}`);
-
+    // (no longer log every block)
+    // console.log(`Saved pricing record for height ${height}`);
   }
   return;
 }
+
 
 
 export async function processZYSPriceHistory() {
