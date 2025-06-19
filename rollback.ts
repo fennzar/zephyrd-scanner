@@ -17,6 +17,9 @@ function writeLogToFile(logContent: string) {
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 export async function rollbackScanner(rollBackHeight: number) {
+  //set variable in redis to indicate that we are rolling back
+  await redis.set("scanner_rolling_back", "true");
+
   const daemon_height = await getCurrentBlockHeight();
   const rollback_block_info = await getBlock(rollBackHeight);
   if (!rollback_block_info) {
@@ -147,11 +150,10 @@ export async function rollbackScanner(rollBackHeight: number) {
   // ------------------------------------------------------
   // -------------------- APY Hitory --------------------
   // ------------------------------------------------------
-  console.log(`\t Removing redis key apy_history...`);
-  await redis.del("apy_history");
 
   console.log(`\t Recalculating APY History...`);
-  await determineAPYHistory();
+  const resetAPYHistory = true;
+  await determineAPYHistory(resetAPYHistory);
 
   // ------------------------------------------------------
   // ----------------------- Totals -----------------------
@@ -161,6 +163,8 @@ export async function rollbackScanner(rollBackHeight: number) {
 
 
   console.log(`Rollback to height ${rollBackHeight} and reset completed successfully`);
+  // Unset the scanner_rolling_back flag
+  await redis.del("scanner_rolling_back");
 }
 
 

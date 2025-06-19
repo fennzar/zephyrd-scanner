@@ -8,6 +8,7 @@ import { determineAPYHistory, determineHistoricalReturns, determineProjectedRetu
 import { detectAndHandleReorg, retallyTotals, rollbackScanner } from "./rollback";
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
+import redis from "./redis";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -26,7 +27,15 @@ async function main() {
 
   mainRunning = true;
   // wait for 3 seconds to allow for route calls
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+
+  // Check if the scanner is in a rollback state
+  const isRollingBack = await redis.get("scanner_rolling_back") === "true";
+  if (isRollingBack) {
+    console.log("Scanner is rolling back, exiting main function");
+    return;
+  }
+
   await detectAndHandleReorg();
   console.log("---------| MAIN |-----------");
   await aggregate(); // needs to be first initially
@@ -242,6 +251,26 @@ app.get("/retallytotals", async (req: Request, res: Response) => {
     res.status(200).send("Totals retallied successfully");
   } catch (error) {
     console.error("/retallytotals - Error in retallyTotals:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+// Redetermine APY History
+app.get("/redetermineapyhistory", async (req: Request, res: Response) => {
+  const clientIp = req.ip;
+
+  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+    console.log(`ip ${clientIp} tried to access /redetermineapyhistory and was denied`);
+    return res.status(403).send("Access denied to /redetermineapyhistory. No Public Access.");
+  }
+
+  console.log(`zephyrdscanner /redetermineapyhistory called`);
+
+  try {
+    await determineAPYHistory(true); // true to reset all
+    res.status(200).send("determineAPYHistory redetermined successfully");
+  } catch (error) {
+    console.error("/redetermineapyhistory - Error in retallyTotals:", error);
     res.status(500).send("Internal server error");
   }
 });
