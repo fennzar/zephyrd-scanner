@@ -163,15 +163,6 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       return { incr_totals };
     }
 
-    if (pricing_record_height === 0) {
-      console.error("REALLY MESSED UP DATA? - pricing_record_height is 0 from await readTx() and should be in miner or conversion tx");
-      // Print details for debugging
-      console.error("Transaction hash:", hash);
-      console.error("response_data:", response_data);
-      console.error("Transaction JSON:", tx_json);
-      return { incr_totals };
-    }
-
     // Miner reward transaction!
     const miner_reward = tx_amount * DEATOMIZE;
     let governance_reward = 0;
@@ -243,6 +234,15 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
 
   // pipeline.hincrbyfloat("totals", "conversion_transactions", 1);
   incr_totals.conversion_transactions += 1;
+
+  if (pricing_record_height === 0) {
+    console.error("Tx - REALLY MESSED UP DATA? - pricing_record_height is 0 from await readTx() and should be here in conversion (or miner?) transaction");
+    // Print details for debugging
+    console.error("Transaction hash:", hash);
+    console.error("response_data:", response_data);
+    console.error("Transaction JSON:", tx_json);
+    return { incr_totals };
+  }
 
   const relevant_pr = await getRedisPricingRecord(pricing_record_height);
 
