@@ -593,9 +593,9 @@ export async function getLiveStats() {
     const zeph_circ_from_explorer = (await getCirculatingSuppliesFromExplorer()).zeph_circ; // Source of "Truth"
     const zeph_circ_currentBlockProtocolStatus = currentBlockProtocolStats.zeph_circ;  // Fallback
 
-    // warn if explorer and currentBlockProtocolStats differ
-    if (zeph_circ_from_explorer !== zeph_circ_currentBlockProtocolStatus) {
-      console.warn(`getLiveStats: Zeph circulating supply from explorer (${zeph_circ_from_explorer}) does not match currentBlockProtocolStats (${zeph_circ_currentBlockProtocolStatus}) || Differnece: ${Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus)}`);
+    // warn if explorer and currentBlockProtocolStats differ by more than 1000
+    if (Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus) > 1000) {
+      console.warn(`getLiveStats: Zeph circulating supply from explorer (${zeph_circ_from_explorer}) does not match currentBlockProtocolStats (${zeph_circ_currentBlockProtocolStatus}) significantly || difference: ${Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus)}`);
     }
     const zeph_circ = zeph_circ_from_explorer || zeph_circ_currentBlockProtocolStatus; // Use explorer data if available, otherwise fallback to currentBlockProtocolStats
 
