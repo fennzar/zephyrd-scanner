@@ -337,7 +337,11 @@ async function aggregateBlock(height_to_process: number) {
   setRedisHeight(height_to_process);
 }
 
-async function aggregateByTimestamp(startTimestamp: number, endingTimestamp: number, windowType = "hourly" || "daily") {
+async function aggregateByTimestamp(
+  startTimestamp: number,
+  endingTimestamp: number,
+  windowType: "hourly" | "daily" = "hourly",
+) {
   console.log(`\tAggregating by timestamp: ${startTimestamp} to ${endingTimestamp} for ${windowType}`);
   let timestampWindow = windowType === "hourly" ? 3600 : 86400;
   // is there more than
