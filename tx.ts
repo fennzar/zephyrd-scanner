@@ -317,7 +317,7 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       const mint_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01; // 0% -> 1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 1 - mint_reserve_conversion_fee) * mint_reserve_conversion_fee;
+      conversion_fee_amount = (to_amount / (1 - mint_reserve_conversion_fee)) * mint_reserve_conversion_fee;
 
       tx_fee_asset = from_asset;
 
@@ -339,7 +339,7 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       const redeem_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.01; // 2% -> 1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 1 - redeem_reserve_conversion_fee) * redeem_reserve_conversion_fee;
+      conversion_fee_amount = (to_amount / (1 - redeem_reserve_conversion_fee)) * redeem_reserve_conversion_fee;
       tx_fee_asset = from_asset;
 
       // pipeline.hincrbyfloat("totals", "redeem_reserve_count", 1);
@@ -360,7 +360,7 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       const mint_yield_conversion_fee = 0.001; // 0.1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 1 - mint_yield_conversion_fee) * mint_yield_conversion_fee;
+      conversion_fee_amount = (to_amount / (1 - mint_yield_conversion_fee)) * mint_yield_conversion_fee;
       tx_fee_asset = from_asset;
 
       // pipeline.hincrbyfloat("totals", "mint_yield_count", 1);
@@ -381,7 +381,7 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       const redeem_yield_conversion_fee = 0.001; // 0.1%
 
       conversion_fee_asset = to_asset;
-      conversion_fee_amount = (to_amount / 1 - redeem_yield_conversion_fee) * redeem_yield_conversion_fee;
+      conversion_fee_amount = (to_amount / (1 - redeem_yield_conversion_fee)) * redeem_yield_conversion_fee;
       tx_fee_asset = from_asset;
 
       // pipeline.hincrbyfloat("totals", "redeem_yield_count", 1);

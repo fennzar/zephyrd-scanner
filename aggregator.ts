@@ -268,26 +268,26 @@ async function aggregateBlock(height_to_process: number) {
             blockData.zephrsv_circ -= tx.from_amount;
             blockData.fees_zeph += tx.conversion_fee_amount;
             break;
-          case "mint_yield":
-            blockData.yield_conversion_transactions_count += 1;
-            // to = ZYIELD (ZYS)
-            // from = ZEPHUSD (ZSD)
-            blockData.mint_yield_count += 1;
-            blockData.mint_yield_volume += tx.to_amount;
-            blockData.fees_zyield += tx.conversion_fee_amount;
-            blockData.zyield_circ += tx.to_amount;
-            blockData.zsd_in_yield_reserve += tx.from_amount;
-            break;
-          case "redeem_yield":
-            blockData.yield_conversion_transactions_count += 1;
-            // to = ZEPHUSD (ZSD)
-            // from = ZYIELD (ZYS)
-            blockData.redeem_yield_count += 1;
-            blockData.redeem_yield_volume += tx.from_amount;
-            blockData.fees_zephusd_yield += tx.conversion_fee_amount;
-            blockData.zyield_circ -= tx.from_amount;
-            blockData.zsd_in_yield_reserve -= tx.to_amount;
-            break;
+        case "mint_yield":
+          blockData.yield_conversion_transactions_count += 1;
+          // to = ZYIELD (ZYS)
+          // from = ZEPHUSD (ZSD)
+          blockData.mint_yield_count += 1;
+          blockData.mint_yield_volume += tx.to_amount;
+          blockData.fees_zyield += tx.conversion_fee_amount;
+          blockData.zyield_circ += tx.to_amount;
+          blockData.zsd_in_yield_reserve += tx.from_amount;
+          break;
+        case "redeem_yield":
+          blockData.yield_conversion_transactions_count += 1;
+          // to = ZEPHUSD (ZSD)
+          // from = ZYIELD (ZYS)
+          blockData.redeem_yield_count += 1;
+          blockData.redeem_yield_volume += tx.from_amount;
+          blockData.fees_zephusd_yield += tx.conversion_fee_amount;
+          blockData.zyield_circ -= tx.from_amount;
+          blockData.zsd_in_yield_reserve -= tx.to_amount;
+          break;
           default:
             console.log(`Unknown conversion type: ${tx.conversion_type}`);
             console.log(tx);
