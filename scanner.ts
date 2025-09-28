@@ -33,6 +33,7 @@ async function main() {
   const isRollingBack = await redis.get("scanner_rolling_back") === "true";
   if (isRollingBack) {
     console.log("Scanner is rolling back, exiting main function");
+    mainRunning = false;
     return;
   }
 
