@@ -13,6 +13,34 @@ const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
 
+const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
+const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
+
+function convertZephToZsd(amountZeph: number, stable: number, stableMA: number, blockHeight: number): number {
+  if (!amountZeph || amountZeph <= 0) {
+    return 0;
+  }
+
+  const exchangeRate = Math.max(stable, stableMA);
+  if (!exchangeRate || exchangeRate <= 0) {
+    return 0;
+  }
+
+  const amountAtoms = BigInt(Math.round(amountZeph * ATOMIC_UNITS_NUMBER));
+  const exchangeAtoms = BigInt(Math.round(exchangeRate * ATOMIC_UNITS_NUMBER));
+  if (exchangeAtoms === 0n) {
+    return 0;
+  }
+
+  let rate = (ATOMIC_UNITS * ATOMIC_UNITS) / exchangeAtoms;
+  const feeDivisor = blockHeight >= ARTEMIS_HF_V5_BLOCK_HEIGHT ? 1000n : 50n; // 0.1% post Artemis, 2% before
+  rate -= rate / feeDivisor;
+  rate -= rate % 10000n; // mimic daemon truncation for determinism
+
+  const stableAtoms = (amountAtoms * rate) / ATOMIC_UNITS;
+  return Number(stableAtoms) / ATOMIC_UNITS_NUMBER;
+}
+
 // Function to get transaction hashes by block height
 async function getRedisTransactionHashesByBlock(blockHeight: number): Promise<string[]> {
   try {
@@ -321,7 +349,7 @@ async function aggregateBlock(height_to_process: number) {
   if (height_to_process >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
     if (blockData.reserve_ratio >= 2 && blockData.reserve_ratio_ma >= 2) {
       const yield_reward_zeph = bri.yield_reward;
-      const zsd_auto_minted = blockData.spot * yield_reward_zeph;
+      const zsd_auto_minted = convertZephToZsd(yield_reward_zeph, pr.stable, pr.stable_ma, height_to_process);
       blockData.zsd_minted_for_yield = zsd_auto_minted;
       blockData.zsd_accrued_in_yield_reserve_from_yield_reward += zsd_auto_minted;
       blockData.zsd_in_yield_reserve += zsd_auto_minted;
