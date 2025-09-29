@@ -5,7 +5,7 @@ import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords
 import { scanTransactions } from "./tx";
 import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlockProtocolStatsFromRedis, getLiveStats, getRedisHeight, getTotalsFromRedis } from "./utils";
 import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns, getAPYHistoryFromRedis, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
-import { detectAndHandleReorg, retallyTotals, rollbackScanner } from "./rollback";
+import { detectAndHandleReorg, resetScanner, retallyTotals, rollbackScanner } from "./rollback";
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import redis from "./redis";
@@ -252,6 +252,35 @@ app.get("/retallytotals", async (req: Request, res: Response) => {
     console.error("/retallytotals - Error in retallyTotals:", error);
     res.status(500).send("Internal server error");
   }
+});
+
+// Reset scanner
+app.post("/reset", async (req: Request, res: Response) => {
+  const clientIp = req.ip;
+
+  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+    console.log(`ip ${clientIp} tried to access /reset and was denied`);
+    return res.status(403).send("Access denied to /reset. No Public Access.");
+  }
+
+  if (mainRunning) {
+    return res.status(409).send("Scanner is busy. Try again later.");
+  }
+
+  mainRunning = true;
+  const scope = req.query.scope === "full" ? "full" : "aggregation";
+
+  console.log(`zephyrdscanner /reset called with scope=${scope}`);
+
+  try {
+    await resetScanner(scope);
+    res.status(200).json({ status: "ok", scope });
+  } catch (error) {
+    console.error("/reset - Error in resetScanner:", error);
+    res.status(500).send("Internal server error");
+  }
+
+  mainRunning = false;
 });
 
 // Redetermine APY History

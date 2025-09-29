@@ -2,11 +2,11 @@
 // This is not only for debugging purposes, but also for when the chain reorgs.
 import { Pipeline } from "ioredis";
 import { aggregate } from "./aggregator";
-import { scanPricingRecords } from "./pr";
+import { processZYSPriceHistory, scanPricingRecords } from "./pr";
 import redis from "./redis";
 import { scanTransactions } from "./tx";
 import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlock, getBlockProtocolStatsFromRedis, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight } from "./utils";
-import { determineAPYHistory } from "./yield";
+import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns } from "./yield";
 import * as fs from 'fs';
 
 // Function to append log information to a file
@@ -576,6 +576,71 @@ export async function retallyTotals() {
   console.log(totals);
 }
 
+
+const AGGREGATION_KEYS = [
+  "protocol_stats",
+  "protocol_stats_hourly",
+  "protocol_stats_daily",
+  "height_aggregator",
+  "timestamp_aggregator_hourly",
+  "timestamp_aggregator_daily",
+  "historical_returns",
+  "projected_returns",
+  "apy_history",
+];
+
+async function clearAggregationArtifacts() {
+  const pipeline = redis.pipeline();
+  for (const key of AGGREGATION_KEYS) {
+    pipeline.del(key);
+  }
+  await pipeline.exec();
+}
+
+type ResetScope = "full" | "aggregation";
+
+export async function resetScanner(scope: ResetScope = "aggregation") {
+  console.log(`[resetScanner] Starting ${scope} reset`);
+  await redis.set("scanner_rolling_back", "true");
+
+  try {
+    if (scope === "full") {
+      console.log("[resetScanner] Flushing Redis database");
+      await redis.flushdb();
+
+      console.log("[resetScanner] Rescanning pricing records");
+      await scanPricingRecords();
+
+      console.log("[resetScanner] Rescanning transactions");
+      await scanTransactions(true);
+    } else {
+      console.log("[resetScanner] Clearing aggregation artefacts");
+      await clearAggregationArtifacts();
+    }
+
+    console.log("[resetScanner] Running aggregation");
+    await aggregate();
+
+    console.log("[resetScanner] Rebuilding ZYS price history");
+    await redis.del("zys_price_history");
+    await processZYSPriceHistory();
+
+    console.log("[resetScanner] Rebuilding yield analytics");
+    await determineHistoricalReturns();
+    await determineProjectedReturns();
+    await determineAPYHistory(true);
+
+    console.log("[resetScanner] Retallying totals");
+    await retallyTotals();
+
+    console.log(`[resetScanner] ${scope} reset completed`);
+  } catch (error) {
+    console.error(`[resetScanner] ${scope} reset failed`, error);
+    throw error;
+  } finally {
+    await redis.del("scanner_rolling_back");
+  }
+}
 
 
 

@@ -27,12 +27,16 @@ Keeps track of:
 
 An instance of `zephyrdscanner` is running on `157.245.130.75:4000`. There is a rate limit, so please avoid excessive requests.
 
+## Public Routes
+
 ### Route: `/`
 **Description**: Root endpoint for testing server connection.
 
 **Response**: Returns a simple confirmation message "zephyrdscanner reached".
 
----
+```sh
+curl "http://157.245.130.75:4000/"
+```
 
 ### Route: `/stats`
 **Description**: Retrieves statistics on the Zephyr Protocol over different time scales.
@@ -50,16 +54,35 @@ curl "157.245.130.75:4000/stats?scale=day&from=1729468800&to=1729598400&fields=s
 
 Notes: 
 - When requesting data with block scale, the response structure and available fields differs compared to hour and day scales.
-
 - There is a lot of data, avoid not passing in from and to params where possible.
 
-### Route: `livestats`
+```sh
+curl "http://157.245.130.75:4000/stats?scale=block&from=500000&to=500100&fields=spot,moving_average"
+```
+
+### Route: `/historicalreturns`
+Returns cached historical yield returns. Optional `?test=true` serves dummy data.
+
+```sh
+curl "http://157.245.130.75:4000/historicalreturns"
+```
+
+### Route: `/projectedreturns`
+Returns projected yield returns. Optional `?test=true` serves dummy data.
+
+```sh
+curl "http://157.245.130.75:4000/projectedreturns"
+```
+
+### Route: `/livestats`
 **Description**: Retrieves (some) current live stats of Zephyr Protocol from Redis.
+
 **Example**:
 ```sh
- curl "157.245.130.75:4000/livestats" | jq
+curl "157.245.130.75:4000/livestats" | jq
 ```
-**Response**: 
+
+**Response**:
 ```sh
 {
   "zeph_price": 3.8466,
@@ -82,6 +105,62 @@ Notes:
   "zsd_in_yield_reserve": 544445.5256842732,
   "zsd_in_yield_reserve_percent": 0.7153558816412525
 }
+```
+
+### Route: `/zyspricehistory`
+Returns the processed ZYS price history stored in Redis.
+
+```sh
+curl "http://157.245.130.75:4000/zyspricehistory"
+```
+
+### Route: `/apyhistory`
+Returns the cached APY history.
+
+```sh
+curl "http://157.245.130.75:4000/apyhistory"
+```
+
+---
+
+## Private Routes (localhost only)
+
+### Route: `/rollback`
+Roll the scanner back to a given `height` and rebuild forward.
+
+```sh
+curl "http://127.0.0.1:4000/rollback?height=500000"
+```
+
+### Route: `/retallytotals`
+Recompute cumulative totals from existing aggregated data.
+
+```sh
+curl "http://127.0.0.1:4000/retallytotals"
+```
+
+### Route: `/redetermineapyhistory`
+Force a full APY history rebuild.
+
+```sh
+curl "http://127.0.0.1:4000/redetermineapyhistory"
+```
+
+### Route: `/reset`
+**Method**: `POST`
+
+**Description**: Rebuilds scanner state.
+
+**Params**:
+- **scope** (optional): `aggregation` (default) clears aggregation artefacts and recomputes derived data. Use `full` to flush the Redis database and rescan pricing records and transactions from scratch.
+
+**Examples**:
+```sh
+# Rebuild only aggregate data
+curl -X POST "http://127.0.0.1:4000/reset"
+
+# Perform a full reset (flush Redis, rescan, reaggregate)
+curl -X POST "http://127.0.0.1:4000/reset?scope=full"
 ```
 
 ---
