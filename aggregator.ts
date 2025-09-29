@@ -1,5 +1,8 @@
 // Take all data and aggregate into a single redis key done by block, hourly and daily.
 
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import redis from "./redis";
 import {
   AggregatedData,
@@ -9,6 +12,7 @@ import {
   getRedisTimestampDaily,
   getRedisTimestampHourly,
   getReserveDiffs,
+  ReserveDiffReport,
 } from "./utils";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
@@ -25,6 +29,16 @@ const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
 const WALKTHROUGH_DIFF_THRESHOLD = Number(process.env.WALKTHROUGH_DIFF_THRESHOLD ?? "1");
+const WALKTHROUGH_REPORT_PATH = process.env.WALKTHROUGH_REPORT_PATH;
+const WALKTHROUGH_REPORT_DIR = process.env.WALKTHROUGH_REPORT_DIR ?? "walkthrough_reports";
+
+interface WalkthroughDiffRecord {
+  blockHeight: number;
+  report: ReserveDiffReport;
+  conversionTransactions: number;
+}
+
+const walkthroughDiffHistory: WalkthroughDiffRecord[] = [];
 
 interface PricingRecord {
   height: number;
@@ -151,6 +165,9 @@ export async function aggregate() {
   if (lastBlockToProcess < height_to_process) {
     console.log("\tNo new blocks to aggregate.");
   } else {
+    if (WALKTHROUGH_MODE) {
+      walkthroughDiffHistory.length = 0;
+    }
     const totalBlocks = lastBlockToProcess - height_to_process + 1;
     const progressInterval = Math.max(1, Math.floor(totalBlocks / 20));
 
@@ -169,6 +186,10 @@ export async function aggregate() {
   await aggregateByTimestamp(Math.max(timestamp_hourly, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "hourly");
   // by day
   await aggregateByTimestamp(Math.max(timestamp_daily, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "daily");
+
+  if (WALKTHROUGH_MODE) {
+    await outputWalkthroughDiffReport();
+  }
 
   console.log(`Finished aggregation`);
 }
@@ -482,31 +503,214 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     .exec();
 
   if (WALKTHROUGH_MODE) {
-    await verifyReserveDiffs(height_to_process);
+    await verifyReserveDiffs(height_to_process, {
+      conversionTransactions: blockData.conversion_transactions_count,
+    });
   }
 }
 
-async function verifyReserveDiffs(blockHeight: number) {
+interface WalkthroughBlockContext {
+  conversionTransactions: number;
+}
+
+async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBlockContext) {
   try {
-    const diffReport = await getReserveDiffs();
+    const diffReport = await getReserveDiffs({
+      targetHeight: blockHeight,
+      allowSnapshots: WALKTHROUGH_MODE,
+    });
+
+    if (WALKTHROUGH_MODE) {
+      console.log(`[walkthrough] block ${blockHeight} reserve diff`, {
+        ...diffReport,
+        conversion_transactions: context?.conversionTransactions ?? 0,
+      });
+      if (!diffReport.mismatch) {
+        walkthroughDiffHistory.push({
+          blockHeight,
+          report: diffReport,
+          conversionTransactions: context?.conversionTransactions ?? 0,
+        });
+      } else {
+        console.warn(
+          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${diffReport.source_height ?? "unknown"})`
+        );
+      }
+    }
 
     if (diffReport.mismatch) {
       return;
     }
 
-    if (WALKTHROUGH_MODE) {
-      console.log(`[walkthrough] block ${blockHeight} reserve diff`, diffReport);
+    let maxDiff = 0;
+    if (diffReport.diffs.length > 0) {
+      maxDiff = Math.max(...diffReport.diffs.map((entry) => entry.difference));
     }
 
-    const maxDiff = Math.max(...diffReport.diffs.map((entry) => entry.difference));
-
     if (maxDiff > WALKTHROUGH_DIFF_THRESHOLD) {
-      throw new Error(`Walkthrough diff exceeded threshold ${WALKTHROUGH_DIFF_THRESHOLD} at block ${blockHeight}`);
+      const message = `Walkthrough diff exceeded threshold ${WALKTHROUGH_DIFF_THRESHOLD} at block ${blockHeight}`;
+      if (WALKTHROUGH_MODE) {
+        console.warn(`[walkthrough] ${message}`);
+      } else {
+        throw new Error(message);
+      }
     }
   } catch (error) {
     console.error("[walkthrough] reserve diff check failed", error);
     throw error;
   }
+}
+
+async function outputWalkthroughDiffReport() {
+  if (!WALKTHROUGH_MODE) {
+    return;
+  }
+
+  if (walkthroughDiffHistory.length === 0) {
+    console.log("[walkthrough] No reserve diff records captured this run.");
+    return;
+  }
+
+  let totalConversions = 0;
+  let blocksWithConversions = 0;
+  let netZephDiffAtoms = 0;
+  let totalAbsZephDiffAtoms = 0;
+  const perBlockSummaries: string[] = [];
+  const driftWithoutConversionsRecords: { block_height: number; diff_atoms: number }[] = [];
+
+  for (const record of walkthroughDiffHistory) {
+    const { blockHeight, report, conversionTransactions } = record;
+    totalConversions += conversionTransactions;
+    if (conversionTransactions > 0) {
+      blocksWithConversions += 1;
+    }
+
+    const zephEntry = report.diffs.find((entry) => entry.field === "zeph_in_reserve");
+    const diffAtoms = zephEntry?.difference_atoms ?? 0;
+    const diffValue = zephEntry?.difference ?? 0;
+    netZephDiffAtoms += diffAtoms;
+    totalAbsZephDiffAtoms += Math.abs(diffAtoms);
+
+    if (conversionTransactions === 0 && Math.abs(diffAtoms) > 0) {
+      driftWithoutConversionsRecords.push({ block_height: blockHeight, diff_atoms: diffAtoms });
+    }
+
+    const sourceLabel = report.source === "snapshot" ? "snapshot" : "rpc";
+    const formattedDiff = diffValue ? diffValue.toFixed(12) : "0";
+    perBlockSummaries.push(
+      `[walkthrough] h=${blockHeight} | src=${sourceLabel} | conv=${conversionTransactions} | zeph_atoms_diff=${diffAtoms} | zeph_diff=${formattedDiff}`
+    );
+  }
+
+  console.log("[walkthrough] Reserve drift report");
+  perBlockSummaries.forEach((line) => console.log(line));
+
+  const blockCount = walkthroughDiffHistory.length;
+  const averageAbsZephDiffAtoms = blockCount > 0 ? totalAbsZephDiffAtoms / blockCount : 0;
+
+  console.log(`[walkthrough] Blocks analysed: ${blockCount}`);
+  console.log(
+    `[walkthrough] Total conversion transactions: ${totalConversions} (across ${blocksWithConversions} blocks)`
+  );
+  const netZephDiff = netZephDiffAtoms / ATOMIC_UNITS_NUMBER;
+  const avgAbsZephDiff = averageAbsZephDiffAtoms / ATOMIC_UNITS_NUMBER;
+
+  console.log(
+    `[walkthrough] Net zeph reserve drift: ${netZephDiffAtoms} atoms (${netZephDiff.toFixed(12)} ZEPH)`
+  );
+  console.log(
+    `[walkthrough] Avg |zeph drift| per block: ${Math.round(averageAbsZephDiffAtoms)} atoms (${avgAbsZephDiff.toFixed(12)} ZEPH)`
+  );
+
+  if (driftWithoutConversionsRecords.length > 0) {
+    const driftStrings = driftWithoutConversionsRecords.map(
+      (entry) => `${entry.block_height} (${entry.diff_atoms})`
+    );
+    console.log(
+      `[walkthrough] Drift detected on conversion-free blocks: ${driftStrings.join(", ")}`
+    );
+  } else {
+    console.log("[walkthrough] No drift detected on conversion-free blocks.");
+  }
+
+  const firstBlock = walkthroughDiffHistory[0];
+  const lastBlock = walkthroughDiffHistory[walkthroughDiffHistory.length - 1];
+  const generatedAt = new Date().toISOString();
+
+  const reportPayload = {
+    generated_at: generatedAt,
+    block_range: {
+      start: firstBlock.blockHeight,
+      end: lastBlock.blockHeight,
+      total: walkthroughDiffHistory.length,
+    },
+    summary: {
+      total_conversion_transactions: totalConversions,
+      blocks_with_conversions: blocksWithConversions,
+      net_zeph_drift_atoms: netZephDiffAtoms,
+      net_zeph_drift: netZephDiff,
+      average_abs_zeph_drift_atoms: averageAbsZephDiffAtoms,
+      average_abs_zeph_drift: avgAbsZephDiff,
+      drift_without_conversions: driftWithoutConversionsRecords,
+    },
+    blocks: walkthroughDiffHistory.map(({ blockHeight, report, conversionTransactions }) => ({
+      block_height: blockHeight,
+      conversion_transactions: conversionTransactions,
+      reserve_height: report.reserve_height,
+      source: report.source,
+      source_height: report.source_height,
+      snapshot_path: report.snapshot_path,
+      diffs: report.diffs,
+    })),
+  };
+
+  try {
+    const reportPath = await persistWalkthroughReport(reportPayload);
+    if (reportPath) {
+      console.log(`[walkthrough] Report saved to ${reportPath}`);
+    }
+  } catch (error) {
+    console.error("[walkthrough] Failed to save walkthrough report:", error);
+  }
+}
+
+interface WalkthroughReportPayload {
+  generated_at: string;
+  block_range: {
+    start: number;
+    end: number;
+    total: number;
+  };
+  summary: {
+    total_conversion_transactions: number;
+    blocks_with_conversions: number;
+    net_zeph_drift_atoms: number;
+    net_zeph_drift: number;
+    average_abs_zeph_drift_atoms: number;
+    average_abs_zeph_drift: number;
+    drift_without_conversions: { block_height: number; diff_atoms: number }[];
+  };
+  blocks: Array<{
+    block_height: number;
+    conversion_transactions: number;
+    reserve_height: number;
+    source: "rpc" | "snapshot";
+    source_height?: number;
+    snapshot_path?: string;
+    diffs: ReserveDiffReport["diffs"];
+  }>;
+}
+
+async function persistWalkthroughReport(report: WalkthroughReportPayload): Promise<string | null> {
+  const timestamp = Date.now();
+  const defaultFileName = `walkthrough-report-${report.block_range.start}-${report.block_range.end}-${timestamp}.json`;
+  const resolvedPath = WALKTHROUGH_REPORT_PATH
+    ? path.resolve(process.cwd(), WALKTHROUGH_REPORT_PATH)
+    : path.resolve(process.cwd(), WALKTHROUGH_REPORT_DIR, defaultFileName);
+
+  await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+  await fs.writeFile(resolvedPath, JSON.stringify(report, null, 2), "utf8");
+  return resolvedPath;
 }
 
 async function aggregateByTimestamp(

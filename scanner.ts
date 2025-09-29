@@ -32,6 +32,7 @@ import redis from "./redis";
 dotenv.config();
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
+const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
 
 let mainRunning = false;
 async function main() {
@@ -354,15 +355,26 @@ app.get("/redetermineapyhistory", async (req: Request, res: Response) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`zephyrdscanner listening at http://localhost:${port} \n`);
-});
+if (!WALKTHROUGH_MODE) {
+  app.listen(port, () => {
+    console.log(`zephyrdscanner listening at http://localhost:${port} \n`);
+  });
 
-// 5 min set interval for scanning
-setInterval(async () => {
-  await main();
-}, 300000);
+  // 5 min set interval for scanning
+  setInterval(async () => {
+    await main();
+  }, 300000);
 
-(async () => {
-  main();
-})();
+  (async () => {
+    await main();
+  })();
+} else {
+  (async () => {
+    await main();
+    console.log("[walkthrough] Main loop completed, exiting");
+    process.exit(0);
+  })().catch((error) => {
+    console.error("[walkthrough] Error during main loop", error);
+    process.exit(1);
+  });
+}

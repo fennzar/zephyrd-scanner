@@ -5,3 +5,5 @@ node_modules
 *.csv
 *.png
 *.txt
+reserve_snapshots/
+walkthrough_reports/

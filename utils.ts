@@ -1,5 +1,7 @@
 import fetch from "node-fetch";
 import { Agent } from "http"; // or 'https' for secure connections
+import fs from "node:fs/promises";
+import path from "node:path";
 
 // Create a global agent
 const agent = new Agent({ keepAlive: true });
@@ -9,6 +11,7 @@ const HEADERS = {
   "Content-Type": "application/json",
 };
 const DEATOMIZE = 10 ** -12;
+const RESERVE_SNAPSHOT_DIR = process.env.RESERVE_SNAPSHOT_DIR ?? "reserve_snapshots";
 
 export async function getCurrentBlockHeight(): Promise<number> {
   try {
@@ -142,6 +145,36 @@ interface ReserveInfoResponse {
   };
 }
 
+interface ReserveSnapshot {
+  captured_at: string;
+  reserve_height: number;
+  previous_height: number;
+  hf_version: number;
+  on_chain: {
+    zeph_reserve_atoms: string;
+    zeph_reserve: number;
+    zsd_circ_atoms: string;
+    zsd_circ: number;
+    zrs_circ_atoms: string;
+    zrs_circ: number;
+    zyield_circ_atoms: string;
+    zyield_circ: number;
+    zsd_yield_reserve_atoms: string;
+    zsd_yield_reserve: number;
+    reserve_ratio_atoms: string;
+    reserve_ratio: number;
+    reserve_ratio_ma_atoms?: string;
+    reserve_ratio_ma?: number;
+  };
+  pricing_record?: ReserveInfoResponse["result"]["pr"];
+  raw?: ReserveInfoResponse["result"];
+}
+
+interface ReserveSnapshotWithPath {
+  snapshot: ReserveSnapshot;
+  filePath: string;
+}
+
 export async function getReserveInfo() {
   try {
     const response = await fetch(`${RPC_URL}/json_rpc`, {
@@ -197,7 +230,16 @@ function quantizeToAtoms(value: number) {
   return { atoms, quantized };
 }
 
-function diffField(name: string, onChain: number, cached: number) {
+export interface ReserveDiffEntry {
+  field: string;
+  on_chain: number;
+  cached: number;
+  difference: number;
+  difference_atoms?: number;
+  note?: string;
+}
+
+function diffField(name: string, onChain: number, cached: number): ReserveDiffEntry {
   const bothNotFinite = !Number.isFinite(onChain) && !Number.isFinite(cached);
   if (bothNotFinite) {
     return { field: name, on_chain: onChain, cached, difference: 0, note: "non-finite" };
@@ -222,56 +264,190 @@ function diffField(name: string, onChain: number, cached: number) {
   return { field: name, on_chain: onChain, cached, difference };
 }
 
-export async function getReserveDiffs() {
-  const reserveInfo = await getReserveInfo();
-  if (!reserveInfo) {
-    throw new Error("Reserve info unavailable");
+async function readReserveSnapshotFile(filePath: string): Promise<ReserveSnapshot | null> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return JSON.parse(raw) as ReserveSnapshot;
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function loadReserveSnapshotByReserveHeight(
+  reserveHeight: number,
+  snapshotDir = RESERVE_SNAPSHOT_DIR
+): Promise<ReserveSnapshotWithPath | null> {
+  const resolvedDir = path.resolve(process.cwd(), snapshotDir);
+  const filePath = path.join(resolvedDir, `${reserveHeight}.json`);
+  const snapshot = await readReserveSnapshotFile(filePath);
+  if (!snapshot) {
+    return null;
+  }
+  return { snapshot, filePath };
+}
+
+async function loadReserveSnapshotByPreviousHeight(
+  previousHeight: number,
+  snapshotDir = RESERVE_SNAPSHOT_DIR
+): Promise<ReserveSnapshotWithPath | null> {
+  const direct = await loadReserveSnapshotByReserveHeight(previousHeight + 1, snapshotDir);
+  if (direct && direct.snapshot.previous_height === previousHeight) {
+    return direct;
   }
 
+  const resolvedDir = path.resolve(process.cwd(), snapshotDir);
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(resolvedDir);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const filePath = path.join(resolvedDir, file);
+    if (direct && direct.filePath === filePath) {
+      continue;
+    }
+    const snapshot = await readReserveSnapshotFile(filePath);
+    if (snapshot && snapshot.previous_height === previousHeight) {
+      return { snapshot, filePath };
+    }
+  }
+
+  return null;
+}
+
+interface ReserveDiffOptions {
+  targetHeight?: number;
+  allowSnapshots?: boolean;
+  snapshotDir?: string;
+}
+
+export interface ReserveDiffReport {
+  block_height: number;
+  reserve_height: number;
+  diffs: ReserveDiffEntry[];
+  mismatch: boolean;
+  source: "rpc" | "snapshot";
+  source_height?: number;
+  snapshot_path?: string;
+}
+
+export async function getReserveDiffs(options: ReserveDiffOptions = {}): Promise<ReserveDiffReport> {
   const latestStats = await getLatestProtocolStats();
   if (!latestStats) {
     throw new Error("No protocol stats in cache");
   }
 
-  const reserveHeight = reserveInfo.result.height - 1;
-  const scannerHeight = latestStats.block_height;
+  const targetHeight = options.targetHeight ?? latestStats.block_height;
+  const reserveInfo = await getReserveInfo();
 
-  if (reserveHeight !== scannerHeight) {
-    return {
-      block_height: scannerHeight,
-      reserve_height: reserveHeight,
-      diffs: [],
-      mismatch: true,
-    };
+  type OnChainMetrics = {
+    zeph_in_reserve: number;
+    zephusd_circ: number;
+    zephrsv_circ: number;
+    zyield_circ: number;
+    zsd_in_yield_reserve: number;
+    reserve_ratio: number;
+  };
+
+  const buildDiffs = (onChain: OnChainMetrics): ReserveDiffEntry[] => {
+    const diffs: ReserveDiffEntry[] = [];
+    diffs.push(diffField("zeph_in_reserve", onChain.zeph_in_reserve, latestStats.zeph_in_reserve));
+    diffs.push(diffField("zephusd_circ", onChain.zephusd_circ, latestStats.zephusd_circ));
+    diffs.push(diffField("zephrsv_circ", onChain.zephrsv_circ, latestStats.zephrsv_circ));
+    diffs.push(diffField("zyield_circ", onChain.zyield_circ, latestStats.zyield_circ));
+    diffs.push(diffField("zsd_in_yield_reserve", onChain.zsd_in_yield_reserve, latestStats.zsd_in_yield_reserve));
+    diffs.push(diffField("reserve_ratio", onChain.reserve_ratio, latestStats.reserve_ratio));
+    return diffs;
+  };
+
+  let reserveHeight = targetHeight;
+  let sourceHeight: number | undefined;
+  let source: "rpc" | "snapshot" = "rpc";
+  let diffs: ReserveDiffEntry[] = [];
+  let mismatch = false;
+  let snapshotPath: string | undefined;
+
+  const reserveInfoResult = reserveInfo?.result;
+  if (reserveInfoResult) {
+    sourceHeight = reserveInfoResult.height - 1;
   }
 
-  const diffs = [];
-
-  const zephReserve = Number(reserveInfo.result.zeph_reserve) * DEATOMIZE;
-  diffs.push(diffField("zeph_in_reserve", zephReserve, latestStats.zeph_in_reserve));
-
-  const numStables = Number(reserveInfo.result.num_stables) * DEATOMIZE;
-  diffs.push(diffField("zephusd_circ", numStables, latestStats.zephusd_circ));
-
-  const numReserves = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
-  diffs.push(diffField("zephrsv_circ", numReserves, latestStats.zephrsv_circ));
-
-  if (reserveInfo.result.num_zyield) {
-    const numYield = Number(reserveInfo.result.num_zyield) * DEATOMIZE;
-    diffs.push(diffField("zyield_circ", numYield, latestStats.zyield_circ));
+  if (reserveInfoResult && sourceHeight === targetHeight) {
+    reserveHeight = sourceHeight;
+    diffs = buildDiffs({
+      zeph_in_reserve: Number(reserveInfoResult.zeph_reserve ?? 0) * DEATOMIZE,
+      zephusd_circ: Number(reserveInfoResult.num_stables ?? 0) * DEATOMIZE,
+      zephrsv_circ: Number(reserveInfoResult.num_reserves ?? 0) * DEATOMIZE,
+      zyield_circ: Number(reserveInfoResult.num_zyield ?? 0) * DEATOMIZE,
+      zsd_in_yield_reserve: Number(reserveInfoResult.zyield_reserve ?? 0) * DEATOMIZE,
+      reserve_ratio: Number(reserveInfoResult.reserve_ratio ?? 0),
+    });
+  } else if (options.allowSnapshots) {
+    const snapshotResult = await loadReserveSnapshotByPreviousHeight(targetHeight, options.snapshotDir);
+    if (snapshotResult) {
+      const { snapshot, filePath } = snapshotResult;
+      source = "snapshot";
+      reserveHeight = snapshot.previous_height;
+      sourceHeight = snapshot.previous_height;
+      snapshotPath = filePath;
+      diffs = buildDiffs({
+        zeph_in_reserve: snapshot.on_chain.zeph_reserve ?? 0,
+        zephusd_circ: snapshot.on_chain.zsd_circ ?? 0,
+        zephrsv_circ: snapshot.on_chain.zrs_circ ?? 0,
+        zyield_circ: snapshot.on_chain.zyield_circ ?? 0,
+        zsd_in_yield_reserve: snapshot.on_chain.zsd_yield_reserve ?? 0,
+        reserve_ratio: snapshot.on_chain.reserve_ratio ?? 0,
+      });
+    } else if (reserveInfoResult) {
+      reserveHeight = sourceHeight ?? targetHeight;
+      diffs = buildDiffs({
+        zeph_in_reserve: Number(reserveInfoResult.zeph_reserve ?? 0) * DEATOMIZE,
+        zephusd_circ: Number(reserveInfoResult.num_stables ?? 0) * DEATOMIZE,
+        zephrsv_circ: Number(reserveInfoResult.num_reserves ?? 0) * DEATOMIZE,
+        zyield_circ: Number(reserveInfoResult.num_zyield ?? 0) * DEATOMIZE,
+        zsd_in_yield_reserve: Number(reserveInfoResult.zyield_reserve ?? 0) * DEATOMIZE,
+        reserve_ratio: Number(reserveInfoResult.reserve_ratio ?? 0),
+      });
+      mismatch = true;
+    } else {
+      mismatch = true;
+    }
+  } else if (reserveInfoResult) {
+    reserveHeight = sourceHeight ?? targetHeight;
+    diffs = buildDiffs({
+      zeph_in_reserve: Number(reserveInfoResult.zeph_reserve ?? 0) * DEATOMIZE,
+      zephusd_circ: Number(reserveInfoResult.num_stables ?? 0) * DEATOMIZE,
+      zephrsv_circ: Number(reserveInfoResult.num_reserves ?? 0) * DEATOMIZE,
+      zyield_circ: Number(reserveInfoResult.num_zyield ?? 0) * DEATOMIZE,
+      zsd_in_yield_reserve: Number(reserveInfoResult.zyield_reserve ?? 0) * DEATOMIZE,
+      reserve_ratio: Number(reserveInfoResult.reserve_ratio ?? 0),
+    });
+    mismatch = true;
+  } else {
+    mismatch = true;
   }
-
-  const zyieldReserve = Number(reserveInfo.result.zyield_reserve) * DEATOMIZE;
-  diffs.push(diffField("zsd_in_yield_reserve", zyieldReserve, latestStats.zsd_in_yield_reserve));
-
-  const reserveRatio = Number(reserveInfo.result.reserve_ratio);
-  diffs.push(diffField("reserve_ratio", reserveRatio, latestStats.reserve_ratio));
 
   return {
-    block_height: scannerHeight,
+    block_height: latestStats.block_height,
     reserve_height: reserveHeight,
     diffs,
-    mismatch: false,
+    mismatch,
+    source,
+    source_height: sourceHeight,
+    snapshot_path: snapshotPath,
   };
 }
 export async function getPricingRecordFromBlock(height: number) {
