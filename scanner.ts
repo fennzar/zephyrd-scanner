@@ -49,8 +49,6 @@ async function main() {
   console.log("---------| MAIN |-----------");
   await determineHistoricalReturns();
   console.log("---------| MAIN |-----------");
-  await determineHistoricalReturns();
-  console.log("---------| MAIN |-----------");
   await determineProjectedReturns();
   console.log("---------| MAIN |-----------");
   await processZYSPriceHistory();
