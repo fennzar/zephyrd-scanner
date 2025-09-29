@@ -1,8 +1,7 @@
 // Take all data and aggregate into a single redis key done by block, hourly and daily.
 
-import e from "express";
 import redis from "./redis";
-import { AggregatedData, ProtocolStats, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly, getRedisTransaction, setRedisHeight } from "./utils";
+import { AggregatedData, ProtocolStats, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly } from "./utils";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -15,6 +14,26 @@ const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type chan
 
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
+
+interface PricingRecord {
+  height: number;
+  timestamp: number;
+  spot: number;
+  moving_average: number;
+  reserve: number;
+  reserve_ma: number;
+  stable: number;
+  stable_ma: number;
+  yield_price: number;
+}
+
+interface BlockRewardInfo {
+  height: number;
+  miner_reward: number;
+  governance_reward: number;
+  reserve_reward: number;
+  yield_reward: number;
+}
 
 function convertZephToZsd(amountZeph: number, stable: number, stableMA: number, blockHeight: number): number {
   if (!amountZeph || amountZeph <= 0) {
@@ -41,24 +60,6 @@ function convertZephToZsd(amountZeph: number, stable: number, stableMA: number, 
   return Number(stableAtoms) / ATOMIC_UNITS_NUMBER;
 }
 
-// Function to get transaction hashes by block height
-async function getRedisTransactionHashesByBlock(blockHeight: number): Promise<string[]> {
-  try {
-    // Fetch the JSON string of transaction hashes for the given block height
-    const txHashesJson = await redis.hget("txs_by_block", blockHeight.toString());
-    if (!txHashesJson) {
-      // console.log(`No transactions found for block ${blockHeight}.`);
-      return [];
-    }
-
-    // Parse the JSON string to get the array of transaction hashes
-    const txHashes = JSON.parse(txHashesJson);
-    return txHashes;
-  } catch (error) {
-    console.error("Error fetching transaction hashes by block:", error);
-    return [];
-  }
-}
 interface Transaction {
   hash: string;
   block_height: number;
@@ -135,8 +136,17 @@ export async function aggregate() {
 
   console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs - 1}`);
 
-  for (let i = height_to_process; i <= current_height_prs - 1; i++) {
-    await aggregateBlock(i);
+  const lastBlockToProcess = current_height_prs - 1;
+  if (lastBlockToProcess < height_to_process) {
+    console.log("\tNo new blocks to aggregate.");
+  } else {
+    const totalBlocks = lastBlockToProcess - height_to_process + 1;
+    const progressInterval = Math.max(1, Math.floor(totalBlocks / 20));
+
+    for (let i = height_to_process; i <= lastBlockToProcess; i++) {
+      const shouldLog = i === lastBlockToProcess || (i - height_to_process) % progressInterval === 0;
+      await aggregateBlock(i, shouldLog);
+    }
   }
 
   // get pr for current_height_prs
@@ -152,37 +162,129 @@ export async function aggregate() {
   console.log(`Finished aggregation`);
 }
 
-async function aggregateBlock(height_to_process: number) {
-  // const height_to_process = Math.max(height + 1, HF_VERSION_1_HEIGHT);
+async function loadBlockInputs(height: number) {
+  const pipelineResults = await redis
+    .pipeline()
+    .hget("pricing_records", height.toString())
+    .hget("block_rewards", height.toString())
+    .hget("protocol_stats", (height - 1).toString())
+    .hget("txs_by_block", height.toString())
+    .exec();
 
-  console.log(`\tAggregating block: ${height_to_process}`);
+  if (!pipelineResults) {
+    throw new Error(`Failed to load Redis inputs for block ${height}`);
+  }
 
-  const pr = await getRedisPricingRecord(height_to_process);
+  const [pricingRecordResult, blockRewardResult, prevStatsResult, txHashesResult] = pipelineResults;
+
+  const prJson = pricingRecordResult?.[1] as string | null;
+  const briJson = blockRewardResult?.[1] as string | null;
+  const prevBlockDataJson = prevStatsResult?.[1] as string | null;
+  const txHashesJson = txHashesResult?.[1] as string | null;
+
+  let pr: PricingRecord | null = null;
+  let bri: BlockRewardInfo | null = null;
+  let prevBlockData: Partial<ProtocolStats> = {};
+  let txHashes: string[] = [];
+
+  try {
+    pr = prJson ? (JSON.parse(prJson) as PricingRecord) : null;
+  } catch (error) {
+    console.error(`Error parsing pricing record for block ${height}:`, error);
+  }
+
+  try {
+    bri = briJson ? (JSON.parse(briJson) as BlockRewardInfo) : null;
+  } catch (error) {
+    console.error(`Error parsing block reward info for block ${height}:`, error);
+  }
+
+  try {
+    prevBlockData = prevBlockDataJson ? JSON.parse(prevBlockDataJson) : {};
+  } catch (error) {
+    console.error(`Error parsing previous block stats for block ${height}:`, error);
+    prevBlockData = {};
+  }
+
+  try {
+    txHashes = txHashesJson ? JSON.parse(txHashesJson) : [];
+  } catch (error) {
+    console.error(`Error parsing transaction hashes for block ${height}:`, error);
+    txHashes = [];
+  }
+
+  return { pr, bri, prevBlockData, txHashes };
+}
+
+async function fetchTransactions(hashes: string[]): Promise<Map<string, Transaction>> {
+  const txMap = new Map<string, Transaction>();
+  if (hashes.length === 0) {
+    return txMap;
+  }
+
+  const pipeline = redis.pipeline();
+  for (const hash of hashes) {
+    pipeline.hget("txs", hash);
+  }
+
+  const results = await pipeline.exec();
+  if (!results) {
+    return txMap;
+  }
+
+  results.forEach((result, index) => {
+    const [err, json] = result;
+    const hash = hashes[index];
+    if (err) {
+      console.error(`Error fetching transaction ${hash}:`, err);
+      return;
+    }
+    if (!json) {
+      return;
+    }
+    try {
+      const jsonString = typeof json === "string" ? json : json?.toString?.();
+      if (!jsonString) {
+        return;
+      }
+      txMap.set(hash, JSON.parse(jsonString) as Transaction);
+    } catch (error) {
+      console.error(`Error parsing transaction ${hash}:`, error);
+    }
+  });
+
+  return txMap;
+}
+
+async function aggregateBlock(height_to_process: number, logProgress = false) {
+  if (logProgress) {
+    console.log(`\tAggregating block: ${height_to_process}`);
+  }
+
+  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process);
+
   if (!pr) {
     console.log("No pricing record found for height: ", height_to_process);
     return;
   }
-  const bri = await getRedisBlockRewardInfo(height_to_process);
   if (!bri) {
     console.log("No block reward info found for height: ", height_to_process);
     return;
   }
 
-  // Fetch previous block's data for initialization
-  const prevBlockDataJson = await redis.hget("protocol_stats", (height_to_process - 1).toString());
-  let prevBlockData = prevBlockDataJson ? JSON.parse(prevBlockDataJson) : {};
+  const transactionsByHash = await fetchTransactions(txHashes);
 
   // initialize the block data
   let blockData: ProtocolStats = {
     block_height: height_to_process,
-    block_timestamp: pr ? pr.timestamp : null, // Get timestamp from pricing record
-    spot: pr ? pr.spot : 0, // Get spot from pricing record
-    moving_average: pr ? pr.moving_average : 0, // Get moving average from pricing record
-    reserve: pr ? pr.reserve : 0, // Get reserve from pricing record
-    reserve_ma: pr ? pr.reserve_ma : 0, // Get reserve moving average from pricing record
-    stable: pr ? pr.stable : 0, // Get stable from pricing record
-    stable_ma: pr ? pr.stable_ma : 0, // Get stable moving average from pricing record
-    yield_price: pr ? pr.yield_price : 0, // Get yield price from pricing record
+    block_timestamp: pr.timestamp, // Get timestamp from pricing record
+    spot: pr.spot, // Get spot from pricing record
+    moving_average: pr.moving_average, // Get moving average from pricing record
+    reserve: pr.reserve, // Get reserve from pricing record
+    reserve_ma: pr.reserve_ma, // Get reserve moving average from pricing record
+    stable: pr.stable, // Get stable from pricing record
+    stable_ma: pr.stable_ma, // Get stable moving average from pricing record
+    yield_price: pr.yield_price, // Get yield price from pricing record
     zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
     zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
     zeph_circ: prevBlockData.zeph_circ || 1965112.77028345, // Initialize from previous block or circulating supply at HF_VERSION_1_HEIGHT - 1
@@ -226,7 +328,7 @@ async function aggregateBlock(height_to_process: number) {
   // console.log(bri);
   // console.log(`\n\n`);
 
-  const block_txs = await getRedisTransactionHashesByBlock(height_to_process);
+  const block_txs = txHashes;
   // console.log(`block_txs`);
   // console.log(block_txs);
   blockData.zeph_in_reserve += bri.reserve_reward;
@@ -246,15 +348,22 @@ async function aggregateBlock(height_to_process: number) {
     (bri?.reserve_reward ?? 0) +
     (bri?.yield_reward ?? 0);
 
-  if (block_txs.length != 0) {
-    console.log(`\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`);
+  if (block_txs.length !== 0) {
+    if (logProgress) {
+      console.log(`\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`);
+    }
     let failureCount = 0;
     let failureTxs: string[] = [];
 
 
     for (const tx_hash of block_txs) {
       try {
-        const tx: Transaction = await getRedisTransaction(tx_hash);
+        const tx = transactionsByHash.get(tx_hash);
+        if (!tx) {
+          failureCount++;
+          failureTxs.push(tx_hash);
+          continue;
+        }
         switch (tx.conversion_type) {
           case "mint_stable":
             blockData.conversion_transactions_count += 1;
@@ -358,11 +467,11 @@ async function aggregateBlock(height_to_process: number) {
     }
   }
 
-  await redis.hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData));
-  // console.log(`Protocol stats aggregated for block ${height_to_process}`);
-  // console.log(blockData);
-  // console.log(`\n\n`);
-  setRedisHeight(height_to_process);
+  await redis
+    .pipeline()
+    .hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData))
+    .set("height_aggregator", height_to_process.toString())
+    .exec();
 }
 
 async function aggregateByTimestamp(
