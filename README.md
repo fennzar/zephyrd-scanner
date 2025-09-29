@@ -146,6 +146,13 @@ Force a full APY history rebuild.
 curl "http://127.0.0.1:4000/redetermineapyhistory"
 ```
 
+### Route: `/reservediff`
+Compare daemon reserve info with cached stats (absolute differences).
+
+```sh
+curl "http://127.0.0.1:4000/reservediff"
+```
+
 ### Route: `/reset`
 **Method**: `POST`
 

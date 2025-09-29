@@ -8,6 +8,7 @@ const RPC_URL = "http://127.0.0.1:17767";
 const HEADERS = {
   "Content-Type": "application/json",
 };
+const DEATOMIZE = 10 ** -12;
 
 export async function getCurrentBlockHeight(): Promise<number> {
   try {
@@ -158,6 +159,78 @@ export async function getReserveInfo() {
     console.log(e);
     return;
   }
+}
+
+async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
+  const allStats = await redis.hgetall("protocol_stats");
+  if (!allStats) {
+    return null;
+  }
+
+  let latest: ProtocolStats | null = null;
+  let maxHeight = -1;
+
+  for (const [heightStr, statsJson] of Object.entries(allStats)) {
+    const height = Number(heightStr);
+    if (Number.isNaN(height)) {
+      continue;
+    }
+    if (height > maxHeight) {
+      try {
+        latest = JSON.parse(statsJson) as ProtocolStats;
+        maxHeight = height;
+      } catch (error) {
+        console.error(`Failed to parse protocol stats for height ${heightStr}:`, error);
+      }
+    }
+  }
+
+  return latest;
+}
+
+function diffField(name: string, onChain: number, cached: number) {
+  const difference = Math.abs(onChain - cached);
+  return { field: name, on_chain: onChain, cached, difference };
+}
+
+export async function getReserveDiffs() {
+  const reserveInfo = await getReserveInfo();
+  if (!reserveInfo) {
+    throw new Error("Reserve info unavailable");
+  }
+
+  const latestStats = await getLatestProtocolStats();
+  if (!latestStats) {
+    throw new Error("No protocol stats in cache");
+  }
+
+  const diffs = [];
+
+  const zephReserve = Number(reserveInfo.result.zeph_reserve) * DEATOMIZE;
+  diffs.push(diffField("zeph_in_reserve", zephReserve, latestStats.zeph_in_reserve));
+
+  const numStables = Number(reserveInfo.result.num_stables) * DEATOMIZE;
+  diffs.push(diffField("zephusd_circ", numStables, latestStats.zephusd_circ));
+
+  const numReserves = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
+  diffs.push(diffField("zephrsv_circ", numReserves, latestStats.zephrsv_circ));
+
+  if (reserveInfo.result.num_zyield) {
+    const numYield = Number(reserveInfo.result.num_zyield) * DEATOMIZE;
+    diffs.push(diffField("zyield_circ", numYield, latestStats.zyield_circ));
+  }
+
+  const zyieldReserve = Number(reserveInfo.result.zyield_reserve) * DEATOMIZE;
+  diffs.push(diffField("zsd_in_yield_reserve", zyieldReserve, latestStats.zsd_in_yield_reserve));
+
+  const reserveRatio = Number(reserveInfo.result.reserve_ratio);
+  diffs.push(diffField("reserve_ratio", reserveRatio, latestStats.reserve_ratio));
+
+  return {
+    block_height: latestStats.block_height,
+    reserve_height: reserveInfo.result.height,
+    diffs,
+  };
 }
 export async function getPricingRecordFromBlock(height: number) {
   const blockData = await getBlock(height);
@@ -558,8 +631,6 @@ export async function getLiveStats() {
       console.log(`getLiveStats: No reserve info returned from daemon`);
       return;
     }
-
-    const DEATOMIZE = 10 ** -12;
 
     const zeph_price = Number((reserveInfo.result.pr.spot * DEATOMIZE).toFixed(4));
     const zsd_rate = Number((reserveInfo.result.pr.stable * DEATOMIZE).toFixed(4));

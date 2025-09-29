@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { aggregate } from "./aggregator";
 import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
-import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlockProtocolStatsFromRedis, getLiveStats, getRedisHeight, getTotalsFromRedis } from "./utils";
+import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlockProtocolStatsFromRedis, getLiveStats, getRedisHeight, getTotalsFromRedis, getReserveDiffs } from "./utils";
 import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns, getAPYHistoryFromRedis, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
 import { detectAndHandleReorg, resetScanner, retallyTotals, rollbackScanner } from "./rollback";
 import dotenv from 'dotenv';
@@ -200,6 +200,24 @@ app.get("/apyhistory", async (req, res) => {
     res.status(200).json(result);
   } catch (error) {
     console.error("Error retrieving zys price history:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+// Reserve vs stats diff
+app.get("/reservediff", async (req: Request, res: Response) => {
+  const clientIp = req.ip;
+
+  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+    console.log(`ip ${clientIp} tried to access /reservediff and was denied`);
+    return res.status(403).send("Access denied to /reservediff. No Public Access.");
+  }
+
+  try {
+    const result = await getReserveDiffs();
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("/reservediff - Error in getReserveDiffs:", error);
     res.status(500).send("Internal server error");
   }
 });
