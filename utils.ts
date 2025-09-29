@@ -188,7 +188,36 @@ async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
   return latest;
 }
 
+function quantizeToAtoms(value: number) {
+  if (!Number.isFinite(value)) {
+    return { atoms: 0n, quantized: value };
+  }
+  const atoms = BigInt(Math.round(value / DEATOMIZE));
+  const quantized = Number(atoms) * DEATOMIZE;
+  return { atoms, quantized };
+}
+
 function diffField(name: string, onChain: number, cached: number) {
+  const bothNotFinite = !Number.isFinite(onChain) && !Number.isFinite(cached);
+  if (bothNotFinite) {
+    return { field: name, on_chain: onChain, cached, difference: 0, note: "non-finite" };
+  }
+
+  if (name !== "reserve_ratio") {
+    const onChainQuant = quantizeToAtoms(onChain);
+    const cachedQuant = quantizeToAtoms(cached);
+    const diffAtoms = onChainQuant.atoms - cachedQuant.atoms;
+    const difference = Math.abs(Number(diffAtoms)) * DEATOMIZE;
+
+    return {
+      field: name,
+      on_chain: onChainQuant.quantized,
+      cached: cachedQuant.quantized,
+      difference,
+      difference_atoms: Number(diffAtoms),
+    };
+  }
+
   const difference = Math.abs(onChain - cached);
   return { field: name, on_chain: onChain, cached, difference };
 }
@@ -202,6 +231,18 @@ export async function getReserveDiffs() {
   const latestStats = await getLatestProtocolStats();
   if (!latestStats) {
     throw new Error("No protocol stats in cache");
+  }
+
+  const reserveHeight = reserveInfo.result.height - 1;
+  const scannerHeight = latestStats.block_height;
+
+  if (reserveHeight !== scannerHeight) {
+    return {
+      block_height: scannerHeight,
+      reserve_height: reserveHeight,
+      diffs: [],
+      mismatch: true,
+    };
   }
 
   const diffs = [];
@@ -227,9 +268,10 @@ export async function getReserveDiffs() {
   diffs.push(diffField("reserve_ratio", reserveRatio, latestStats.reserve_ratio));
 
   return {
-    block_height: latestStats.block_height,
-    reserve_height: reserveInfo.result.height,
+    block_height: scannerHeight,
+    reserve_height: reserveHeight,
     diffs,
+    mismatch: false,
   };
 }
 export async function getPricingRecordFromBlock(height: number) {
@@ -513,10 +555,29 @@ export interface AggregatedData {
   redeem_yield_count: number;
   redeem_yield_volume: number;
   fees_zephusd_yield: number;
+  pending?: boolean;
+  window_start?: number;
+  window_end?: number;
 }
 
 export async function getRedisHeight() {
   const height = await redis.get("height_aggregator");
+  if (!height) {
+    return 0;
+  }
+  return parseInt(height);
+}
+
+export async function getPricingRecordHeight() {
+  const height = await redis.get("height_prs");
+  if (!height) {
+    return 0;
+  }
+  return parseInt(height);
+}
+
+export async function getTransactionHeight() {
+  const height = await redis.get("height_txs");
   if (!height) {
     return 0;
   }

@@ -12,6 +12,10 @@ IMPORTANT NOTE - THIS IS A WIP Project
 Uses redis to store information.
 Polls every minute to check for new blocks/transactions.
 
+### Walkthrough mode
+
+Run `npm run walkthrough` to flush Redis, force `ONLINE=true`, enable walkthrough logging (`WALKTHROUGH_MODE=true`, default threshold `1`), and boot the scanner. Pair with a daemon started using `--block-sync-size=1` to find the first block where cached stats diverge from on-chain reserve info.
+
 Keeps track of:
 
 - Pricing Records (Asset prices over time recorded in each block)

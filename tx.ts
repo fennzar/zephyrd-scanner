@@ -49,6 +49,33 @@ const HF_V1_BLOCK_HEIGHT = 89300;
 const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
+const MINER_REWARD_BASELINE = 1391857.1317692809;
+const GOVERNANCE_REWARD_BASELINE = 73255.6385141733;
+
+async function ensureTotalsBaseline() {
+  const totalsExists = await redis.exists("totals");
+  if (!totalsExists) {
+    await redis.hset(
+      "totals",
+      "miner_reward",
+      MINER_REWARD_BASELINE,
+      "governance_reward",
+      GOVERNANCE_REWARD_BASELINE
+    );
+    return;
+  }
+
+  const [minerReward, governanceReward] = await redis.hmget("totals", "miner_reward", "governance_reward");
+
+  if (minerReward === null) {
+    await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE);
+  }
+
+  if (governanceReward === null) {
+    await redis.hset("totals", "governance_reward", GOVERNANCE_REWARD_BASELINE);
+  }
+}
+
 async function getRedisHeight() {
   const height = await redis.get("height_txs");
   if (!height) {
@@ -217,10 +244,7 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
   // Conversion transaction!
   if (verbose_logs) console.log("\tConversion transaction!");
   // Add the hash to the txs_by_block for the specific block height
-  const txsByBlockHashes = await redis.hget("txs_by_block", block_height.toString());
-  let hashes: string[] = txsByBlockHashes ? JSON.parse(txsByBlockHashes) : [];
-  hashes.push(hash);
-  pipeline.hset("txs_by_block", block_height.toString(), JSON.stringify(hashes));
+  // handled at block level now
 
   const input_asset_type = vin[0]?.key?.asset_type || undefined;
   const output_asset_types = vout.map((v: any) => v?.target?.tagged_key?.asset_type).filter(Boolean);
@@ -444,11 +468,14 @@ export async function scanTransactions(reset = false) {
   const rpcHeight = await getCurrentBlockHeight();
   const redisHeight = await getRedisHeight();
 
+  await ensureTotalsBaseline();
+
   let startingHeight = Math.max(redisHeight + 1, hfHeight);
   if (reset) {
     startingHeight = hfHeight;
     // clear totals
     await redis.del("totals");
+    await ensureTotalsBaseline();
     // clear txs
     await redis.del("txs");
     // clear txs_by_block
@@ -473,6 +500,7 @@ export async function scanTransactions(reset = false) {
   const pipeline = redis.pipeline() as Pipeline;
 
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
+    const blockHashes: string[] = [];
     const block: any = await getBlock(height);
     if (!block) {
       console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
@@ -492,7 +520,7 @@ export async function scanTransactions(reset = false) {
     const txs = block.result.tx_hashes;
     const miner_tx = block.result.miner_tx_hash;
 
-    const { incr_totals: miner_tx_incr_totals, tx_info: undefined } = await processTx(miner_tx, verbose_logs, pipeline);
+    const { incr_totals: miner_tx_incr_totals } = await processTx(miner_tx, verbose_logs, pipeline);
 
     // if (miner_tx_incr_totals) {
     //   for (const key in miner_tx_incr_totals) total_of_total_increments[key] += miner_tx_incr_totals[key];
@@ -517,9 +545,12 @@ export async function scanTransactions(reset = false) {
         }
       }
       if (tx_info) {
+        blockHashes.push(hash);
         pipeline.hset("txs", hash, JSON.stringify(tx_info));
       }
     }
+
+    pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
 
     // await setRedisHeight(height);
 

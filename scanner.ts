@@ -3,15 +3,35 @@ import type { Request, Response } from "express";
 import { aggregate } from "./aggregator";
 import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
-import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlockProtocolStatsFromRedis, getLiveStats, getRedisHeight, getTotalsFromRedis, getReserveDiffs } from "./utils";
-import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns, getAPYHistoryFromRedis, getHistoricalReturnsFromRedis, getProjectedReturnsFromRedis } from "./yield";
+import {
+  AggregatedData,
+  ProtocolStats,
+  getAggregatedProtocolStatsFromRedis,
+  getBlockProtocolStatsFromRedis,
+  getLiveStats,
+  getPricingRecordHeight,
+  getRedisHeight,
+  getTotalsFromRedis,
+  getTransactionHeight,
+  getReserveDiffs,
+} from "./utils";
+import {
+  determineAPYHistory,
+  determineHistoricalReturns,
+  determineProjectedReturns,
+  getAPYHistoryFromRedis,
+  getHistoricalReturnsFromRedis,
+  getProjectedReturnsFromRedis,
+} from "./yield";
 import { detectAndHandleReorg, resetScanner, retallyTotals, rollbackScanner } from "./rollback";
-import dotenv from 'dotenv';
-import rateLimit from 'express-rate-limit';
+import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
 import redis from "./redis";
 
 // Load environment variables from .env file
 dotenv.config();
+
+const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 let mainRunning = false;
 async function main() {
@@ -30,7 +50,7 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 5000));
 
   // Check if the scanner is in a rollback state
-  const isRollingBack = await redis.get("scanner_rolling_back") === "true";
+  const isRollingBack = (await redis.get("scanner_rolling_back")) === "true";
   if (isRollingBack) {
     console.log("Scanner is rolling back, exiting main function");
     mainRunning = false;
@@ -47,19 +67,32 @@ async function main() {
   console.log("---------| MAIN |-----------");
   await aggregate();
   console.log("---------| MAIN |-----------");
-  await determineHistoricalReturns();
-  console.log("---------| MAIN |-----------");
-  await determineProjectedReturns();
-  console.log("---------| MAIN |-----------");
-  await processZYSPriceHistory();
-  console.log("---------| MAIN |-----------");
-  await determineAPYHistory();
-  console.log("---------| MAIN |-----------");
+
+  const scannerHeight = await getRedisHeight();
+
+  if (scannerHeight >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
+    await determineHistoricalReturns();
+    console.log("---------| MAIN |-----------");
+    await determineProjectedReturns();
+    console.log("---------| MAIN |-----------");
+    await processZYSPriceHistory();
+    console.log("---------| MAIN |-----------");
+    await determineAPYHistory();
+    console.log("---------| MAIN |-----------");
+  } else {
+    console.log("Skipping yield analytics – scanner height below V2 fork");
+    console.log("---------| MAIN |-----------");
+  }
+
   const totals = await getTotalsFromRedis();
   console.log(totals);
   // get as of block height
-  const scannerHeight = await getRedisHeight();
-  console.log("Scanner Height: ", scannerHeight);
+  const latestScannerHeight = await getRedisHeight();
+  const latestPricingHeight = await getPricingRecordHeight();
+  const latestTxHeight = await getTransactionHeight();
+  console.log("Scanner Height (protocol_stats/height_aggregator): ", latestScannerHeight);
+  console.log("Pricing Records Height: ", latestPricingHeight);
+  console.log("Transactions Height: ", latestTxHeight);
   console.log("---------| MAIN |-----------");
   mainRunning = false;
 }
@@ -80,7 +113,7 @@ app.use((req, res, next) => {
   const clientIp = req.ip;
 
   // Allow local IPs (IPv4 127.0.0.1, IPv6 ::1, or any local IPv4 mapped to IPv6 like ::ffff:127.0.0.1) to bypass rate limiting
-  if (clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1') {
+  if (clientIp === "127.0.0.1" || clientIp === "::1" || clientIp === "::ffff:127.0.0.1") {
     return next();
   }
 
@@ -108,8 +141,8 @@ app.get("/stats", async (req: Request, res: Response) => {
   let fields: string[] = [];
 
   // Only handle if fields is provided as a string
-  if (typeof req.query.fields === 'string') {
-    fields = req.query.fields.split(",");  // If it's a string, split it into an array
+  if (typeof req.query.fields === "string") {
+    fields = req.query.fields.split(","); // If it's a string, split it into an array
   }
 
   if (!scale) {
@@ -127,7 +160,7 @@ app.get("/stats", async (req: Request, res: Response) => {
 
     if (scale === "block") {
       // Call getBlockProtocolStatsFromRedis for block-level data
-      result = await getBlockProtocolStatsFromRedis(from, to, fields as (keyof ProtocolStats)[],);
+      result = await getBlockProtocolStatsFromRedis(from, to, fields as (keyof ProtocolStats)[]);
     } else {
       // Call getAggregatedProtocolStatsFromRedis for hour or day-level data
       result = await getAggregatedProtocolStatsFromRedis(scale, from, to, fields as (keyof AggregatedData)[]);
@@ -144,7 +177,7 @@ app.get("/historicalreturns", async (req: Request, res: Response) => {
   console.log(`zephyrdscanner /historicalreturns called`);
   console.log(req.query);
 
-  const test = !!req.query.test // optional query param
+  const test = !!req.query.test; // optional query param
 
   try {
     const result = await getHistoricalReturnsFromRedis(test);
@@ -159,7 +192,7 @@ app.get("/projectedreturns", async (req: Request, res: Response) => {
   console.log(`zephyrdscanner /projectedreturns called`);
   console.log(req.query);
 
-  const test = !!req.query.test // optional query param
+  const test = !!req.query.test; // optional query param
 
   try {
     const result = await getProjectedReturnsFromRedis(test);
@@ -208,7 +241,7 @@ app.get("/apyhistory", async (req, res) => {
 app.get("/reservediff", async (req: Request, res: Response) => {
   const clientIp = req.ip;
 
-  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+  if (clientIp !== "127.0.0.1" && clientIp !== "::1" && clientIp !== "::ffff:127.0.0.1") {
     console.log(`ip ${clientIp} tried to access /reservediff and was denied`);
     return res.status(403).send("Access denied to /reservediff. No Public Access.");
   }
@@ -226,7 +259,7 @@ app.get("/reservediff", async (req: Request, res: Response) => {
 app.get("/rollback", async (req: Request, res: Response) => {
   const clientIp = req.ip;
 
-  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+  if (clientIp !== "127.0.0.1" && clientIp !== "::1" && clientIp !== "::ffff:127.0.0.1") {
     console.log(`ip ${clientIp} tried to access /rollback and was denied`);
     return res.status(403).send("Access denied to /rollback. No Public Access.");
   }
@@ -256,7 +289,7 @@ app.get("/rollback", async (req: Request, res: Response) => {
 app.get("/retallytotals", async (req: Request, res: Response) => {
   const clientIp = req.ip;
 
-  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+  if (clientIp !== "127.0.0.1" && clientIp !== "::1" && clientIp !== "::ffff:127.0.0.1") {
     console.log(`ip ${clientIp} tried to access /retallytotals and was denied`);
     return res.status(403).send("Access denied to /retallytotals. No Public Access.");
   }
@@ -276,7 +309,7 @@ app.get("/retallytotals", async (req: Request, res: Response) => {
 app.post("/reset", async (req: Request, res: Response) => {
   const clientIp = req.ip;
 
-  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+  if (clientIp !== "127.0.0.1" && clientIp !== "::1" && clientIp !== "::ffff:127.0.0.1") {
     console.log(`ip ${clientIp} tried to access /reset and was denied`);
     return res.status(403).send("Access denied to /reset. No Public Access.");
   }
@@ -305,7 +338,7 @@ app.post("/reset", async (req: Request, res: Response) => {
 app.get("/redetermineapyhistory", async (req: Request, res: Response) => {
   const clientIp = req.ip;
 
-  if (clientIp !== '127.0.0.1' && clientIp !== '::1' && clientIp !== '::ffff:127.0.0.1') {
+  if (clientIp !== "127.0.0.1" && clientIp !== "::1" && clientIp !== "::ffff:127.0.0.1") {
     console.log(`ip ${clientIp} tried to access /redetermineapyhistory and was denied`);
     return res.status(403).send("Access denied to /redetermineapyhistory. No Public Access.");
   }

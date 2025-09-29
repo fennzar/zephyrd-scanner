@@ -1,7 +1,15 @@
 // Take all data and aggregate into a single redis key done by block, hourly and daily.
 
 import redis from "./redis";
-import { AggregatedData, ProtocolStats, getRedisHeight, getRedisPricingRecord, getRedisTimestampDaily, getRedisTimestampHourly } from "./utils";
+import {
+  AggregatedData,
+  ProtocolStats,
+  getRedisHeight,
+  getRedisPricingRecord,
+  getRedisTimestampDaily,
+  getRedisTimestampHourly,
+  getReserveDiffs,
+} from "./utils";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -14,6 +22,9 @@ const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type chan
 
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
+
+const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
+const WALKTHROUGH_DIFF_THRESHOLD = Number(process.env.WALKTHROUGH_DIFF_THRESHOLD ?? "1");
 
 interface PricingRecord {
   height: number;
@@ -134,9 +145,9 @@ export async function aggregate() {
   const height_by_block = await getRedisHeight(); // where we are at in the data aggregation
   const height_to_process = Math.max(height_by_block + 1, HF_VERSION_1_HEIGHT); // only process from HF_VERSION_1_HEIGHT
 
-  console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs - 1}`);
+  console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs}`);
 
-  const lastBlockToProcess = current_height_prs - 1;
+  const lastBlockToProcess = current_height_prs;
   if (lastBlockToProcess < height_to_process) {
     console.log("\tNo new blocks to aggregate.");
   } else {
@@ -343,27 +354,25 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
   }
   // should instead capture the total_reward! This is so that we don't have redo "saveBlockRewardInfo"
   blockData.zeph_circ +=
-    (bri?.miner_reward ?? 0) +
-    (bri?.governance_reward ?? 0) +
-    (bri?.reserve_reward ?? 0) +
-    (bri?.yield_reward ?? 0);
+    (bri?.miner_reward ?? 0) + (bri?.governance_reward ?? 0) + (bri?.reserve_reward ?? 0) + (bri?.yield_reward ?? 0);
 
   if (block_txs.length !== 0) {
     if (logProgress) {
-      console.log(`\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`);
+      console.log(
+        `\tFound Conversion Transactions (${block_txs.length}) in block: ${height_to_process} - Processing...`
+      );
     }
     let failureCount = 0;
     let failureTxs: string[] = [];
 
-
     for (const tx_hash of block_txs) {
+      const tx = transactionsByHash.get(tx_hash);
+      if (!tx) {
+        failureCount++;
+        failureTxs.push(tx_hash);
+        continue;
+      }
       try {
-        const tx = transactionsByHash.get(tx_hash);
-        if (!tx) {
-          failureCount++;
-          failureTxs.push(tx_hash);
-          continue;
-        }
         switch (tx.conversion_type) {
           case "mint_stable":
             blockData.conversion_transactions_count += 1;
@@ -393,7 +402,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             blockData.mint_reserve_volume += tx.to_amount;
             blockData.zeph_in_reserve += tx.from_amount;
             blockData.zephrsv_circ += tx.to_amount;
-            blockData.fees_zephrsv += tx.conversion_fee_amount
+            blockData.fees_zephrsv += tx.conversion_fee_amount;
             break;
           case "redeem_reserve":
             blockData.conversion_transactions_count += 1;
@@ -405,41 +414,40 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             blockData.zephrsv_circ -= tx.from_amount;
             blockData.fees_zeph += tx.conversion_fee_amount;
             break;
-        case "mint_yield":
-          blockData.yield_conversion_transactions_count += 1;
-          // to = ZYIELD (ZYS)
-          // from = ZEPHUSD (ZSD)
-          blockData.mint_yield_count += 1;
-          blockData.mint_yield_volume += tx.to_amount;
-          blockData.fees_zyield += tx.conversion_fee_amount;
-          blockData.zyield_circ += tx.to_amount;
-          blockData.zsd_in_yield_reserve += tx.from_amount;
-          break;
-        case "redeem_yield":
-          blockData.yield_conversion_transactions_count += 1;
-          // to = ZEPHUSD (ZSD)
-          // from = ZYIELD (ZYS)
-          blockData.redeem_yield_count += 1;
-          blockData.redeem_yield_volume += tx.from_amount;
-          blockData.fees_zephusd_yield += tx.conversion_fee_amount;
-          blockData.zyield_circ -= tx.from_amount;
-          blockData.zsd_in_yield_reserve -= tx.to_amount;
-          break;
+          case "mint_yield":
+            blockData.yield_conversion_transactions_count += 1;
+            // to = ZYIELD (ZYS)
+            // from = ZEPHUSD (ZSD)
+            blockData.mint_yield_count += 1;
+            blockData.mint_yield_volume += tx.to_amount;
+            blockData.fees_zyield += tx.conversion_fee_amount;
+            blockData.zyield_circ += tx.to_amount;
+            blockData.zsd_in_yield_reserve += tx.from_amount;
+            break;
+          case "redeem_yield":
+            blockData.yield_conversion_transactions_count += 1;
+            // to = ZEPHUSD (ZSD)
+            // from = ZYIELD (ZYS)
+            blockData.redeem_yield_count += 1;
+            blockData.redeem_yield_volume += tx.from_amount;
+            blockData.fees_zephusd_yield += tx.conversion_fee_amount;
+            blockData.zyield_circ -= tx.from_amount;
+            blockData.zsd_in_yield_reserve -= tx.to_amount;
+            break;
           default:
             console.log(`Unknown conversion type: ${tx.conversion_type}`);
             console.log(tx);
             break;
         }
       } catch (error) {
-        console.error(`Error processing conversion transactions for block ${height_to_process}: ${error}`);
+        console.log(`[Error] Error processing conversion ${tx_hash} in block ${height_to_process}:`, error);
         failureCount++;
         failureTxs.push(tx_hash);
       }
     }
 
     if (failureCount > 0) {
-      console.log(`Failed to process ${failureCount} conversion transactions for block ${height_to_process}`);
-      console.log(failureTxs);
+      console.log(`Failed to process ${failureCount} conversion transactions for block ${height_to_process}:`, failureTxs);
     }
   }
 
@@ -451,8 +459,8 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
   blockData.equity_ma = blockData.assets_ma - blockData.liabilities;
 
   // Calculate reserve ratio
-  blockData.reserve_ratio = blockData.liabilities > 0 ? blockData.assets / blockData.liabilities : 0;
-  blockData.reserve_ratio_ma = blockData.liabilities > 0 ? blockData.assets_ma / blockData.liabilities : 0;
+  blockData.reserve_ratio = blockData.liabilities > 0 ? blockData.assets / blockData.liabilities : Number.NaN;
+  blockData.reserve_ratio_ma = blockData.liabilities > 0 ? blockData.assets_ma / blockData.liabilities : Number.NaN;
 
   // Calculate ZSD Yield Reserve Accrual and ZSD Minted this block
   if (height_to_process >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
@@ -472,23 +480,44 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     .hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData))
     .set("height_aggregator", height_to_process.toString())
     .exec();
+
+  if (WALKTHROUGH_MODE) {
+    await verifyReserveDiffs(height_to_process);
+  }
+}
+
+async function verifyReserveDiffs(blockHeight: number) {
+  try {
+    const diffReport = await getReserveDiffs();
+
+    if (diffReport.mismatch) {
+      return;
+    }
+
+    if (WALKTHROUGH_MODE) {
+      console.log(`[walkthrough] block ${blockHeight} reserve diff`, diffReport);
+    }
+
+    const maxDiff = Math.max(...diffReport.diffs.map((entry) => entry.difference));
+
+    if (maxDiff > WALKTHROUGH_DIFF_THRESHOLD) {
+      throw new Error(`Walkthrough diff exceeded threshold ${WALKTHROUGH_DIFF_THRESHOLD} at block ${blockHeight}`);
+    }
+  } catch (error) {
+    console.error("[walkthrough] reserve diff check failed", error);
+    throw error;
+  }
 }
 
 async function aggregateByTimestamp(
   startTimestamp: number,
   endingTimestamp: number,
-  windowType: "hourly" | "daily" = "hourly",
+  windowType: "hourly" | "daily" = "hourly"
 ) {
   console.log(`\tAggregating by timestamp: ${startTimestamp} to ${endingTimestamp} for ${windowType}`);
-  let timestampWindow = windowType === "hourly" ? 3600 : 86400;
-  // is there more than
-  const diff = endingTimestamp - startTimestamp;
-  if (diff < timestampWindow) {
-    return;
-  }
-
-  // Calculate the total number of windows
-  const totalWindows = Math.ceil(diff / timestampWindow);
+  const timestampWindow = windowType === "hourly" ? 3600 : 86400;
+  const diff = Math.max(endingTimestamp - startTimestamp, 0);
+  const totalWindows = Math.max(1, Math.ceil(diff / timestampWindow));
   // get all protocol stats between start and end timestamp
   // aggregate into a single key "protocol_stats_hourly" as a sorted set
   // store in redis
@@ -502,13 +531,11 @@ async function aggregateByTimestamp(
 
   let windowIndex = 0; // Track the current window index
 
-  // Loop through the time range in x increments
-  for (
-    let windowStart = startTimestamp;
-    windowStart < endingTimestamp - timestampWindow;
-    windowStart += timestampWindow
-  ) {
-    const windowEnd = windowStart + timestampWindow;
+  // Loop through the time range in increments, allowing partial windows
+  for (let windowStart = startTimestamp; windowStart < endingTimestamp; windowStart += timestampWindow) {
+    const expectedEnd = windowStart + timestampWindow;
+    const windowEnd = Math.min(expectedEnd, endingTimestamp);
+    const windowComplete = windowEnd === expectedEnd;
     // Increment the window index
     windowIndex++;
     let aggregatedData: AggregatedData = {
@@ -618,6 +645,9 @@ async function aggregateByTimestamp(
       redeem_yield_count: 0,
       redeem_yield_volume: 0,
       fees_zephusd_yield: 0,
+      pending: !windowComplete,
+      window_start: windowStart,
+      window_end: windowEnd,
     };
 
     let protocolStatsWindow = [];
@@ -717,7 +747,8 @@ async function aggregateByTimestamp(
       aggregatedData.zsd_in_yield_reserve_open = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
       aggregatedData.zsd_in_yield_reserve_high = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
       aggregatedData.zsd_in_yield_reserve_low = protocolStatsWindow[0].zsd_in_yield_reserve ?? 0;
-      aggregatedData.zsd_in_yield_reserve_close = protocolStatsWindow[protocolStatsWindow.length - 1].zsd_in_yield_reserve ?? 0;
+      aggregatedData.zsd_in_yield_reserve_close =
+        protocolStatsWindow[protocolStatsWindow.length - 1].zsd_in_yield_reserve ?? 0;
 
       // zeph_circ
       aggregatedData.zeph_circ_open = protocolStatsWindow[0].zeph_circ ?? 0;
@@ -811,8 +842,14 @@ async function aggregateByTimestamp(
         aggregatedData.zeph_in_reserve_high = Math.max(aggregatedData.zeph_in_reserve_high, blockData.zeph_in_reserve);
         aggregatedData.zeph_in_reserve_low = Math.min(aggregatedData.zeph_in_reserve_low, blockData.zeph_in_reserve);
 
-        aggregatedData.zsd_in_yield_reserve_high = Math.max(aggregatedData.zsd_in_yield_reserve_high, blockData.zsd_in_yield_reserve);
-        aggregatedData.zsd_in_yield_reserve_low = Math.min(aggregatedData.zsd_in_yield_reserve_low, blockData.zsd_in_yield_reserve);
+        aggregatedData.zsd_in_yield_reserve_high = Math.max(
+          aggregatedData.zsd_in_yield_reserve_high,
+          blockData.zsd_in_yield_reserve
+        );
+        aggregatedData.zsd_in_yield_reserve_low = Math.min(
+          aggregatedData.zsd_in_yield_reserve_low,
+          blockData.zsd_in_yield_reserve
+        );
 
         aggregatedData.zeph_circ_high = Math.max(aggregatedData.zeph_circ_high, blockData.zeph_circ);
         aggregatedData.zeph_circ_low = Math.min(aggregatedData.zeph_circ_low, blockData.zeph_circ);
@@ -870,20 +907,23 @@ async function aggregateByTimestamp(
         aggregatedData.redeem_yield_count += blockData.redeem_yield_count;
         aggregatedData.redeem_yield_volume += blockData.redeem_yield_volume;
         aggregatedData.fees_zephusd_yield += blockData.fees_zephusd_yield;
-
       });
 
       // Store the aggregated data for the hour
       if (windowType === "hourly") {
+        await redis.zremrangebyscore("protocol_stats_hourly", windowStart, windowStart);
         await redis.zadd("protocol_stats_hourly", windowStart, JSON.stringify(aggregatedData));
         console.log(`Hourly stats aggregated for window starting at ${windowStart}`);
-        // update redis timestamp_aggregator_hourly
-        await redis.set("timestamp_aggregator_hourly", windowEnd);
+        if (windowComplete) {
+          await redis.set("timestamp_aggregator_hourly", windowEnd);
+        }
       } else if (windowType === "daily") {
+        await redis.zremrangebyscore("protocol_stats_daily", windowStart, windowStart);
         await redis.zadd("protocol_stats_daily", windowStart, JSON.stringify(aggregatedData));
         console.log(`Daily stats aggregated for window starting at ${windowStart}`);
-        // update redis timestamp_aggregator_daily
-        await redis.set("timestamp_aggregator_daily", windowEnd);
+        if (windowComplete) {
+          await redis.set("timestamp_aggregator_daily", windowEnd);
+        }
       }
 
       console.log(aggregatedData);

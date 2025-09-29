@@ -5,7 +5,8 @@
   "main": "scanner.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "npx tsx scanner.ts"
+    "start": "npx tsx scanner.ts",
+    "walkthrough": "npx tsx walkthrough.ts"
   },
   "keywords": [],
   "author": "",
