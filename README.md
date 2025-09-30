@@ -12,11 +12,46 @@ IMPORTANT NOTE - THIS IS A WIP Project
 Uses redis to store information.
 Polls every minute to check for new blocks/transactions.
 
+### Reserve snapshots
+
+The scanner stores daemon `get_reserve_info` snapshots in Redis whenever the aggregated height matches the daemon height and the previous snapshot is at least `RESERVE_SNAPSHOT_INTERVAL_BLOCKS` (default 720) behind. Snapshots start at `RESERVE_SNAPSHOT_START_HEIGHT` (default 89300). This runs in normal mode and during walkthroughs using the following keys:
+
+- `reserve_snapshots` (Redis hash) – JSON snapshot documents keyed by the previous block height.
+- `reserve_snapshots:last_previous_height` (Redis string) – latest previous height for which a snapshot exists.
+- `reserve_mismatch_heights` (Redis hash) – stores the full diff report whenever on-chain reserve data diverges from cached stats.
+
+Useful commands:
+
+```sh
+# list the stored snapshot heights
+redis-cli HKEYS reserve_snapshots
+
+# inspect a specific snapshot
+redis-cli HGET reserve_snapshots 89302 | jq
+
+# check the most recent snapshot height
+redis-cli GET reserve_snapshots:last_previous_height
+
+# list heights where a reserve mismatch was recorded
+redis-cli HKEYS reserve_mismatch_heights
+
+# inspect the mismatch report for a height
+redis-cli HGET reserve_mismatch_heights 89310 | jq
+```
+
+Configuration knobs:
+
+- `RESERVE_SNAPSHOT_INTERVAL_BLOCKS` (default `720`) – minimum block gap before persisting a new daemon snapshot.
+- `RESERVE_SNAPSHOT_START_HEIGHT` (default `89300`) – first height from which auto-snapshots begin.
+- `RESERVE_SNAPSHOT_SOURCE` (default `redis`) – primary snapshot store (`redis` or `file`).
+- `WALKTHROUGH_SNAPSHOT_SOURCE` (default inherits) – snapshot source to use during walkthroughs.
+- `RESERVE_DIFF_TOLERANCE` (default `1`) – maximum absolute reserve difference allowed before we record a mismatch (same units as the diff calculation).
+
 ### Walkthrough mode
 
-Run `npm run walkthrough` to flush Redis, force `ONLINE=true`, enable walkthrough logging (`WALKTHROUGH_MODE=true`, default threshold `1`), and boot the scanner. Pair with a daemon started using `--block-sync-size=1` to find the first block where cached stats diverge from on-chain reserve info.
+Run `npm run walkthrough` to flush Redis, force `ONLINE=true`, enable walkthrough logging (`WALKTHROUGH_MODE=true`, default diff threshold `1`), and boot the scanner. Pair with a daemon started using `--block-sync-size=1` to find the first block where cached stats diverge from on-chain reserve info. During a walkthrough run the scanner mirrors the latest reserve snapshots saved in Redis (or falls back to the historical JSON files) so you can reconcile cached protocol stats against daemon truth block by block. You can point `WALKTHROUGH_SNAPSHOT_SOURCE` at `file` to replay the historical JSON dumps, or stay on the default `redis` source to inspect the live snapshots written during synced operation. Divergences detected by the walkthrough are emitted to the console and the same reports are persisted in `walkthrough_reports/` for later review.
 
-Keeps track of:
+Walkthrough runs capture:
 
 - Pricing Records (Asset prices over time recorded in each block)
 - Conversion Transactions
@@ -25,7 +60,11 @@ Keeps track of:
   - Block Rewards
   - Number of Conversion Transactions (and of each type)
   - Amount of Zeph/ZSD/ZRS/ZYS converted (volume)
-  - Fees generated from conversions
+- Fees generated from conversions
+
+### Partial aggregation guardrails
+
+The scanner always runs the aggregator after each block update so dashboards receive near-real-time data. When we are still catching up (daemon height more than 30 blocks ahead for hourly or 720 blocks ahead for daily), stop-gap hourly or daily aggregates are skipped. As soon as the lag falls within those limits the temporary aggregates resume, so by the time the daemon is fully synced you have a single authoritative daily/hourly record.
 
 ## Available Routes
 

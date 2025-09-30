@@ -12,7 +12,19 @@ import {
   getRedisTimestampDaily,
   getRedisTimestampHourly,
   getReserveDiffs,
+  getReserveInfo,
+  getLastReserveSnapshotPreviousHeight,
+  recordReserveMismatch,
+  clearReserveMismatch,
+  saveReserveSnapshotToRedis,
+  getCurrentBlockHeight,
+  getLatestProtocolStats,
+  setProtocolStats,
   ReserveDiffReport,
+  RESERVE_SNAPSHOT_INTERVAL_BLOCKS,
+  RESERVE_SNAPSHOT_START_HEIGHT,
+  WALKTHROUGH_SNAPSHOT_SOURCE,
+  RESERVE_DIFF_TOLERANCE,
 } from "./utils";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
@@ -24,6 +36,10 @@ const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
 
+const RESERVE_SNAPSHOT_INTERVAL = RESERVE_SNAPSHOT_INTERVAL_BLOCKS;
+const TEMP_HOURLY_MAX_LAG = 30;
+const TEMP_DAILY_MAX_LAG = 720;
+
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
@@ -32,6 +48,7 @@ const WALKTHROUGH_DIFF_THRESHOLD = Number(process.env.WALKTHROUGH_DIFF_THRESHOLD
 const WALKTHROUGH_REPORT_PATH = process.env.WALKTHROUGH_REPORT_PATH;
 const WALKTHROUGH_REPORT_DIR = process.env.WALKTHROUGH_REPORT_DIR ?? "walkthrough_reports";
 const WALKTHROUGH_RESERVE_LOG = process.env.WALKTHROUGH_RESERVE_LOG ?? "walkthrough_reserve.log";
+const RESERVE_FORCE_RECONCILE_LOG = process.env.RESERVE_FORCE_RECONCILE_LOG ?? "reserve_force_reconcile.log";
 
 interface WalkthroughDiffRecord {
   blockHeight: number;
@@ -204,14 +221,42 @@ export async function aggregate() {
   const timestamp_hourly = await getRedisTimestampHourly();
   const timestamp_daily = await getRedisTimestampDaily();
 
-  // by hour
-  await aggregateByTimestamp(Math.max(timestamp_hourly, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "hourly");
-  // by day
-  await aggregateByTimestamp(Math.max(timestamp_daily, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "daily");
+  const priorAggregatedHeight = await getRedisHeight();
+  let allowHourlyAggregation = true;
+  let allowDailyAggregation = true;
+
+  if (priorAggregatedHeight && priorAggregatedHeight > 0) {
+    try {
+      const daemonHeight = await getCurrentBlockHeight();
+      if (daemonHeight && daemonHeight > priorAggregatedHeight) {
+        const lag = daemonHeight - priorAggregatedHeight;
+        if (lag > TEMP_HOURLY_MAX_LAG) {
+          allowHourlyAggregation = false;
+          console.log(`Skipping hourly aggregation – daemon ahead by ${lag} blocks (threshold ${TEMP_HOURLY_MAX_LAG})`);
+        }
+        if (lag > TEMP_DAILY_MAX_LAG) {
+          allowDailyAggregation = false;
+          console.log(`Skipping daily aggregation – daemon ahead by ${lag} blocks (threshold ${TEMP_DAILY_MAX_LAG})`);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to determine daemon height for temp aggregation check:", error);
+    }
+  }
+
+  if (allowHourlyAggregation) {
+    await aggregateByTimestamp(Math.max(timestamp_hourly, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "hourly");
+  }
+  if (allowDailyAggregation) {
+    await aggregateByTimestamp(Math.max(timestamp_daily, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "daily");
+  }
 
   if (WALKTHROUGH_MODE) {
     await outputWalkthroughDiffReport();
   }
+
+  const latestAggregatedHeight = await getRedisHeight();
+  await handleReserveIntegrity(latestAggregatedHeight);
 
   console.log(`Finished aggregation`);
 }
@@ -624,6 +669,7 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
     const diffReport = await getReserveDiffs({
       targetHeight: blockHeight,
       allowSnapshots: WALKTHROUGH_MODE,
+      snapshotSource: WALKTHROUGH_SNAPSHOT_SOURCE as "redis" | "file",
     });
 
     if (WALKTHROUGH_MODE) {
@@ -797,6 +843,151 @@ async function outputWalkthroughDiffReport() {
     }
   } catch (error) {
     console.error("[walkthrough] Failed to save walkthrough report:", error);
+  }
+}
+
+async function handleReserveIntegrity(latestHeight: number) {
+  if (!latestHeight || latestHeight < HF_VERSION_1_HEIGHT) {
+    return;
+  }
+
+  try {
+    const reserveInfo = await getReserveInfo();
+    const result = reserveInfo?.result;
+    if (!result || typeof result.height !== "number") {
+      console.log("[reserve] Skipping snapshot – daemon reserve info missing height");
+      return;
+    }
+
+    const daemonPreviousHeight = result.height - 1;
+    console.log(
+      `[reserve] Heights | aggregated=${latestHeight} | daemon_height=${result.height} | daemon_previous=${daemonPreviousHeight}`
+    );
+
+    if (daemonPreviousHeight !== latestHeight) {
+      console.log(`[reserve] Skipping snapshot – latest aggregated height does not match daemon previous height`);
+      return;
+    }
+
+    if (latestHeight >= RESERVE_SNAPSHOT_START_HEIGHT) {
+      const lastSnapshotHeight = await getLastReserveSnapshotPreviousHeight();
+      const heightGap = lastSnapshotHeight === null ? Infinity : latestHeight - lastSnapshotHeight;
+      if (!lastSnapshotHeight) {
+        console.log(`[reserve] No prior snapshot – capturing for height ${latestHeight}`);
+      } else {
+        console.log(
+          `[reserve] Snapshot gap check | last=${lastSnapshotHeight} | gap=${heightGap} | required=${RESERVE_SNAPSHOT_INTERVAL}`
+        );
+      }
+
+      if (!lastSnapshotHeight || heightGap >= RESERVE_SNAPSHOT_INTERVAL) {
+        const stored = await saveReserveSnapshotToRedis(reserveInfo);
+        if (stored) {
+          console.log(`[reserve] Snapshot stored for previous height ${stored.previous_height}`);
+        }
+      } else {
+        console.log(`[reserve] Skipping snapshot – gap ${heightGap} < interval ${RESERVE_SNAPSHOT_INTERVAL}`);
+      }
+    }
+
+    const diffReport = await getReserveDiffs();
+    diffReport.diffs.forEach((entry) => {
+      console.log(
+        `[reserve] ${diffReport.block_height} | ${entry.field} | on_chain=${entry.on_chain} | cached=${
+          entry.cached
+        } | diff=${entry.difference} | diff_atoms=${entry.difference_atoms ?? 0}`
+      );
+    });
+    const zephEntry = diffReport.diffs.find((entry) => entry.field === "zeph_in_reserve");
+    const diffValue = Math.abs(zephEntry?.difference ?? 0);
+    const toleranceValue = RESERVE_DIFF_TOLERANCE;
+
+    const passedTolerance = diffValue <= toleranceValue;
+    if (passedTolerance) {
+      console.log(`[reserve] Diff check PASS at ${diffReport.block_height} (|diff|=${diffValue} <= ${toleranceValue})`);
+    } else {
+      console.warn(`[reserve] Diff check FAIL at ${diffReport.block_height} (|diff|=${diffValue} > ${toleranceValue})`);
+    }
+
+    if (!passedTolerance || diffReport.mismatch) {
+      await recordReserveMismatch(diffReport.block_height, diffReport);
+      await forceReconcileReserves(diffReport, reserveInfo);
+    } else {
+      await clearReserveMismatch(diffReport.block_height);
+    }
+  } catch (error) {
+    console.error("[reserve] Failed to reconcile reserve snapshot:", error);
+  }
+}
+
+async function forceReconcileReserves(diffReport: ReserveDiffReport, reserveInfo: any) {
+  try {
+    const latestStats = await getLatestProtocolStats();
+    if (!latestStats) {
+      console.warn("[reserve] Cannot force reconcile – no protocol stats in cache");
+      return;
+    }
+
+    const reconciledStats: ProtocolStats = { ...latestStats };
+    const adjustments: Record<string, { cached: number; on_chain: number }> = {};
+
+    diffReport.diffs.forEach((entry) => {
+      const { field, on_chain, cached, difference } = entry;
+      if (!Number.isFinite(difference) || Math.abs(difference ?? 0) <= RESERVE_DIFF_TOLERANCE) {
+        return;
+      }
+
+      switch (field) {
+        case "zeph_in_reserve":
+          reconciledStats.zeph_in_reserve = on_chain;
+          reconciledStats.zeph_in_reserve_atoms = toAtoms(on_chain).toString();
+          adjustments[field] = { cached, on_chain };
+          break;
+        case "zephusd_circ":
+          reconciledStats.zephusd_circ = on_chain;
+          adjustments[field] = { cached, on_chain };
+          break;
+        case "zephrsv_circ":
+          reconciledStats.zephrsv_circ = on_chain;
+          adjustments[field] = { cached, on_chain };
+          break;
+        case "zyield_circ":
+          reconciledStats.zyield_circ = on_chain;
+          adjustments[field] = { cached, on_chain };
+          break;
+        case "zsd_in_yield_reserve":
+          reconciledStats.zsd_in_yield_reserve = on_chain;
+          adjustments[field] = { cached, on_chain };
+          break;
+        case "reserve_ratio":
+          reconciledStats.reserve_ratio = on_chain;
+          adjustments[field] = { cached, on_chain };
+          break;
+        default:
+          break;
+      }
+    });
+
+    if (Object.keys(adjustments).length === 0) {
+      return;
+    }
+
+    await setProtocolStats(reconciledStats.block_height, reconciledStats);
+
+    const logLine = {
+      block_height: reconciledStats.block_height,
+      adjustments,
+      diff_report: diffReport,
+      reserve_info: reserveInfo?.result ?? null,
+      timestamp: new Date().toISOString(),
+    };
+
+    await fs.appendFile(RESERVE_FORCE_RECONCILE_LOG, `${JSON.stringify(logLine)}\n`);
+    console.warn(
+      `[reserve] Forced reconcile at ${reconciledStats.block_height}; fields adjusted: ${Object.keys(adjustments).join(", ")}`
+    );
+  } catch (error) {
+    console.error("[reserve] Failed to force reconcile reserves:", error);
   }
 }
 

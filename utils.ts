@@ -1,7 +1,10 @@
+import dotenv from "dotenv";
 import fetch from "node-fetch";
 import { Agent } from "http"; // or 'https' for secure connections
 import fs from "node:fs/promises";
 import path from "node:path";
+
+dotenv.config();
 
 // Create a global agent
 const agent = new Agent({ keepAlive: true });
@@ -12,6 +15,16 @@ const HEADERS = {
 };
 const DEATOMIZE = 10 ** -12;
 const RESERVE_SNAPSHOT_DIR = process.env.RESERVE_SNAPSHOT_DIR ?? "reserve_snapshots";
+export const RESERVE_SNAPSHOT_INTERVAL_BLOCKS = Number(process.env.RESERVE_SNAPSHOT_INTERVAL_BLOCKS ?? "720");
+export const RESERVE_SNAPSHOT_START_HEIGHT = Number(process.env.RESERVE_SNAPSHOT_START_HEIGHT ?? "89300");
+const RESERVE_SNAPSHOT_REDIS_KEY = "reserve_snapshots";
+const RESERVE_SNAPSHOT_LAST_KEY = "reserve_snapshots:last_previous_height";
+export const RESERVE_SNAPSHOT_SOURCE = (process.env.RESERVE_SNAPSHOT_SOURCE ?? "redis").toLowerCase();
+export const WALKTHROUGH_SNAPSHOT_SOURCE = (
+  process.env.WALKTHROUGH_SNAPSHOT_SOURCE ?? RESERVE_SNAPSHOT_SOURCE
+).toLowerCase();
+export const RESERVE_DIFF_TOLERANCE = Number(process.env.RESERVE_DIFF_TOLERANCE ?? "1");
+const RESERVE_MISMATCH_REDIS_KEY = "reserve_mismatch_heights";
 
 export async function getCurrentBlockHeight(): Promise<number> {
   try {
@@ -101,7 +114,7 @@ export async function getBlock(height: number) {
       }),
     });
 
-    return await response.json() as GetBlockResponse;
+    return (await response.json()) as GetBlockResponse;
   } catch (e) {
     console.log(e);
     console.log(`getBlock rpc no response - Daemon could be down - waiting 1 second...`);
@@ -162,9 +175,9 @@ interface ReserveSnapshot {
     zsd_yield_reserve_atoms: string;
     zsd_yield_reserve: number;
     reserve_ratio_atoms: string;
-    reserve_ratio: number;
+    reserve_ratio: number | null;
     reserve_ratio_ma_atoms?: string;
-    reserve_ratio_ma?: number;
+    reserve_ratio_ma?: number | null;
   };
   pricing_record?: ReserveInfoResponse["result"]["pr"];
   raw?: ReserveInfoResponse["result"];
@@ -173,6 +186,102 @@ interface ReserveSnapshot {
 interface ReserveSnapshotWithPath {
   snapshot: ReserveSnapshot;
   filePath: string;
+}
+
+function atomsToNumberFromString(value?: string): number {
+  if (!value) {
+    return 0;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return numeric * DEATOMIZE;
+}
+
+function ratioStringToNumber(value?: string): number | null {
+  if (!value) {
+    return 0;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric;
+}
+
+function buildReserveSnapshot(reserveInfo: ReserveInfoResponse): ReserveSnapshot | null {
+  const result = reserveInfo?.result;
+  if (!result || typeof result.height !== "number") {
+    return null;
+  }
+
+  const reserveHeight = result.height;
+  const previousHeight = reserveHeight - 1;
+
+  const snapshot: ReserveSnapshot = {
+    captured_at: new Date().toISOString(),
+    reserve_height: reserveHeight,
+    previous_height: previousHeight,
+    hf_version: result.hf_version ?? 0,
+    on_chain: {
+      zeph_reserve_atoms: result.zeph_reserve ?? "0",
+      zeph_reserve: atomsToNumberFromString(result.zeph_reserve),
+      zsd_circ_atoms: result.num_stables ?? "0",
+      zsd_circ: atomsToNumberFromString(result.num_stables),
+      zrs_circ_atoms: result.num_reserves ?? "0",
+      zrs_circ: atomsToNumberFromString(result.num_reserves),
+      zyield_circ_atoms: result.num_zyield ?? "0",
+      zyield_circ: atomsToNumberFromString(result.num_zyield),
+      zsd_yield_reserve_atoms: result.zyield_reserve ?? "0",
+      zsd_yield_reserve: atomsToNumberFromString(result.zyield_reserve),
+      reserve_ratio_atoms: result.reserve_ratio ?? "0",
+      reserve_ratio: ratioStringToNumber(result.reserve_ratio),
+      reserve_ratio_ma_atoms: result.reserve_ratio_ma,
+      reserve_ratio_ma: ratioStringToNumber(result.reserve_ratio_ma),
+    },
+    pricing_record: result.pr,
+    raw: result,
+  };
+
+  return snapshot;
+}
+
+export async function saveReserveSnapshotToRedis(reserveInfo: ReserveInfoResponse): Promise<ReserveSnapshot | null> {
+  const snapshot = buildReserveSnapshot(reserveInfo);
+  if (!snapshot) {
+    return null;
+  }
+
+  const key = snapshot.previous_height.toString();
+  await redis.hset(RESERVE_SNAPSHOT_REDIS_KEY, key, JSON.stringify(snapshot));
+  await redis.set(RESERVE_SNAPSHOT_LAST_KEY, key);
+  return snapshot;
+}
+
+export async function getLastReserveSnapshotPreviousHeight(): Promise<number | null> {
+  const height = await redis.get(RESERVE_SNAPSHOT_LAST_KEY);
+  if (!height) {
+    return null;
+  }
+  const parsed = Number(height);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function loadReserveSnapshotByPreviousHeightFromRedis(
+  previousHeight: number
+): Promise<ReserveSnapshotWithPath | null> {
+  const json = await redis.hget(RESERVE_SNAPSHOT_REDIS_KEY, previousHeight.toString());
+  if (!json) {
+    return null;
+  }
+  try {
+    const snapshot = JSON.parse(json) as ReserveSnapshot;
+    return { snapshot, filePath: `redis:${previousHeight}` };
+  } catch (error) {
+    console.error(`Failed to parse reserve snapshot from redis for height ${previousHeight}:`, error);
+    return null;
+  }
 }
 
 export async function getReserveInfo() {
@@ -187,14 +296,14 @@ export async function getReserveInfo() {
       }),
     });
 
-    return await response.json() as ReserveInfoResponse;
+    return (await response.json()) as ReserveInfoResponse;
   } catch (e) {
     console.log(e);
     return;
   }
 }
 
-async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
+export async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
   const allStats = await redis.hgetall("protocol_stats");
   if (!allStats) {
     return null;
@@ -219,6 +328,14 @@ async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
   }
 
   return latest;
+}
+
+export async function setProtocolStats(height: number, stats: ProtocolStats): Promise<void> {
+  await redis
+    .pipeline()
+    .hset("protocol_stats", height.toString(), JSON.stringify(stats))
+    .set("height_aggregator", height.toString())
+    .exec();
 }
 
 function quantizeToAtoms(value: number) {
@@ -260,8 +377,10 @@ function diffField(name: string, onChain: number, cached: number): ReserveDiffEn
     };
   }
 
-  const difference = Math.abs(onChain - cached);
-  return { field: name, on_chain: onChain, cached, difference };
+  const rawDiff = onChain - cached;
+  const diffAtoms = Number.isFinite(rawDiff) ? Math.round(rawDiff / DEATOMIZE) : 0;
+  const difference = Math.abs(rawDiff);
+  return { field: name, on_chain: onChain, cached, difference, difference_atoms: diffAtoms };
 }
 
 async function readReserveSnapshotFile(filePath: string): Promise<ReserveSnapshot | null> {
@@ -332,6 +451,7 @@ interface ReserveDiffOptions {
   targetHeight?: number;
   allowSnapshots?: boolean;
   snapshotDir?: string;
+  snapshotSource?: "redis" | "file";
 }
 
 export interface ReserveDiffReport {
@@ -342,6 +462,14 @@ export interface ReserveDiffReport {
   source: "rpc" | "snapshot";
   source_height?: number;
   snapshot_path?: string;
+}
+
+export async function recordReserveMismatch(height: number, report: ReserveDiffReport): Promise<void> {
+  await redis.hset(RESERVE_MISMATCH_REDIS_KEY, height.toString(), JSON.stringify(report));
+}
+
+export async function clearReserveMismatch(height: number): Promise<void> {
+  await redis.hdel(RESERVE_MISMATCH_REDIS_KEY, height.toString());
 }
 
 export async function getReserveDiffs(options: ReserveDiffOptions = {}): Promise<ReserveDiffReport> {
@@ -396,7 +524,20 @@ export async function getReserveDiffs(options: ReserveDiffOptions = {}): Promise
       reserve_ratio: Number(reserveInfoResult.reserve_ratio ?? 0),
     });
   } else if (options.allowSnapshots) {
-    const snapshotResult = await loadReserveSnapshotByPreviousHeight(targetHeight, options.snapshotDir);
+    const requestedSource = (options.snapshotSource ?? WALKTHROUGH_SNAPSHOT_SOURCE).toLowerCase();
+    let snapshotResult: ReserveSnapshotWithPath | null = null;
+    if (requestedSource === "redis") {
+      snapshotResult = await loadReserveSnapshotByPreviousHeightFromRedis(targetHeight);
+      if (!snapshotResult) {
+        snapshotResult = await loadReserveSnapshotByPreviousHeight(targetHeight, options.snapshotDir);
+      }
+    } else {
+      snapshotResult = await loadReserveSnapshotByPreviousHeight(targetHeight, options.snapshotDir);
+      if (!snapshotResult) {
+        snapshotResult = await loadReserveSnapshotByPreviousHeightFromRedis(targetHeight);
+      }
+    }
+
     if (snapshotResult) {
       const { snapshot, filePath } = snapshotResult;
       source = "snapshot";
@@ -503,7 +644,6 @@ export interface AggregatedProtocolStatsResponse<T extends keyof AggregatedData>
   data: Pick<AggregatedData, T>;
 }
 
-
 // Function for block-level stats
 export async function getBlockProtocolStatsFromRedis<T extends keyof ProtocolStats>(
   from?: string,
@@ -547,7 +687,10 @@ export async function getAggregatedProtocolStatsFromRedis<T extends keyof Aggreg
 }
 
 // Helper function for formatting results
-function formatZrangeResults<T extends keyof AggregatedData>(results: any, fields?: T[]): AggregatedProtocolStatsResponse<T>[] {
+function formatZrangeResults<T extends keyof AggregatedData>(
+  results: any,
+  fields?: T[]
+): AggregatedProtocolStatsResponse<T>[] {
   let formattedResults: AggregatedProtocolStatsResponse<T>[] = [];
   for (let i = 0; i < results.length; i += 2) {
     let data = JSON.parse(results[i]);
@@ -572,8 +715,6 @@ function filterFields<T extends string>(data: any, fields: T[]): Pick<typeof dat
   }
   return filteredData as Pick<typeof data, T>;
 }
-
-
 
 export interface ProtocolStats {
   block_height: number;
@@ -621,7 +762,6 @@ export interface ProtocolStats {
   fees_zephusd_yield: number;
   fees_zyield: number;
 }
-
 
 export interface AggregatedData {
   // Prices
@@ -808,7 +948,7 @@ export async function getRedisTransaction(hash: string) {
 async function getCirculatingSuppliesFromExplorer() {
   try {
     // Fetch Zeph circulating supply
-    const zephResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating');
+    const zephResponse = await fetch("https://explorer.zephyrprotocol.com/api/circulating");
     const zeph_circ = Number(await zephResponse.json());
 
     // WE CAN GET THIS FROM /get_reserve_info RPC COMMAND
@@ -837,30 +977,25 @@ async function getCirculatingSuppliesFromExplorer() {
       // zrs_circ,
       // zys_circ
     };
-
   } catch (error) {
-    console.error('Error fetching circulating supplies:', error);
+    console.error("Error fetching circulating supplies:", error);
     return {
       zeph_circ: 0,
       // zsd_circ: 0,
       // zrs_circ: 0,
       // zys_circ: 0
-    }
+    };
   }
 }
 
-
-
 export async function getLiveStats() {
   try {
-
-
     // we can get prices from the pr?
     // get accurate circ from the explorer api
     // we can get circulating supply for all assets except ZEPH from the reserve info call.
     // we can get current and previous circ amounts from the aggregated data to get 24h change
 
-    const currentBlockHeight = await getRedisHeight()
+    const currentBlockHeight = await getRedisHeight();
     console.log(`getLiveStats: Current Block Height: ${currentBlockHeight}`);
 
     const reserveInfo = await getReserveInfo();
@@ -875,8 +1010,9 @@ export async function getLiveStats() {
     const zsd_price = Number((zsd_rate * zeph_price).toFixed(4));
     const zrs_rate = Number((reserveInfo.result.pr.reserve * DEATOMIZE).toFixed(4));
     const zrs_price = Number((zrs_rate * zeph_price).toFixed(4));
-    const zys_price = reserveInfo.result.pr.yield_price ? Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4)) : 1;
-
+    const zys_price = reserveInfo.result.pr.yield_price
+      ? Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4))
+      : 1;
 
     const zsd_circ = Number(reserveInfo.result.num_stables) * DEATOMIZE;
     const zrs_circ = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
@@ -884,14 +1020,22 @@ export async function getLiveStats() {
 
     // to calcuate the 24hr circulating supply change we can use the aggregated data, most recent protocol stats and 720 records ago
     // Fetch previous block's data for initialization
-    const currentBlockProtocolStatsData = await redis.hget("protocol_stats", (currentBlockHeight).toString());
-    const currentBlockProtocolStats: ProtocolStats | null = currentBlockProtocolStatsData ? JSON.parse(currentBlockProtocolStatsData) : null;
+    const currentBlockProtocolStatsData = await redis.hget("protocol_stats", currentBlockHeight.toString());
+    const currentBlockProtocolStats: ProtocolStats | null = currentBlockProtocolStatsData
+      ? JSON.parse(currentBlockProtocolStatsData)
+      : null;
 
     const onedayagoBlockProtocolStatsData = await redis.hget("protocol_stats", (currentBlockHeight - 720).toString());
-    const onedayagoBlockProtocolStats: ProtocolStats | null = onedayagoBlockProtocolStatsData ? JSON.parse(onedayagoBlockProtocolStatsData) : null;
+    const onedayagoBlockProtocolStats: ProtocolStats | null = onedayagoBlockProtocolStatsData
+      ? JSON.parse(onedayagoBlockProtocolStatsData)
+      : null;
 
     if (!onedayagoBlockProtocolStats || !currentBlockProtocolStats) {
-      console.log(`getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${currentBlockHeight} & ${currentBlockHeight - 720}`);
+      console.log(
+        `getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${currentBlockHeight} & ${
+          currentBlockHeight - 720
+        }`
+      );
       return;
     }
 
@@ -900,11 +1044,15 @@ export async function getLiveStats() {
     // console.log(`getLiveStats: onedayagoBlockProtocolStats:`, onedayagoBlockProtocolStats);
 
     const zeph_circ_from_explorer = (await getCirculatingSuppliesFromExplorer()).zeph_circ; // Source of "Truth"
-    const zeph_circ_currentBlockProtocolStatus = currentBlockProtocolStats.zeph_circ;  // Fallback
+    const zeph_circ_currentBlockProtocolStatus = currentBlockProtocolStats.zeph_circ; // Fallback
 
     // warn if explorer and currentBlockProtocolStats differ by more than 1000
     if (Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus) > 1000) {
-      console.warn(`getLiveStats: Zeph circulating supply from explorer (${zeph_circ_from_explorer}) does not match currentBlockProtocolStats (${zeph_circ_currentBlockProtocolStatus}) significantly || difference: ${Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus)}`);
+      console.warn(
+        `getLiveStats: Zeph circulating supply from explorer (${zeph_circ_from_explorer}) does not match currentBlockProtocolStats (${zeph_circ_currentBlockProtocolStatus}) significantly || difference: ${Math.abs(
+          zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus
+        )}`
+      );
     }
     const zeph_circ = zeph_circ_from_explorer || zeph_circ_currentBlockProtocolStatus; // Use explorer data if available, otherwise fallback to currentBlockProtocolStats
 
@@ -945,16 +1093,15 @@ export async function getLiveStats() {
       zeph_in_reserve_value,
       zeph_in_reserve_percent,
       zsd_in_yield_reserve,
-      zsd_in_yield_reserve_percent
+      zsd_in_yield_reserve_percent,
     };
 
     // save all these to redis to be called back in case of daemon/explorer api failure
     await redis.set("live_stats", JSON.stringify(liveStats));
 
     return liveStats;
-
   } catch (error) {
-    console.error('Error fetching live stats:', error);
+    console.error("Error fetching live stats:", error);
     console.log(`getLiveStats: Error fetching live stats - using redis data instead`);
 
     // Fetch from Redis as a fallback
