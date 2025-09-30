@@ -33,6 +33,8 @@ dotenv.config();
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
+const MAIN_SLEEP_MS = process.env.MAIN_SLEEP_MS ? parseInt(process.env.MAIN_SLEEP_MS) : 300000; // 5 min default
+const MAIN_PAUSE_MS = process.env.MAIN_PAUSE_MS ? parseInt(process.env.MAIN_PAUSE_MS) : 5000; // 5 sec default
 
 let mainRunning = false;
 async function main() {
@@ -45,10 +47,11 @@ async function main() {
     console.log("Main already running, skipping this run");
     return;
   }
+  console.log(`MAIN sleep is set to ${MAIN_SLEEP_MS} ms`);
 
   mainRunning = true;
-  // wait for 3 seconds to allow for route calls
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+  // wait for 5 seconds to allow for route calls default
+  await new Promise((resolve) => setTimeout(resolve, MAIN_PAUSE_MS));
 
   // Check if the scanner is in a rollback state
   const isRollingBack = (await redis.get("scanner_rolling_back")) === "true";
@@ -360,10 +363,10 @@ if (!WALKTHROUGH_MODE) {
     console.log(`zephyrdscanner listening at http://localhost:${port} \n`);
   });
 
-  // 5 min set interval for scanning
+  // 5 min set interval for scanning default
   setInterval(async () => {
     await main();
-  }, 300000);
+  }, MAIN_SLEEP_MS);
 
   (async () => {
     await main();

@@ -112,7 +112,9 @@ function parseArgs(): CliOptions {
 }
 
 function printHelp() {
-  console.log(`Usage: npx tsx scripts/reserveSnapshot.ts [options]\n\nOptions:\n  --dir, --out, -d <path>   Directory to write reserve snapshot files (default: ${DEFAULT_OUTPUT_DIR})\n  --force, -f               Overwrite existing snapshot for the same height\n  --help, -h                Show this help message\n\nEnvironment variables:\n  ZEPHYR_RPC_URL            Override the daemon RPC URL (default: http://127.0.0.1:17767)\n  RESERVE_SNAPSHOT_DIR      Default output directory override`);
+  console.log(
+    `Usage: npx tsx scripts/reserveSnapshot.ts [options]\n\nOptions:\n  --dir, --out, -d <path>   Directory to write reserve snapshot files (default: ${DEFAULT_OUTPUT_DIR})\n  --force, -f               Overwrite existing snapshot for the same height\n  --help, -h                Show this help message\n\nEnvironment variables:\n  ZEPHYR_RPC_URL            Override the daemon RPC URL (default: http://127.0.0.1:17767)\n  RESERVE_SNAPSHOT_DIR      Default output directory override`
+  );
 }
 
 function parseAtomic(value: string): number {

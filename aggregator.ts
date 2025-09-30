@@ -890,7 +890,14 @@ async function handleReserveIntegrity(latestHeight: number) {
       }
     }
 
-    const diffReport = await getReserveDiffs();
+    const diffReport = await getReserveDiffs({
+      targetHeight: latestHeight,
+      allowSnapshots: true,
+      snapshotSource: "redis",
+    });
+    console.log(
+      `[reserve] Diff source for ${diffReport.block_height}: ${diffReport.source} (reserve_height=${diffReport.reserve_height})`
+    );
     diffReport.diffs.forEach((entry) => {
       console.log(
         `[reserve] ${diffReport.block_height} | ${entry.field} | on_chain=${entry.on_chain} | cached=${

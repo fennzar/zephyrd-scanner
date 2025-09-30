@@ -37,6 +37,33 @@ redis-cli HKEYS reserve_mismatch_heights
 
 # inspect the mismatch report for a height
 redis-cli HGET reserve_mismatch_heights 89310 | jq
+
+# fetch current reserve info directly from the daemon
+curl "http://127.0.0.1:17767/json_rpc" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"0","method":"get_reserve_info"}' | jq
+```
+
+Exporting the stored snapshots to JSON files:
+
+```sh
+# write each snapshot to reserve_snapshots/HEIGHT.json (skips existing files)
+npx tsx scripts/exportReserveSnapshots.ts --dir reserve_snapshots
+
+# overwrite existing files and index by previous height instead of reserve height
+npx tsx scripts/exportReserveSnapshots.ts --dir reserve_snapshots --force --index previous
+
+# import JSON snapshots from disk into Redis
+npx tsx scripts/importReserveSnapshots.ts --dir reserve_snapshots
+
+# force overwriting existing Redis entries
+npx tsx scripts/importReserveSnapshots.ts --dir reserve_snapshots --force
+
+# rapidly capture live snapshots into Redis (standalone script)
+npx tsx scripts/redisReserveSnapshotter.ts
+
+# adjust poll rate (milliseconds) if the daemon can handle faster calls
+RESERVE_SNAPSHOT_POLL_INTERVAL_MS=100 npx tsx scripts/redisReserveSnapshotter.ts
 ```
 
 Configuration knobs:
