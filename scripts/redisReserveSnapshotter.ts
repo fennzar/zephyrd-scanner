@@ -7,7 +7,7 @@ import { saveReserveSnapshotToRedis } from "../utils";
 dotenv.config();
 
 const RPC_URL = process.env.ZEPHYR_RPC_URL ?? "http://127.0.0.1:17767";
-const POLL_INTERVAL_MS = Number(process.env.RESERVE_SNAPSHOT_POLL_INTERVAL_MS ?? "5000");
+const POLL_INTERVAL_MS = Number(process.env.RESERVE_SNAPSHOT_POLL_INTERVAL_MS ?? "20000");
 const RESERVE_SNAPSHOT_REDIS_KEY = process.env.RESERVE_SNAPSHOT_REDIS_KEY ?? "reserve_snapshots";
 
 interface ReserveInfoResponse {

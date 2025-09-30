@@ -49,9 +49,9 @@ async function main() {
   }
   console.log(`MAIN sleep is set to ${MAIN_SLEEP_MS} ms`);
 
-  mainRunning = true;
   // wait for 5 seconds to allow for route calls default
   await new Promise((resolve) => setTimeout(resolve, MAIN_PAUSE_MS));
+  mainRunning = true;
 
   // Check if the scanner is in a rollback state
   const isRollingBack = (await redis.get("scanner_rolling_back")) === "true";

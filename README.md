@@ -64,6 +64,19 @@ npx tsx scripts/redisReserveSnapshotter.ts
 
 # adjust poll rate (milliseconds) if the daemon can handle faster calls
 RESERVE_SNAPSHOT_POLL_INTERVAL_MS=100 npx tsx scripts/redisReserveSnapshotter.ts
+
+Exporting and importing full Redis data:
+
+```sh
+# dump all Redis keys and values to redis_export.json
+npx tsx scripts/exportRedisData.ts --file redis_export.json --pretty
+
+# restore the dump (optionally flush first)
+npx tsx scripts/importRedisData.ts --file redis_export.json --flush
+
+# skip keys that already exist during import
+npx tsx scripts/importRedisData.ts --file redis_export.json --skip-existing
+```
 ```
 
 Configuration knobs:

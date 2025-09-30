@@ -15,7 +15,7 @@ const HEADERS = {
 };
 const DEATOMIZE = 10 ** -12;
 const RESERVE_SNAPSHOT_DIR = process.env.RESERVE_SNAPSHOT_DIR ?? "reserve_snapshots";
-export const RESERVE_SNAPSHOT_INTERVAL_BLOCKS = Number(process.env.RESERVE_SNAPSHOT_INTERVAL_BLOCKS ?? "720");
+export const RESERVE_SNAPSHOT_INTERVAL_BLOCKS = Number(process.env.RESERVE_SNAPSHOT_INTERVAL_BLOCKS ?? "100");
 export const RESERVE_SNAPSHOT_START_HEIGHT = Number(process.env.RESERVE_SNAPSHOT_START_HEIGHT ?? "89300");
 const RESERVE_SNAPSHOT_REDIS_KEY = "reserve_snapshots";
 const RESERVE_SNAPSHOT_LAST_KEY = "reserve_snapshots:last_previous_height";
