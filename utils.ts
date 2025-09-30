@@ -586,6 +586,7 @@ export interface ProtocolStats {
   stable_ma: number;
   yield_price: number;
   zeph_in_reserve: number;
+  zeph_in_reserve_atoms?: string;
   zsd_in_yield_reserve: number;
   zeph_circ: number;
   zephusd_circ: number;

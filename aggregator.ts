@@ -31,6 +31,7 @@ const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
 const WALKTHROUGH_DIFF_THRESHOLD = Number(process.env.WALKTHROUGH_DIFF_THRESHOLD ?? "1");
 const WALKTHROUGH_REPORT_PATH = process.env.WALKTHROUGH_REPORT_PATH;
 const WALKTHROUGH_REPORT_DIR = process.env.WALKTHROUGH_REPORT_DIR ?? "walkthrough_reports";
+const WALKTHROUGH_RESERVE_LOG = process.env.WALKTHROUGH_RESERVE_LOG ?? "walkthrough_reserve.log";
 
 interface WalkthroughDiffRecord {
   blockHeight: number;
@@ -39,6 +40,19 @@ interface WalkthroughDiffRecord {
 }
 
 const walkthroughDiffHistory: WalkthroughDiffRecord[] = [];
+
+function toAtoms(value: number): bigint {
+  if (!Number.isFinite(value)) {
+    return 0n;
+  }
+  return BigInt(Math.round(value * ATOMIC_UNITS_NUMBER));
+}
+
+function atomsToNumber(atoms: bigint): number {
+  const integerPart = atoms / ATOMIC_UNITS;
+  const fractionalPart = atoms % ATOMIC_UNITS;
+  return Number(integerPart) + Number(fractionalPart) / ATOMIC_UNITS_NUMBER;
+}
 
 interface PricingRecord {
   height: number;
@@ -58,6 +72,12 @@ interface BlockRewardInfo {
   governance_reward: number;
   reserve_reward: number;
   yield_reward: number;
+  miner_reward_atoms?: string;
+  governance_reward_atoms?: string;
+  reserve_reward_atoms?: string;
+  yield_reward_atoms?: string;
+  base_reward_atoms?: string;
+  fee_adjustment_atoms?: string;
 }
 
 function convertZephToZsd(amountZeph: number, stable: number, stableMA: number, blockHeight: number): number {
@@ -162,11 +182,13 @@ export async function aggregate() {
   console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs}`);
 
   const lastBlockToProcess = current_height_prs;
+  // const lastBlockToProcess = 89303; // TEMP OVERRIDE FOR TESTING
   if (lastBlockToProcess < height_to_process) {
     console.log("\tNo new blocks to aggregate.");
   } else {
     if (WALKTHROUGH_MODE) {
       walkthroughDiffHistory.length = 0;
+      await fs.writeFile(WALKTHROUGH_RESERVE_LOG, "");
     }
     const totalBlocks = lastBlockToProcess - height_to_process + 1;
     const progressInterval = Math.max(1, Math.floor(totalBlocks / 20));
@@ -318,6 +340,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     stable_ma: pr.stable_ma, // Get stable moving average from pricing record
     yield_price: pr.yield_price, // Get yield price from pricing record
     zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
+    zeph_in_reserve_atoms: prevBlockData.zeph_in_reserve_atoms,
     zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
     zeph_circ: prevBlockData.zeph_circ || 1965112.77028345, // Initialize from previous block or circulating supply at HF_VERSION_1_HEIGHT - 1
     zephusd_circ: prevBlockData.zephusd_circ || 0, // Initialize from previous block or 0
@@ -353,6 +376,30 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     fees_zyield: 0, // conversion fees from minting zsd -> zys
   };
 
+  let reserveAtoms = blockData.zeph_in_reserve_atoms
+    ? BigInt(blockData.zeph_in_reserve_atoms)
+    : toAtoms(blockData.zeph_in_reserve);
+  blockData.zeph_in_reserve_atoms = reserveAtoms.toString();
+
+  const prevReserveAtoms = reserveAtoms;
+  let conversionReserveAtoms = 0n;
+
+  const applyReserveDeltaAtoms = (deltaAtoms: bigint, trackConversion = false) => {
+    reserveAtoms += deltaAtoms;
+    if (trackConversion) {
+      conversionReserveAtoms += deltaAtoms;
+    }
+    blockData.zeph_in_reserve = atomsToNumber(reserveAtoms);
+    blockData.zeph_in_reserve_atoms = reserveAtoms.toString();
+  };
+
+  const applyReserveDelta = (delta: number) => {
+    if (!Number.isFinite(delta) || delta === 0) {
+      return;
+    }
+    applyReserveDeltaAtoms(toAtoms(delta), true);
+  };
+
   // console.log(`pr`);
   // console.log(pr);
   // console.log(`\n\n`);
@@ -363,7 +410,27 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
   const block_txs = txHashes;
   // console.log(`block_txs`);
   // console.log(block_txs);
-  blockData.zeph_in_reserve += bri.reserve_reward;
+  const reserveIncrementAtoms = bri.reserve_reward_atoms
+    ? BigInt(bri.reserve_reward_atoms)
+    : toAtoms(bri.reserve_reward || 0);
+  applyReserveDeltaAtoms(reserveIncrementAtoms);
+  const rewardAtoms = reserveIncrementAtoms;
+
+  const getFromAtoms = (tx: any) => {
+    if (typeof tx.from_amount_atoms === "string") {
+      return BigInt(tx.from_amount_atoms);
+    }
+    return toAtoms(tx.from_amount || 0);
+  };
+
+  const getToAtoms = (tx: any) => {
+    if (typeof tx.to_amount_atoms === "string") {
+      return BigInt(tx.to_amount_atoms);
+    }
+    return toAtoms(tx.to_amount || 0);
+  };
+
+  const getTxFeeAtoms = (_tx: any) => 0n;
 
   // We need to reset circulating supply values to the audited amounts on HFv11
   if (blockData.block_height === VERSION_2_3_0_HF_V11_BLOCK_HEIGHT + 1) {
@@ -403,7 +470,13 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             blockData.mint_stable_volume += tx.to_amount;
             blockData.fees_zephusd += tx.conversion_fee_amount;
             blockData.zephusd_circ += tx.to_amount;
-            blockData.zeph_in_reserve += tx.from_amount;
+            {
+              let deltaAtoms = getFromAtoms(tx);
+              if (tx.tx_fee_asset === "ZEPH") {
+                deltaAtoms -= getTxFeeAtoms(tx);
+              }
+              applyReserveDeltaAtoms(deltaAtoms, true);
+            }
             break;
           case "redeem_stable":
             blockData.conversion_transactions_count += 1;
@@ -412,7 +485,13 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             blockData.redeem_stable_count += 1;
             blockData.redeem_stable_volume += tx.from_amount;
             blockData.fees_zeph += tx.conversion_fee_amount;
-            blockData.zeph_in_reserve -= tx.to_amount;
+            {
+              let deltaAtoms = getToAtoms(tx);
+              if (tx.tx_fee_asset === "ZEPH") {
+                deltaAtoms += getTxFeeAtoms(tx);
+              }
+              applyReserveDeltaAtoms(-deltaAtoms, true);
+            }
             blockData.zephusd_circ -= tx.from_amount;
             break;
           case "mint_reserve":
@@ -421,7 +500,13 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             // from = ZEPH
             blockData.mint_reserve_count += 1;
             blockData.mint_reserve_volume += tx.to_amount;
-            blockData.zeph_in_reserve += tx.from_amount;
+            {
+              let deltaAtoms = getFromAtoms(tx);
+              if (tx.tx_fee_asset === "ZEPH") {
+                deltaAtoms -= getTxFeeAtoms(tx);
+              }
+              applyReserveDeltaAtoms(deltaAtoms, true);
+            }
             blockData.zephrsv_circ += tx.to_amount;
             blockData.fees_zephrsv += tx.conversion_fee_amount;
             break;
@@ -431,7 +516,13 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             // from = ZEPHRSV (ZRS)
             blockData.redeem_reserve_count += 1;
             blockData.redeem_reserve_volume += tx.from_amount;
-            blockData.zeph_in_reserve -= tx.to_amount;
+            {
+              let deltaAtoms = getToAtoms(tx);
+              if (tx.tx_fee_asset === "ZEPH") {
+                deltaAtoms += getTxFeeAtoms(tx);
+              }
+              applyReserveDeltaAtoms(-deltaAtoms, true);
+            }
             blockData.zephrsv_circ -= tx.from_amount;
             blockData.fees_zeph += tx.conversion_fee_amount;
             break;
@@ -468,7 +559,10 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     }
 
     if (failureCount > 0) {
-      console.log(`Failed to process ${failureCount} conversion transactions for block ${height_to_process}:`, failureTxs);
+      console.log(
+        `Failed to process ${failureCount} conversion transactions for block ${height_to_process}:`,
+        failureTxs
+      );
     }
   }
 
@@ -505,12 +599,24 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
   if (WALKTHROUGH_MODE) {
     await verifyReserveDiffs(height_to_process, {
       conversionTransactions: blockData.conversion_transactions_count,
+      reserveDebug: {
+        prevAtoms: prevReserveAtoms,
+        rewardAtoms,
+        conversionAtoms: conversionReserveAtoms,
+        finalAtoms: reserveAtoms,
+      },
     });
   }
 }
 
 interface WalkthroughBlockContext {
   conversionTransactions: number;
+  reserveDebug?: {
+    prevAtoms: bigint;
+    rewardAtoms: bigint;
+    conversionAtoms: bigint;
+    finalAtoms: bigint;
+  };
 }
 
 async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBlockContext) {
@@ -521,10 +627,32 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
     });
 
     if (WALKTHROUGH_MODE) {
-      console.log(`[walkthrough] block ${blockHeight} reserve diff`, {
-        ...diffReport,
+      const logLine = {
+        block_height: blockHeight,
         conversion_transactions: context?.conversionTransactions ?? 0,
-      });
+        diff_report: diffReport,
+      };
+      console.log(`[walkthrough] ${JSON.stringify(logLine)}`);
+      const reserveEntry: Record<string, unknown> = {
+        block_height: blockHeight,
+        conversion_transactions: context?.conversionTransactions ?? 0,
+        reserve_debug: context?.reserveDebug
+          ? {
+              prev_atoms: context.reserveDebug.prevAtoms.toString(),
+              reward_atoms: context.reserveDebug.rewardAtoms.toString(),
+              conversion_atoms: context.reserveDebug.conversionAtoms.toString(),
+              final_atoms: context.reserveDebug.finalAtoms.toString(),
+            }
+          : undefined,
+      };
+      const reserveDiff = diffReport.diffs.find((entry) => entry.field === "zeph_in_reserve");
+      if (reserveDiff) {
+        reserveEntry.zeph_in_reserve_diff = reserveDiff;
+        reserveEntry.zeph_in_reserve_on_chain_atoms = toAtoms(reserveDiff.on_chain ?? 0).toString();
+        reserveEntry.zeph_in_reserve_cached_atoms = toAtoms(reserveDiff.cached ?? 0).toString();
+      }
+      await fs.appendFile(WALKTHROUGH_RESERVE_LOG, `${JSON.stringify(reserveEntry)}\n`);
+      await fs.appendFile("walkthrough_console.log", `${JSON.stringify(logLine)}\n`);
       if (!diffReport.mismatch) {
         walkthroughDiffHistory.push({
           blockHeight,
@@ -533,7 +661,9 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
         });
       } else {
         console.warn(
-          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${diffReport.source_height ?? "unknown"})`
+          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${
+            diffReport.source_height ?? "unknown"
+          })`
         );
       }
     }
@@ -615,20 +745,16 @@ async function outputWalkthroughDiffReport() {
   const netZephDiff = netZephDiffAtoms / ATOMIC_UNITS_NUMBER;
   const avgAbsZephDiff = averageAbsZephDiffAtoms / ATOMIC_UNITS_NUMBER;
 
+  console.log(`[walkthrough] Net zeph reserve drift: ${netZephDiffAtoms} atoms (${netZephDiff.toFixed(12)} ZEPH)`);
   console.log(
-    `[walkthrough] Net zeph reserve drift: ${netZephDiffAtoms} atoms (${netZephDiff.toFixed(12)} ZEPH)`
-  );
-  console.log(
-    `[walkthrough] Avg |zeph drift| per block: ${Math.round(averageAbsZephDiffAtoms)} atoms (${avgAbsZephDiff.toFixed(12)} ZEPH)`
+    `[walkthrough] Avg |zeph drift| per block: ${Math.round(averageAbsZephDiffAtoms)} atoms (${avgAbsZephDiff.toFixed(
+      12
+    )} ZEPH)`
   );
 
   if (driftWithoutConversionsRecords.length > 0) {
-    const driftStrings = driftWithoutConversionsRecords.map(
-      (entry) => `${entry.block_height} (${entry.diff_atoms})`
-    );
-    console.log(
-      `[walkthrough] Drift detected on conversion-free blocks: ${driftStrings.join(", ")}`
-    );
+    const driftStrings = driftWithoutConversionsRecords.map((entry) => `${entry.block_height} (${entry.diff_atoms})`);
+    console.log(`[walkthrough] Drift detected on conversion-free blocks: ${driftStrings.join(", ")}`);
   } else {
     console.log("[walkthrough] No drift detected on conversion-free blocks.");
   }

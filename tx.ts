@@ -1,7 +1,7 @@
+import fs from "node:fs/promises";
 import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
 import { Pipeline } from "ioredis";
-
 
 interface IncrTotals {
   miner_reward: number;
@@ -36,12 +36,15 @@ interface TxInfoType {
   conversion_rate: number;
   from_asset: string;
   from_amount: number;
+  from_amount_atoms?: string;
   to_asset: string;
   to_amount: number;
+  to_amount_atoms?: string;
   conversion_fee_asset: string;
   conversion_fee_amount: number;
   tx_fee_asset: string;
   tx_fee_amount: number;
+  tx_fee_atoms?: string;
 }
 
 const DEATOMIZE = 10 ** -12;
@@ -49,19 +52,17 @@ const HF_V1_BLOCK_HEIGHT = 89300;
 const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
+const ATOMIC_UNITS = 1_000_000_000_000n;
+const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
+const WALKTHROUGH_DEBUG_LOG = process.env.WALKTHROUGH_DEBUG_LOG ?? "walkthrough_debug.log";
+
 const MINER_REWARD_BASELINE = 1391857.1317692809;
 const GOVERNANCE_REWARD_BASELINE = 73255.6385141733;
 
 async function ensureTotalsBaseline() {
   const totalsExists = await redis.exists("totals");
   if (!totalsExists) {
-    await redis.hset(
-      "totals",
-      "miner_reward",
-      MINER_REWARD_BASELINE,
-      "governance_reward",
-      GOVERNANCE_REWARD_BASELINE
-    );
+    await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE, "governance_reward", GOVERNANCE_REWARD_BASELINE);
     return;
   }
 
@@ -103,6 +104,14 @@ async function saveBlockRewardInfo(
   reserve_reward: number,
   yield_reward: number,
   pipeline: Pipeline,
+  rewardAtoms?: {
+    miner: bigint;
+    governance: bigint;
+    reserve: bigint;
+    yield: bigint;
+    base?: bigint;
+    feeAdjustment?: bigint;
+  }
 ) {
   let block_reward_info = {
     height: height,
@@ -110,6 +119,12 @@ async function saveBlockRewardInfo(
     governance_reward: governance_reward,
     reserve_reward: reserve_reward,
     yield_reward: yield_reward,
+    miner_reward_atoms: rewardAtoms ? rewardAtoms.miner.toString() : undefined,
+    governance_reward_atoms: rewardAtoms ? rewardAtoms.governance.toString() : undefined,
+    reserve_reward_atoms: rewardAtoms ? rewardAtoms.reserve.toString() : undefined,
+    yield_reward_atoms: rewardAtoms ? rewardAtoms.yield.toString() : undefined,
+    base_reward_atoms: rewardAtoms?.base ? rewardAtoms.base.toString() : undefined,
+    fee_adjustment_atoms: rewardAtoms?.feeAdjustment ? rewardAtoms.feeAdjustment.toString() : undefined,
   };
 
   const block_reward_info_json = JSON.stringify(block_reward_info);
@@ -120,6 +135,70 @@ async function saveBlockRewardInfo(
   // pipeline.hincrbyfloat("totals", "governance_reward", governance_reward);
   // pipeline.hincrbyfloat("totals", "reserve_reward", reserve_reward);
   // pipeline.hincrbyfloat("totals", "yield_reward", yield_reward);
+}
+
+function atomsToDecimal(atoms: bigint): number {
+  const integerPart = atoms / ATOMIC_UNITS;
+  const fractionalPart = atoms % ATOMIC_UNITS;
+  return Number(integerPart) + Number(fractionalPart) / ATOMIC_UNITS_NUMBER;
+}
+
+function computeRewardSplits(baseRewardAtoms: bigint, blockHeight: number) {
+  let reserveRewardAtoms = 0n;
+  let governanceRewardAtoms = 0n;
+  let yieldRewardAtoms = 0n;
+
+  if (blockHeight >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
+    reserveRewardAtoms = (baseRewardAtoms * 3n) / 10n;
+    yieldRewardAtoms = baseRewardAtoms / 20n;
+  } else if (blockHeight >= HF_V1_BLOCK_HEIGHT) {
+    reserveRewardAtoms = baseRewardAtoms / 5n;
+    governanceRewardAtoms = baseRewardAtoms / 20n;
+  } else {
+    governanceRewardAtoms = baseRewardAtoms / 20n;
+  }
+
+  const minerRewardAtoms = baseRewardAtoms - reserveRewardAtoms - governanceRewardAtoms - yieldRewardAtoms;
+
+  return {
+    baseRewardAtoms,
+    reserveRewardAtoms,
+    governanceRewardAtoms,
+    yieldRewardAtoms,
+    minerRewardAtoms,
+  };
+}
+
+function solveBaseRewardFromMinerShare(minerShareAtoms: bigint, blockHeight: number): bigint {
+  if (minerShareAtoms <= 0n) {
+    return 0n;
+  }
+
+  let lower = minerShareAtoms;
+  let upper: bigint;
+
+  if (blockHeight >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
+    upper = (minerShareAtoms * 100n) / 65n + 10n;
+  } else if (blockHeight >= HF_V1_BLOCK_HEIGHT) {
+    upper = (minerShareAtoms * 100n) / 75n + 10n;
+  } else {
+    upper = (minerShareAtoms * 100n) / 95n + 10n;
+  }
+
+  while (lower < upper) {
+    const mid = (lower + upper) / 2n;
+    const { minerRewardAtoms: computed } = computeRewardSplits(mid, blockHeight);
+    if (computed === minerShareAtoms) {
+      return mid;
+    }
+    if (computed < minerShareAtoms) {
+      lower = mid + 1n;
+    } else {
+      upper = mid;
+    }
+  }
+
+  return lower;
 }
 
 function blankIncrTotals(): IncrTotals {
@@ -155,10 +234,31 @@ function blankIncrTotals(): IncrTotals {
     redeem_yield_count: 0,
     redeem_yield_volume: 0,
     fees_zephusd_yield: 0,
-  }
+  };
 }
 
-async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline): Promise<{ incr_totals: IncrTotals; tx_info?: TxInfoType }> {
+interface ProcessTxOptions {
+  minerFeeAdjustmentAtoms?: bigint;
+}
+
+interface ProcessTxResult {
+  incr_totals: IncrTotals;
+  tx_info?: TxInfoType;
+  feeAtoms?: bigint;
+  debug?: {
+    baseRewardAtoms: bigint;
+    feeAdjustmentAtoms: bigint;
+    reserveRewardAtoms: bigint;
+    minerRewardAtoms: bigint;
+  };
+}
+
+async function processTx(
+  hash: string,
+  verbose_logs: boolean,
+  pipeline: Pipeline,
+  options: ProcessTxOptions = {}
+): Promise<ProcessTxResult> {
   if (verbose_logs) console.log(`\tProcessing tx: ${hash}`);
 
   // increment totals object for this transaction
@@ -174,6 +274,7 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
   const { as_json: tx_json_string } = tx_data;
   const { block_height: block_height } = tx_data;
   const { block_timestamp: block_timestamp } = tx_data;
+  const blockHeightNumber = Number(block_height ?? 0);
 
   if (!tx_json_string) {
     console.error("No valid transaction JSON data found.");
@@ -182,63 +283,69 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
 
   const tx_json = JSON.parse(tx_json_string);
   const { amount_burnt, amount_minted, vin, vout, rct_signatures, pricing_record_height } = tx_json;
+  const amountBurntAtoms = BigInt(amount_burnt ?? 0);
+  const amountMintedAtoms = BigInt(amount_minted ?? 0);
 
   if (!(amount_burnt && amount_minted)) {
+    const txFeeAtoms = BigInt(rct_signatures?.txnFee ?? 0);
     const tx_amount = vout[0]?.amount || 0;
-    if (tx_amount == 0) {
+    if (tx_amount === 0) {
       if (verbose_logs) console.log("\t\tSKIP -> Not a conversion transaction or block reward transaction");
-      return { incr_totals };
+      return { incr_totals, feeAtoms: txFeeAtoms };
     }
 
     // Miner reward transaction!
-    const miner_reward = tx_amount * DEATOMIZE;
-    let governance_reward = 0;
-    let reserve_reward = 0;
-    let yield_reward = 0;
+    const minerRewardAtoms = BigInt(tx_amount);
+    const minerTxFeeAtoms = txFeeAtoms;
+    const feeAdjustmentAtoms = options.minerFeeAdjustmentAtoms ?? 0n;
+    const minerRewardExFeesAtoms = minerRewardAtoms > feeAdjustmentAtoms ? minerRewardAtoms - feeAdjustmentAtoms : 0n;
+    const baseRewardAtoms = solveBaseRewardFromMinerShare(minerRewardExFeesAtoms, blockHeightNumber);
+    const splits = computeRewardSplits(baseRewardAtoms, blockHeightNumber);
 
-    // Prior to HF V6 / Version 2 - ZSD Yield.
-    if (block_height < VERSION_2_HF_V6_BLOCK_HEIGHT) {
+    const miner_reward = atomsToDecimal(minerRewardAtoms);
+    const governance_reward = atomsToDecimal(splits.governanceRewardAtoms);
+    const reserve_reward = atomsToDecimal(splits.reserveRewardAtoms);
+    const yield_reward = atomsToDecimal(splits.yieldRewardAtoms);
 
-      // v0 -> v1 DJED Implementation
-      let log_message = "\tBlock reward transaction!";
-      // Miner Reward = 95%
-      // Governance Reward = 5%
-      governance_reward = vout[1]?.amount * DEATOMIZE;
+    if (verbose_logs) {
+      console.log(
+        `\tBlock reward transaction! base=${atomsToDecimal(
+          baseRewardAtoms
+        )} miner=${miner_reward} reserve=${reserve_reward} governance=${governance_reward} yield=${yield_reward}`
+      );
+    }
 
-      if (block_height >= HF_V1_BLOCK_HEIGHT) {
-        log_message += " v1 DJED Implementation";
-        // Miner Reward = 95% -> 75%
-        // Governance Reward = 5%
-        // Reserve Reward = 0% -> 20% (added)
-        // Yield Reward = 0% (not implemented)
-        const total_reward = miner_reward / 0.75;
-        reserve_reward = total_reward * 0.2;
+    await saveBlockRewardInfo(
+      blockHeightNumber,
+      miner_reward,
+      governance_reward,
+      reserve_reward,
+      yield_reward,
+      pipeline,
+      {
+        miner: minerRewardAtoms,
+        governance: splits.governanceRewardAtoms,
+        reserve: splits.reserveRewardAtoms,
+        yield: splits.yieldRewardAtoms,
+        base: baseRewardAtoms,
+        feeAdjustment: feeAdjustmentAtoms,
       }
-      if (verbose_logs) console.log(log_message);
-      await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward, yield_reward, pipeline);
-    }
+    );
 
-    // Post HF V6 / Version 2 - ZSD Yield.
-    if (block_height >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
-      // Miner reward = 75% -> 65%
-      // Reserve Reward = 20% -> 30%
-      // Governance Reward = 5% -> 0% (removed)
-      // Yield Reward = 0% -> 5% (added)
-
-      const total_reward = miner_reward / 0.65;
-      reserve_reward = total_reward * 0.3;
-      yield_reward = total_reward * 0.05;
-
-      if (verbose_logs) console.log("\tBlock reward transaction! v2 ZSD Yield");
-      await saveBlockRewardInfo(block_height, miner_reward, governance_reward, reserve_reward, yield_reward, pipeline);
-    }
-
-    // update incr_totals
     incr_totals.miner_reward += miner_reward;
     incr_totals.governance_reward += governance_reward;
     incr_totals.reserve_reward += reserve_reward;
     incr_totals.yield_reward += yield_reward;
-    return { incr_totals };
+    return {
+      incr_totals,
+      feeAtoms: minerTxFeeAtoms,
+      debug: {
+        baseRewardAtoms,
+        feeAdjustmentAtoms,
+        reserveRewardAtoms: splits.reserveRewardAtoms,
+        minerRewardAtoms,
+      },
+    };
   }
 
   // Conversion transaction!
@@ -260,13 +367,25 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
   incr_totals.conversion_transactions += 1;
 
   if (pricing_record_height === 0) {
-    console.error("Tx - REALLY MESSED UP DATA? - pricing_record_height is 0 from await readTx() and should be here in conversion (or miner?) transaction");
+    console.error(
+      "Tx - REALLY MESSED UP DATA? - pricing_record_height is 0 from await readTx() and should be here in conversion (or miner?) transaction"
+    );
     // Print details for debugging
     console.error("Transaction hash:", hash);
     console.error("response_data:", response_data);
     console.error("Transaction JSON:", tx_json);
     return { incr_totals };
   }
+
+  if (verbose_logs)
+    console.log(`tx_json data (from the node):
+    
+    amount_burnt: ${amount_burnt} (${amountBurntAtoms} atoms)
+    amount_minted: ${amount_minted} (${amountMintedAtoms} atoms)
+    input_asset_type: ${input_asset_type}
+    output_asset_types: ${output_asset_types.join(", ")}
+    conversion_type: ${conversion_type}
+    pricing_record_height: ${pricing_record_height}`);
 
   const relevant_pr = await getRedisPricingRecord(pricing_record_height);
 
@@ -285,14 +404,18 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
   let conversion_fee_asset = "";
   let conversion_fee_amount = 0;
   let tx_fee_asset = "";
+  let from_amount_atoms_str: string | undefined;
+  let to_amount_atoms_str: string | undefined;
 
   switch (conversion_type) {
     case "mint_stable":
       conversion_rate = Math.max(spot, moving_average);
       from_asset = "ZEPH";
       from_amount = amount_burnt * DEATOMIZE;
+      from_amount_atoms_str = amountBurntAtoms.toString();
       to_asset = "ZEPHUSD";
       to_amount = amount_minted * DEATOMIZE;
+      to_amount_atoms_str = amountMintedAtoms.toString();
 
       const mint_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001; // 2% -> 0.1%
       // conversion fee is always "paid" in terms of the converted to_asset, in a form of a loss on the resulting converted value (to_amount)
@@ -314,8 +437,10 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       conversion_rate = Math.min(spot, moving_average);
       from_asset = "ZEPHUSD";
       from_amount = amount_burnt * DEATOMIZE;
+      from_amount_atoms_str = amountBurntAtoms.toString();
       to_asset = "ZEPH";
       to_amount = amount_minted * DEATOMIZE;
+      to_amount_atoms_str = amountMintedAtoms.toString();
 
       const redeem_stable_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.001; // 2% -> 0.1%
 
@@ -335,8 +460,10 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       conversion_rate = Math.max(reserve, reserve_ma);
       from_asset = "ZEPH";
       from_amount = amount_burnt * DEATOMIZE;
+      from_amount_atoms_str = amountBurntAtoms.toString();
       to_asset = "ZEPHRSV";
       to_amount = amount_minted * DEATOMIZE;
+      to_amount_atoms_str = amountMintedAtoms.toString();
 
       const mint_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0 : 0.01; // 0% -> 1%
 
@@ -357,8 +484,10 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       conversion_rate = Math.min(reserve, reserve_ma);
       from_asset = "ZEPHRSV";
       from_amount = amount_burnt * DEATOMIZE;
+      from_amount_atoms_str = amountBurntAtoms.toString();
       to_asset = "ZEPH";
       to_amount = amount_minted * DEATOMIZE;
+      to_amount_atoms_str = amountMintedAtoms.toString();
 
       const redeem_reserve_conversion_fee = block_height < ARTEMIS_HF_V5_BLOCK_HEIGHT ? 0.02 : 0.01; // 2% -> 1%
 
@@ -378,8 +507,10 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       conversion_rate = yield_price;
       from_asset = "ZEPHUSD";
       from_amount = amount_burnt * DEATOMIZE;
+      from_amount_atoms_str = amountBurntAtoms.toString();
       to_asset = "ZYIELD";
       to_amount = amount_minted * DEATOMIZE;
+      to_amount_atoms_str = amountMintedAtoms.toString();
 
       const mint_yield_conversion_fee = 0.001; // 0.1%
 
@@ -399,8 +530,10 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       conversion_rate = yield_price;
       from_asset = "ZYIELD";
       from_amount = amount_burnt * DEATOMIZE;
+      from_amount_atoms_str = amountBurntAtoms.toString();
       to_asset = "ZEPHUSD";
       to_amount = amount_minted * DEATOMIZE;
+      to_amount_atoms_str = amountMintedAtoms.toString();
 
       const redeem_yield_conversion_fee = 0.001; // 0.1%
 
@@ -415,10 +548,10 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
       incr_totals.redeem_yield_volume += to_amount; // ZEPHUSD
       incr_totals.fees_zephusd_yield += conversion_fee_amount; // effective loss in ZEPHUSD for redeeming ZYIELD
       break;
-
   }
 
-  const tx_fee_amount = rct_signatures.txnFee * DEATOMIZE;
+  const tx_fee_atoms = BigInt(rct_signatures?.txnFee ?? 0);
+  const tx_fee_amount = Number(tx_fee_atoms) * DEATOMIZE;
 
   const tx_info = {
     hash,
@@ -428,17 +561,20 @@ async function processTx(hash: string, verbose_logs: boolean, pipeline: Pipeline
     conversion_rate,
     from_asset,
     from_amount,
+    from_amount_atoms: from_amount_atoms_str,
     to_asset,
     to_amount,
+    to_amount_atoms: to_amount_atoms_str,
     conversion_fee_asset,
     conversion_fee_amount,
     tx_fee_asset,
     tx_fee_amount,
+    tx_fee_atoms: tx_fee_atoms.toString(),
   };
 
   if (verbose_logs) console.log(tx_info);
 
-  return { incr_totals, tx_info };
+  return { incr_totals, tx_info, feeAtoms: tx_fee_atoms };
 }
 
 function determineConversionType(input: string, outputs: string[]): string {
@@ -466,6 +602,7 @@ function determineConversionType(input: string, outputs: string[]): string {
 export async function scanTransactions(reset = false) {
   const hfHeight = 89300; // if we just want to scan from the v1.0.0 HF block
   const rpcHeight = await getCurrentBlockHeight();
+  // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
   const redisHeight = await getRedisHeight();
 
   await ensureTotalsBaseline();
@@ -489,6 +626,10 @@ export async function scanTransactions(reset = false) {
   console.log("Fired tx scanner...");
   console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
 
+  if (process.env.WALKTHROUGH_MODE === "true") {
+    await fs.writeFile(WALKTHROUGH_DEBUG_LOG, "");
+  }
+
   let verbose_logs = false;
   if (rpcHeight - startingHeight > 1000) {
     console.log("This is a large scan, verbose logs are disabled.");
@@ -508,36 +649,20 @@ export async function scanTransactions(reset = false) {
       return;
     }
 
-
-    if (height % progressStep === 0 || height === (rpcHeight - 1) - 1) {
+    if (height % progressStep === 0 || height === rpcHeight - 1 - 1) {
       // const percent = ((height + 1) / (rpcHeight - 1) * 100).toFixed(2);
       const percentComplete = (((height - startingHeight) / (rpcHeight - startingHeight)) * 100).toFixed(2);
-      console.log(`TXs SCANNING BLOCK: [${height + 1}/${(rpcHeight - 1)}] Processed (${percentComplete}%)`);
+      console.log(`TXs SCANNING BLOCK: [${height + 1}/${rpcHeight - 1}] Processed (${percentComplete}%)`);
     }
 
     // console.log(`TXs SCANNING BLOCK: ${height}/${rpcHeight - 1} \t | ${percentComplete}%`);
 
-    const txs = block.result.tx_hashes;
+    const txs: string[] = block.result.tx_hashes || [];
     const miner_tx = block.result.miner_tx_hash;
+    let totalBlockFeeAtoms = 0n;
 
-    const { incr_totals: miner_tx_incr_totals } = await processTx(miner_tx, verbose_logs, pipeline);
-
-    // if (miner_tx_incr_totals) {
-    //   for (const key in miner_tx_incr_totals) total_of_total_increments[key] += miner_tx_incr_totals[key];
-    // }
-
-    for (const key of Object.keys(miner_tx_incr_totals) as (keyof IncrTotals)[]) {
-      total_of_total_increments[key] += miner_tx_incr_totals[key];
-    }
-
-
-    if (!txs) {
-      if (verbose_logs) console.log(`\t - No Additional txs`);
-      await setRedisHeight(height);
-      continue;
-    }
     for (const hash of txs) {
-      const { incr_totals, tx_info } = await processTx(hash, verbose_logs, pipeline);
+      const { incr_totals, tx_info, feeAtoms } = await processTx(hash, verbose_logs, pipeline);
       if (incr_totals) {
         // increment totals
         for (const key of Object.keys(incr_totals) as (keyof IncrTotals)[]) {
@@ -548,6 +673,30 @@ export async function scanTransactions(reset = false) {
         blockHashes.push(hash);
         pipeline.hset("txs", hash, JSON.stringify(tx_info));
       }
+      if (typeof feeAtoms === "bigint") {
+        totalBlockFeeAtoms += feeAtoms;
+      }
+    }
+
+    const { incr_totals: miner_tx_incr_totals, debug: minerDebug } = await processTx(miner_tx, verbose_logs, pipeline, {
+      minerFeeAdjustmentAtoms: totalBlockFeeAtoms,
+    });
+
+    if (process.env.WALKTHROUGH_MODE === "true" && minerDebug) {
+      const headerRewardAtoms = BigInt(block.result?.block_header?.reward ?? 0);
+      const debugLine = {
+        block_height: height,
+        header_reward_atoms: headerRewardAtoms.toString(),
+        fee_atoms: minerDebug.feeAdjustmentAtoms.toString(),
+        reconstructed_base_atoms: minerDebug.baseRewardAtoms.toString(),
+        reserve_reward_atoms: minerDebug.reserveRewardAtoms.toString(),
+        miner_share_atoms: minerDebug.minerRewardAtoms.toString(),
+      };
+      await fs.appendFile(WALKTHROUGH_DEBUG_LOG, `${JSON.stringify(debugLine)}\n`);
+    }
+
+    for (const key of Object.keys(miner_tx_incr_totals) as (keyof IncrTotals)[]) {
+      total_of_total_increments[key] += miner_tx_incr_totals[key];
     }
 
     pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
@@ -572,8 +721,6 @@ export async function scanTransactions(reset = false) {
   await pipeline.exec();
   await setRedisHeight(rpcHeight - 1);
 }
-
-
 
 // (async () => {
 //   await scanTransactions();

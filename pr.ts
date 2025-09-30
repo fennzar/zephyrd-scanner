@@ -30,6 +30,7 @@ export async function setRedisHeightPRs(height: number) {
 export async function scanPricingRecords() {
   const hfHeight = 89300;
   const rpcHeight = await getCurrentBlockHeight();
+  // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
   const redisHeight = await getRedisHeight();
   const startingHeight = Math.max(redisHeight + 1, hfHeight);
 
@@ -49,11 +50,7 @@ export async function scanPricingRecords() {
     await redis.hset("block_hashes", height, block.result.block_header.hash);
     const pricingRecord = block.result.block_header.pricing_record;
     if (!pricingRecord) {
-      if (
-        height === startingHeight ||
-        height === rpcHeight - 1 ||
-        (height - startingHeight) % logInterval === 0
-      ) {
+      if (height === startingHeight || height === rpcHeight - 1 || (height - startingHeight) % logInterval === 0) {
         const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
         console.log(`PRs SCANNING BLOCK(s): ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
       }
@@ -74,11 +71,7 @@ export async function scanPricingRecords() {
       continue;
     }
 
-    if (
-      height === startingHeight ||
-      height === rpcHeight - 1 ||
-      (height - startingHeight) % logInterval === 0
-    ) {
+    if (height === startingHeight || height === rpcHeight - 1 || (height - startingHeight) % logInterval === 0) {
       const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
       console.log(`PRs SCANNING BLOCK: ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
     }
@@ -114,8 +107,6 @@ export async function scanPricingRecords() {
   return;
 }
 
-
-
 export async function processZYSPriceHistory() {
   console.log("Processing ZYS price history...");
   const BLOCK_INTERVAL = 30;
@@ -140,7 +131,7 @@ export async function processZYSPriceHistory() {
     // Store the ZYS price and block height as a JSON object in the sorted set
     const data = JSON.stringify({
       block_height: height,
-      zys_price: zys_price
+      zys_price: zys_price,
     });
 
     console.log(`\t Block ${height} - ZYS Price: ${zys_price} - Timestamp: ${timestamp}`);
@@ -152,24 +143,23 @@ export async function processZYSPriceHistory() {
 
 export async function getZYSPriceHistoryFromRedis() {
   // Retrieve all records from Redis along with their scores (timestamps)
-  const result = await redis.zrangebyscore("zys_price_history", '-inf', '+inf', 'WITHSCORES');
+  const result = await redis.zrangebyscore("zys_price_history", "-inf", "+inf", "WITHSCORES");
 
   const history = [];
 
   // Loop through the result and pair each entry with its corresponding score
   for (let i = 0; i < result.length; i += 2) {
-    const entry = JSON.parse(result[i]);  // Parse the JSON entry
-    const timestamp = result[i + 1];      // Get the corresponding timestamp (score)
+    const entry = JSON.parse(result[i]); // Parse the JSON entry
+    const timestamp = result[i + 1]; // Get the corresponding timestamp (score)
 
     history.push({
-      timestamp: Number(timestamp),  // Add the timestamp
-      ...entry,          // Spread the block height and zys_price
+      timestamp: Number(timestamp), // Add the timestamp
+      ...entry, // Spread the block height and zys_price
     });
   }
 
   return history;
 }
-
 
 // Function to retrieve the most recent block height from Redis
 export async function getMostRecentBlockHeightFromRedis() {
