@@ -48,34 +48,34 @@ Exporting the stored snapshots to JSON files:
 
 ```sh
 # write each snapshot to reserve_snapshots/HEIGHT.json (skips existing files)
-npx tsx scripts/exportReserveSnapshots.ts --dir reserve_snapshots
+npx tsx src/scripts/exportReserveSnapshots.ts --dir reserve_snapshots
 
 # overwrite existing files and index by previous height instead of reserve height
-npx tsx scripts/exportReserveSnapshots.ts --dir reserve_snapshots --force --index previous
+npx tsx src/scripts/exportReserveSnapshots.ts --dir reserve_snapshots --force --index previous
 
 # import JSON snapshots from disk into Redis
-npx tsx scripts/importReserveSnapshots.ts --dir reserve_snapshots
+npx tsx src/scripts/importReserveSnapshots.ts --dir reserve_snapshots
 
 # force overwriting existing Redis entries
-npx tsx scripts/importReserveSnapshots.ts --dir reserve_snapshots --force
+npx tsx src/scripts/importReserveSnapshots.ts --dir reserve_snapshots --force
 
 # rapidly capture live snapshots into Redis (standalone script)
-npx tsx scripts/redisReserveSnapshotter.ts
+npx tsx src/scripts/redisReserveSnapshotter.ts
 
 # adjust poll rate (milliseconds) if the daemon can handle faster calls
-RESERVE_SNAPSHOT_POLL_INTERVAL_MS=100 npx tsx scripts/redisReserveSnapshotter.ts
+RESERVE_SNAPSHOT_POLL_INTERVAL_MS=100 npx tsx src/scripts/redisReserveSnapshotter.ts
 
 Exporting and importing full Redis data:
 
 ```sh
 # dump all Redis keys and values into exports/<version>/redis_export_<version>_<height>_<timestamp>/
-npx tsx scripts/exportRedisData.ts --pretty
+npx tsx src/scripts/exportRedisData.ts --pretty
 
 # restore the dump directory (optionally flush first)
-npx tsx scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --flush
+npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --flush
 
 # skip keys that already exist during import
-npx tsx scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --skip-existing
+npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --skip-existing
 ```
 ```
 

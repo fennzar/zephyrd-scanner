@@ -16,7 +16,7 @@ interface CliOptions {
 }
 
 function printHelp() {
-  console.log(`Usage: npx tsx scripts/exportReserveSnapshots.ts [options]
+  console.log(`Usage: npx tsx src/scripts/exportReserveSnapshots.ts [options]
 
 Options:
   --dir, --out, -d <path>   Directory to write exported snapshots (default: ${DEFAULT_EXPORT_DIR})

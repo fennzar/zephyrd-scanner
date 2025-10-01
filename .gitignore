@@ -8,3 +8,4 @@ node_modules
 *.log
 walkthrough_reports/
 exports/
+dump/

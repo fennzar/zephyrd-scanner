@@ -59,7 +59,8 @@ async function bootstrap() {
   }
 
   console.log("[walkthrough] Starting scanner in walkthrough mode...");
-  await import("./scanner");
+  const { startScanner } = await import("./scanner-runner");
+  await startScanner();
 }
 
 bootstrap().catch((error) => {

@@ -13,7 +13,7 @@ interface CliOptions {
 }
 
 function printHelp() {
-  console.log(`Usage: npx tsx scripts/exportRedisData.ts [options]
+  console.log(`Usage: npx tsx src/scripts/exportRedisData.ts [options]
 
 Options:
   --dir, -d <path>     Directory root for export (default: exports/<version>)

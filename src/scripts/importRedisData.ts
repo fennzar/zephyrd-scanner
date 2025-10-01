@@ -19,7 +19,7 @@ interface MetaRecord {
 }
 
 function printHelp() {
-  console.log(`Usage: npx tsx scripts/importRedisData.ts [options]
+  console.log(`Usage: npx tsx src/scripts/importRedisData.ts [options]
 
 Options:
   --dir, -d <path>     Directory produced by exportRedisData.ts

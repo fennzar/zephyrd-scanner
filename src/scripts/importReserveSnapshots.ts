@@ -15,7 +15,7 @@ interface CliOptions {
 }
 
 function printHelp() {
-  console.log(`Usage: npx tsx scripts/importReserveSnapshots.ts [options]
+  console.log(`Usage: npx tsx src/scripts/importReserveSnapshots.ts [options]
 
 Options:
   --dir, --in, -d <path>    Directory containing snapshot JSON files (default: ${DEFAULT_IMPORT_DIR})
