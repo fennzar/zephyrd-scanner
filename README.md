@@ -186,7 +186,8 @@ curl "157.245.130.75:4000/livestats" | jq
   "zeph_in_reserve_value": 7088410.772641493,
   "zeph_in_reserve_percent": 0.3168934707290177,
   "zsd_in_yield_reserve": 544445.5256842732,
-  "zsd_in_yield_reserve_percent": 0.7153558816412525
+  "zsd_in_yield_reserve_percent": 0.7153558816412525,
+  "zys_current_variable_apy": 24.5123
 }
 ```
 

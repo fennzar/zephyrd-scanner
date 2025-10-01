@@ -6,6 +6,61 @@ import { AggregatedData, getAggregatedProtocolStatsFromRedis, getCurrentBlockHei
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
+const BLOCKS_PER_DAY = 720;
+const DAYS_PER_MONTH = 30;
+const MONTHS_PER_YEAR = 12;
+const BLOCKS_PER_YEAR = BLOCKS_PER_DAY * DAYS_PER_MONTH * MONTHS_PER_YEAR;
+
+type HistoricalReturnKey =
+  | "lastBlock"
+  | "oneDay"
+  | "oneWeek"
+  | "oneMonth"
+  | "threeMonths"
+  | "oneYear"
+  | "allTime";
+
+type HistoricalReturnEntry = {
+  return: number;
+  ZSDAccrued: number;
+  effectiveApy: number | null;
+};
+
+type HistoricalReturns = Record<HistoricalReturnKey, HistoricalReturnEntry>;
+
+const HISTORICAL_TIMEFRAME_BLOCKS: Record<Exclude<HistoricalReturnKey, "allTime">, number> = {
+  lastBlock: 1,
+  oneDay: BLOCKS_PER_DAY,
+  oneWeek: BLOCKS_PER_DAY * 7,
+  oneMonth: BLOCKS_PER_DAY * DAYS_PER_MONTH,
+  threeMonths: BLOCKS_PER_DAY * DAYS_PER_MONTH * 3,
+  oneYear: BLOCKS_PER_YEAR,
+};
+
+function calculateEffectiveApy(returnPercentage: number, timeframeBlocks: number): number | null {
+  if (!Number.isFinite(returnPercentage) || timeframeBlocks <= 0) {
+    return null;
+  }
+
+  const periodsPerYear = BLOCKS_PER_YEAR / timeframeBlocks;
+  if (!Number.isFinite(periodsPerYear) || periodsPerYear <= 0) {
+    return null;
+  }
+
+  const returnDecimal = returnPercentage / 100;
+  const base = 1 + returnDecimal;
+
+  if (base <= 0) {
+    return null;
+  }
+
+  const apy = Math.pow(base, periodsPerYear) - 1;
+  if (!Number.isFinite(apy)) {
+    return null;
+  }
+
+  return Number((apy * 100).toFixed(4));
+}
 
 // Historical Returns:
 export async function determineHistoricalReturns() {
@@ -150,16 +205,38 @@ export async function determineHistoricalReturns() {
     const oneyearagoZSDAccrued = alltimeZSDAccrued - oneyearagoProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
 
-    const historicalStats = {
-      lastBlock: { return: previousReturn, ZSDAccrued: previousZSDAccrued },
-      oneDay: { return: onedayagoReturn, ZSDAccrued: onedayagoZSDAccrued },
-      oneWeek: { return: oneweekagoReturn, ZSDAccrued: oneweekagoZSDAccrued },
-      oneMonth: { return: onemonthagoReturn, ZSDAccrued: onemonthagoZSDAccrued },
-      threeMonths: { return: threemonthsagoReturn, ZSDAccrued: threemonthsagoZSDAccrued },
-      oneYear: { return: oneyearagoReturn, ZSDAccrued: oneyearagoZSDAccrued },
-      allTime: { return: alltimeReturn, ZSDAccrued: alltimeZSDAccrued }
+    const historicalStats: HistoricalReturns = {
+      lastBlock: { return: previousReturn, ZSDAccrued: previousZSDAccrued, effectiveApy: null },
+      oneDay: { return: onedayagoReturn, ZSDAccrued: onedayagoZSDAccrued, effectiveApy: null },
+      oneWeek: { return: oneweekagoReturn, ZSDAccrued: oneweekagoZSDAccrued, effectiveApy: null },
+      oneMonth: { return: onemonthagoReturn, ZSDAccrued: onemonthagoZSDAccrued, effectiveApy: null },
+      threeMonths: { return: threemonthsagoReturn, ZSDAccrued: threemonthsagoZSDAccrued, effectiveApy: null },
+      oneYear: { return: oneyearagoReturn, ZSDAccrued: oneyearagoZSDAccrued, effectiveApy: null },
+      allTime: { return: alltimeReturn, ZSDAccrued: alltimeZSDAccrued, effectiveApy: null }
     };
 
+    (Object.entries(HISTORICAL_TIMEFRAME_BLOCKS) as Array<[
+      Exclude<HistoricalReturnKey, "allTime">,
+      number
+    ]>).forEach(([key, timeframeBlocks]) => {
+      const entry = historicalStats[key];
+      if (!entry) {
+        return;
+      }
+
+      const apy = calculateEffectiveApy(entry.return, timeframeBlocks);
+      if (apy !== null) {
+        entry.effectiveApy = apy;
+      }
+    });
+
+    const blocksSinceLaunch = currentBlockHeight - VERSION_2_HF_V6_BLOCK_HEIGHT;
+    if (blocksSinceLaunch > 0) {
+      const apy = calculateEffectiveApy(historicalStats.allTime.return, blocksSinceLaunch);
+      if (apy !== null) {
+        historicalStats.allTime.effectiveApy = apy;
+      }
+    }
 
     // save to redis
     await redis.set("historical_returns", JSON.stringify(historicalStats));
@@ -641,13 +718,13 @@ export async function getHistoricalReturnsFromRedis(test = false) {
   if (test) {
     // return dummy historical stats for testing route
     const dummyHistoricalStats = {
-      lastBlock: { return: 0.01, ZSDAccrued: 1 },
-      oneDay: { return: 0.70, ZSDAccrued: 720 },
-      oneWeek: { return: 2.60, ZSDAccrued: 5040 },
-      oneMonth: { return: 3.90, ZSDAccrued: 21600 },
-      threeMonths: { return: 12.50, ZSDAccrued: 64800 },
-      oneYear: { return: 25.60, ZSDAccrued: 262800 },
-      allTime: { return: 55.60, ZSDAccrued: 562800 },
+      lastBlock: { return: 0.01, ZSDAccrued: 1, effectiveApy: 0.05 },
+      oneDay: { return: 0.70, ZSDAccrued: 720, effectiveApy: 279.44 },
+      oneWeek: { return: 2.60, ZSDAccrued: 5040, effectiveApy: 197.06 },
+      oneMonth: { return: 3.90, ZSDAccrued: 21600, effectiveApy: 59.52 },
+      threeMonths: { return: 12.50, ZSDAccrued: 64800, effectiveApy: 62.31 },
+      oneYear: { return: 25.60, ZSDAccrued: 262800, effectiveApy: 25.60 },
+      allTime: { return: 55.60, ZSDAccrued: 562800, effectiveApy: 55.60 },
     };
 
     return dummyHistoricalStats;

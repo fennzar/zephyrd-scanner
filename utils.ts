@@ -1074,6 +1074,23 @@ export async function getLiveStats() {
     const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
     const zsd_in_yield_reserve_percent = zsd_in_yield_reserve / zsd_circ;
 
+    let zysCurrentVariableApy: number | null = null;
+
+    const projectedReturnsRaw = await redis.get("projected_returns");
+    if (projectedReturnsRaw) {
+      try {
+        const projectedReturns = JSON.parse(projectedReturnsRaw) as {
+          oneYear?: { simple?: { return?: number } };
+        };
+        const simpleReturn = projectedReturns.oneYear?.simple?.return;
+        if (typeof simpleReturn === "number" && Number.isFinite(simpleReturn)) {
+          zysCurrentVariableApy = Number(simpleReturn.toFixed(4));
+        }
+      } catch (error) {
+        console.warn("getLiveStats: Unable to parse projected returns for current variable APY", error);
+      }
+    }
+
     const liveStats = {
       zeph_price,
       zsd_rate,
@@ -1094,6 +1111,7 @@ export async function getLiveStats() {
       zeph_in_reserve_percent,
       zsd_in_yield_reserve,
       zsd_in_yield_reserve_percent,
+      zys_current_variable_apy: zysCurrentVariableApy,
     };
 
     // save all these to redis to be called back in case of daemon/explorer api failure

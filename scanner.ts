@@ -33,7 +33,7 @@ dotenv.config();
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
-const MAIN_SLEEP_MS = process.env.MAIN_SLEEP_MS ? parseInt(process.env.MAIN_SLEEP_MS) : 300000; // 5 min default
+const MAIN_SLEEP_MS = process.env.MAIN_SLEEP_MS ? parseInt(process.env.MAIN_SLEEP_MS) : 120000; // 2 min default;
 const MAIN_PAUSE_MS = process.env.MAIN_PAUSE_MS ? parseInt(process.env.MAIN_PAUSE_MS) : 5000; // 5 sec default
 
 let mainRunning = false;
@@ -363,7 +363,7 @@ if (!WALKTHROUGH_MODE) {
     console.log(`zephyrdscanner listening at http://localhost:${port} \n`);
   });
 
-  // 5 min set interval for scanning default
+  // 2 min set interval for scanning default
   setInterval(async () => {
     await main();
   }, MAIN_SLEEP_MS);
