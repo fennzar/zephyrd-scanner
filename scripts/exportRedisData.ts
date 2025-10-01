@@ -7,12 +7,6 @@ import { getRedisHeight } from "../utils";
 
 dotenv.config();
 
-interface RedisRecord {
-  type: string;
-  ttl: number;
-  value: unknown;
-}
-
 interface CliOptions {
   outputDir: string;
   pretty: boolean;
@@ -22,7 +16,7 @@ function printHelp() {
   console.log(`Usage: npx tsx scripts/exportRedisData.ts [options]
 
 Options:
-  --dir, -d <path>     Directory to write export (default: exports/<version>)
+  --dir, -d <path>     Directory root for export (default: exports/<version>)
   --pretty, -p         Pretty-print JSON output
   --help, -h           Show this help message
 `);
@@ -61,6 +55,10 @@ function parseArgs(): CliOptions {
   return { outputDir, pretty };
 }
 
+function sanitizeKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
 async function scanKeys(): Promise<string[]> {
   const keys: string[] = [];
   let cursor = "0";
@@ -69,76 +67,167 @@ async function scanKeys(): Promise<string[]> {
     cursor = nextCursor;
     if (batch.length > 0) {
       keys.push(...batch);
+      console.log(`[export] Scanned ${keys.length} keys so far`);
     }
   } while (cursor !== "0");
   return keys;
 }
 
-async function fetchRecord(key: string): Promise<RedisRecord | null> {
+async function exportString(dir: string, key: string, pretty: boolean) {
+  const value = await redis.get(key);
+  await fs.writeFile(
+    path.join(dir, "value.json"),
+    JSON.stringify({ value }, null, pretty ? 2 : undefined)
+  );
+}
+
+async function exportHash(dir: string, key: string, pretty: boolean) {
+  let cursor = "0";
+  let part = 0;
+  do {
+    const [nextCursor, entries] = await redis.hscan(key, cursor, "COUNT", 5000);
+    if (entries.length > 0) {
+      const chunk: Record<string, string> = {};
+      for (let i = 0; i < entries.length; i += 2) {
+        chunk[entries[i]] = entries[i + 1];
+      }
+      const filePath = path.join(dir, `hash_part_${String(part).padStart(4, "0")}.json`);
+      await fs.writeFile(filePath, JSON.stringify(chunk, null, pretty ? 2 : undefined));
+      part += 1;
+    }
+    cursor = nextCursor;
+  } while (cursor !== "0");
+}
+
+async function exportList(dir: string, key: string, pretty: boolean) {
+  const length = await redis.llen(key);
+  const chunkSize = 5000;
+  let part = 0;
+  for (let start = 0; start < length; start += chunkSize) {
+    const end = Math.min(start + chunkSize - 1, length - 1);
+    const items = await redis.lrange(key, start, end);
+    if (items.length > 0) {
+      const filePath = path.join(dir, `list_part_${String(part).padStart(4, "0")}.json`);
+      await fs.writeFile(filePath, JSON.stringify(items, null, pretty ? 2 : undefined));
+      part += 1;
+    }
+  }
+}
+
+async function exportSet(dir: string, key: string, pretty: boolean) {
+  let cursor = "0";
+  let part = 0;
+  do {
+    const [nextCursor, members] = await redis.sscan(key, cursor, "COUNT", 5000);
+    if (members.length > 0) {
+      const filePath = path.join(dir, `set_part_${String(part).padStart(4, "0")}.json`);
+      await fs.writeFile(filePath, JSON.stringify(members, null, pretty ? 2 : undefined));
+      part += 1;
+    }
+    cursor = nextCursor;
+  } while (cursor !== "0");
+}
+
+async function exportZSet(dir: string, key: string, pretty: boolean) {
+  let cursor = "0";
+  let part = 0;
+  do {
+    const [nextCursor, entries] = await redis.zscan(key, cursor, "COUNT", 5000);
+    if (entries.length > 0) {
+      const chunk: { member: string; score: number }[] = [];
+      for (let i = 0; i < entries.length; i += 2) {
+        chunk.push({ member: entries[i], score: Number(entries[i + 1]) });
+      }
+      const filePath = path.join(dir, `zset_part_${String(part).padStart(4, "0")}.json`);
+      await fs.writeFile(filePath, JSON.stringify(chunk, null, pretty ? 2 : undefined));
+      part += 1;
+    }
+    cursor = nextCursor;
+  } while (cursor !== "0");
+}
+
+async function exportKey(baseDir: string, key: string, pretty: boolean) {
   const type = await redis.type(key);
   if (!type || type === "none") {
-    return null;
+    return;
   }
 
   const ttl = await redis.ttl(key);
+  const safeKey = sanitizeKey(key);
+  const keyDir = path.join(baseDir, safeKey);
+  await fs.mkdir(keyDir, { recursive: true });
+
+  await fs.writeFile(
+    path.join(keyDir, "meta.json"),
+    JSON.stringify({ key, type, ttl }, null, pretty ? 2 : undefined)
+  );
 
   switch (type) {
     case "string":
-      return { type, ttl, value: await redis.get(key) };
+      await exportString(keyDir, key, pretty);
+      break;
     case "hash":
-      return { type, ttl, value: await redis.hgetall(key) };
+      await exportHash(keyDir, key, pretty);
+      break;
     case "list":
-      return { type, ttl, value: await redis.lrange(key, 0, -1) };
+      await exportList(keyDir, key, pretty);
+      break;
     case "set":
-      return { type, ttl, value: await redis.smembers(key) };
-    case "zset": {
-      const entries = await redis.zrange(key, 0, -1, "WITHSCORES");
-      const pairs: { member: string; score: number }[] = [];
-      for (let i = 0; i < entries.length; i += 2) {
-        pairs.push({ member: entries[i], score: Number(entries[i + 1]) });
-      }
-      return { type, ttl, value: pairs };
-    }
+      await exportSet(keyDir, key, pretty);
+      break;
+    case "zset":
+      await exportZSet(keyDir, key, pretty);
+      break;
     default:
-      console.warn(`Skipping unsupported redis type '${type}' for key ${key}`);
-      return null;
+      console.warn(`[export] Unsupported type '${type}' for key ${key}`);
   }
 }
 
 async function exportRedis(options: CliOptions) {
   const keys = await scanKeys();
-  const snapshot: Record<string, RedisRecord> = {};
-
-  for (const key of keys) {
-    try {
-      const record = await fetchRecord(key);
-      if (record) {
-        snapshot[key] = record;
-      }
-    } catch (error) {
-      console.error(`Failed to export key ${key}:`, error);
-    }
-  }
-
-  const json = options.pretty
-    ? JSON.stringify(snapshot, null, 2)
-    : JSON.stringify(snapshot);
+  console.log(`[export] Found ${keys.length} keys – starting export`);
 
   const pkg = JSON.parse(await fs.readFile(path.resolve(process.cwd(), "package.json"), "utf8"));
   const version = pkg?.version ?? "unknown";
   const height = await getRedisHeight();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const targetDir = options.outputDir
-    ? path.resolve(process.cwd(), options.outputDir)
-    : path.resolve(process.cwd(), "exports", version);
+  const baseName = `redis_export_${version}_${height}_${timestamp}`;
+  const exportRoot = options.outputDir
+    ? path.resolve(process.cwd(), options.outputDir, baseName)
+    : path.resolve(process.cwd(), "exports", version, baseName);
 
-  await fs.mkdir(targetDir, { recursive: true });
-  const fileName = `redis_export_${version}_${height}_${timestamp}.json`;
-  const outputPath = path.join(targetDir, fileName);
+  await fs.mkdir(exportRoot, { recursive: true });
 
-  await fs.writeFile(outputPath, json);
+  let exported = 0;
+
+  for (const key of keys) {
+    try {
+      await exportKey(exportRoot, key, options.pretty);
+      exported += 1;
+      if (exported % 100 === 0) {
+        console.log(`[export] Processed ${exported} / ${keys.length} keys`);
+      }
+    } catch (error) {
+      console.error(`[export] Failed to export key ${key}:`, error);
+    }
+  }
+
+  await fs.writeFile(
+    path.join(exportRoot, "summary.json"),
+    JSON.stringify(
+      {
+        version,
+        height,
+        timestamp,
+        keys: exported,
+      },
+      null,
+      options.pretty ? 2 : undefined
+    )
+  );
+
   console.log(
-    `Exported ${Object.keys(snapshot).length} keys to ${outputPath} (version=${version}, height=${height})`
+    `[export] Completed export of ${exported} keys to ${exportRoot} (version=${version}, height=${height})`
   );
 }
 

@@ -68,14 +68,14 @@ RESERVE_SNAPSHOT_POLL_INTERVAL_MS=100 npx tsx scripts/redisReserveSnapshotter.ts
 Exporting and importing full Redis data:
 
 ```sh
-# dump all Redis keys and values to redis_export.json
-npx tsx scripts/exportRedisData.ts --file redis_export.json --pretty
+# dump all Redis keys and values into exports/<version>/redis_export_<version>_<height>_<timestamp>/
+npx tsx scripts/exportRedisData.ts --pretty
 
-# restore the dump (optionally flush first)
-npx tsx scripts/importRedisData.ts --file redis_export.json --flush
+# restore the dump directory (optionally flush first)
+npx tsx scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --flush
 
 # skip keys that already exist during import
-npx tsx scripts/importRedisData.ts --file redis_export.json --skip-existing
+npx tsx scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --skip-existing
 ```
 ```
 

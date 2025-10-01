@@ -6,23 +6,23 @@ import redis from "../redis";
 
 dotenv.config();
 
-interface RedisRecord {
-  type: string;
-  ttl: number;
-  value: unknown;
-}
-
 interface CliOptions {
-  filePath: string;
+  inputDir: string;
   flush: boolean;
   skipExisting: boolean;
+}
+
+interface MetaRecord {
+  key: string;
+  type: string;
+  ttl: number;
 }
 
 function printHelp() {
   console.log(`Usage: npx tsx scripts/importRedisData.ts [options]
 
 Options:
-  --file, -f <path>    Import from JSON file (default: redis_export.json)
+  --dir, -d <path>     Directory produced by exportRedisData.ts
   --flush              Flush Redis before import
   --skip-existing      Do not overwrite keys that already exist
   --help, -h           Show this message
@@ -31,20 +31,20 @@ Options:
 
 function parseArgs(): CliOptions {
   const args = process.argv.slice(2);
-  let filePath = "redis_export.json";
+  let inputDir = "";
   let flush = false;
   let skipExisting = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     switch (arg) {
-      case "--file":
-      case "-f": {
+      case "--dir":
+      case "-d": {
         const next = args[++i];
         if (!next) {
-          throw new Error(`${arg} requires a file path`);
+          throw new Error(`${arg} requires a directory path`);
         }
-        filePath = next;
+        inputDir = next;
         break;
       }
       case "--flush":
@@ -62,68 +62,120 @@ function parseArgs(): CliOptions {
     }
   }
 
-  return { filePath, flush, skipExisting };
-}
-
-async function loadDump(filePath: string): Promise<Record<string, RedisRecord>> {
-  const resolved = path.resolve(process.cwd(), filePath);
-  const data = await fs.readFile(resolved, "utf8");
-  const parsed = JSON.parse(data);
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid dump file: expected JSON object at top level");
+  if (!inputDir) {
+    throw new Error("--dir is required");
   }
-  return parsed as Record<string, RedisRecord>;
+
+  return {
+    inputDir: path.resolve(process.cwd(), inputDir),
+    flush,
+    skipExisting,
+  };
 }
 
-async function restoreKey(key: string, record: RedisRecord, skipExisting: boolean) {
+async function loadMeta(dir: string): Promise<MetaRecord | null> {
+  try {
+    const metaPath = path.join(dir, "meta.json");
+    const meta = JSON.parse(await fs.readFile(metaPath, "utf8"));
+    if (!meta || typeof meta.key !== "string" || typeof meta.type !== "string") {
+      return null;
+    }
+    return meta as MetaRecord;
+  } catch (error) {
+    console.error(`[import] Failed to read meta for ${dir}:`, error);
+    return null;
+  }
+}
+
+async function restoreString(key: string, dir: string) {
+  const valuePath = path.join(dir, "value.json");
+  const payload = JSON.parse(await fs.readFile(valuePath, "utf8"));
+  await redis.set(key, payload?.value ?? "");
+}
+
+async function restoreHash(key: string, dir: string) {
+  await redis.del(key);
+  const files = await fs.readdir(dir);
+  const parts = files.filter((name) => name.startsWith("hash_part_")).sort();
+  for (const part of parts) {
+    const chunk = JSON.parse(await fs.readFile(path.join(dir, part), "utf8"));
+    const entries = Object.entries(chunk);
+    if (entries.length > 0) {
+      await redis.hset(key, Object.fromEntries(entries));
+    }
+  }
+}
+
+async function restoreList(key: string, dir: string) {
+  await redis.del(key);
+  const files = await fs.readdir(dir);
+  const parts = files.filter((name) => name.startsWith("list_part_")).sort();
+  for (const part of parts) {
+    const chunk = JSON.parse(await fs.readFile(path.join(dir, part), "utf8"));
+    if (Array.isArray(chunk) && chunk.length > 0) {
+      await redis.rpush(key, ...chunk);
+    }
+  }
+}
+
+async function restoreSet(key: string, dir: string) {
+  await redis.del(key);
+  const files = await fs.readdir(dir);
+  const parts = files.filter((name) => name.startsWith("set_part_")).sort();
+  for (const part of parts) {
+    const chunk = JSON.parse(await fs.readFile(path.join(dir, part), "utf8"));
+    if (Array.isArray(chunk) && chunk.length > 0) {
+      await redis.sadd(key, ...chunk);
+    }
+  }
+}
+
+async function restoreZSet(key: string, dir: string) {
+  await redis.del(key);
+  const files = await fs.readdir(dir);
+  const parts = files.filter((name) => name.startsWith("zset_part_")).sort();
+  for (const part of parts) {
+    const chunk = JSON.parse(await fs.readFile(path.join(dir, part), "utf8")) as {
+      member: string;
+      score: number;
+    }[];
+    if (Array.isArray(chunk) && chunk.length > 0) {
+      for (const { member, score } of chunk) {
+        await redis.zadd(key, score, member);
+      }
+    }
+  }
+}
+
+async function restoreKey(meta: MetaRecord, dir: string, skipExisting: boolean) {
+  const { key, type, ttl } = meta;
+
   if (skipExisting) {
     const exists = await redis.exists(key);
     if (exists) {
-      console.warn(`Skipping key ${key} – already exists`);
+      console.warn(`[import] Skipping ${key} – exists`);
       return;
     }
   }
 
-  const { type, ttl, value } = record;
-
   switch (type) {
     case "string":
-      await redis.set(key, value as string);
+      await restoreString(key, dir);
       break;
     case "hash":
-      await redis.del(key);
-      if (value && typeof value === "object") {
-        await redis.hset(key, value as Record<string, string>);
-      }
+      await restoreHash(key, dir);
       break;
     case "list":
-      await redis.del(key);
-      if (Array.isArray(value) && value.length > 0) {
-        await redis.rpush(key, ...(value as string[]));
-      }
+      await restoreList(key, dir);
       break;
     case "set":
-      await redis.del(key);
-      if (Array.isArray(value) && value.length > 0) {
-        await redis.sadd(key, ...(value as string[]));
-      }
+      await restoreSet(key, dir);
       break;
     case "zset":
-      await redis.del(key);
-      if (Array.isArray(value) && value.length > 0) {
-        const entries = value as { member: string; score: number }[];
-        const args: (string | number)[] = [];
-        entries.forEach(({ member, score }) => {
-          args.push(score);
-          args.push(member);
-        });
-        if (args.length > 0) {
-          await redis.zadd(key, ...(args as (string | number)[]));
-        }
-      }
+      await restoreZSet(key, dir);
       break;
     default:
-      console.warn(`Unsupported type '${type}' for key ${key}; skipping`);
+      console.warn(`[import] Unsupported type '${type}' for key ${key}`);
       return;
   }
 
@@ -134,32 +186,43 @@ async function restoreKey(key: string, record: RedisRecord, skipExisting: boolea
   }
 }
 
-async function importDump(options: CliOptions) {
-  const dump = await loadDump(options.filePath);
-  const keys = Object.keys(dump);
+async function importRedis(options: CliOptions) {
+  const { inputDir, flush, skipExisting } = options;
+  const entries = await fs.readdir(inputDir, { withFileTypes: true });
+  const keyDirs = entries.filter((entry) => entry.isDirectory());
 
-  if (options.flush) {
-    console.warn("Flushing Redis database before import...");
+  if (flush) {
+    console.warn("[import] Flushing Redis before import...");
     await redis.flushdb();
   }
 
   let imported = 0;
-  for (const key of keys) {
+
+  for (const entry of keyDirs) {
+    const dirPath = path.join(inputDir, entry.name);
+    const meta = await loadMeta(dirPath);
+    if (!meta) {
+      continue;
+    }
+
     try {
-      await restoreKey(key, dump[key], options.skipExisting);
+      await restoreKey(meta, dirPath, skipExisting);
       imported += 1;
+      if (imported % 100 === 0) {
+        console.log(`[import] Restored ${imported} / ${keyDirs.length} keys`);
+      }
     } catch (error) {
-      console.error(`Failed to import key ${key}:`, error);
+      console.error(`[import] Failed to restore ${meta.key}:`, error);
     }
   }
 
-  console.log(`Imported ${imported} key${imported === 1 ? "" : "s"} from ${options.filePath}`);
+  console.log(`[import] Imported ${imported} keys from ${inputDir}`);
 }
 
 async function main() {
   try {
     const options = parseArgs();
-    await importDump(options);
+    await importRedis(options);
   } catch (error) {
     console.error("Failed to import redis data:", error);
     process.exit(1);
