@@ -1,4 +1,4 @@
-import { AggregatedData, ProtocolStats, ReserveSnapshot } from "./utils";
+import { AggregatedData, ProtocolStats, ReserveDiffReport, ReserveSnapshot } from "./utils";
 
 type WindowType = "hourly" | "daily";
 type MetricSuffix = "open" | "close" | "high" | "low";
@@ -255,6 +255,186 @@ export function logTotals(totals: Record<string, unknown>): TotalsSummary {
   }
 
   return summary;
+}
+
+export function logReserveHeights(details: { aggregated: number; daemon: number; daemonPrevious: number }) {
+  console.log("[reserve] heights");
+  console.table([
+    {
+      aggregated: formatNumber(details.aggregated, 0),
+      daemon: formatNumber(details.daemon, 0),
+      daemon_previous: formatNumber(details.daemonPrevious, 0),
+    },
+  ]);
+}
+
+export function logReserveSnapshotStatus(status: {
+  action: "initial" | "gap-check" | "store" | "skip";
+  aggregatedHeight?: number;
+  lastSnapshotHeight?: number | null;
+  gap?: number;
+  required?: number;
+  storedPreviousHeight?: number;
+}) {
+  console.log(`[reserve] snapshot status (${status.action})`);
+  const row: Record<string, string> = {};
+
+  if (status.aggregatedHeight !== undefined) {
+    row.aggregated = formatNumber(status.aggregatedHeight, 0);
+  }
+  if (status.lastSnapshotHeight !== undefined) {
+    row.last_snapshot = status.lastSnapshotHeight === null ? "-" : formatNumber(status.lastSnapshotHeight, 0);
+  }
+  if (status.gap !== undefined) {
+    row.gap = formatNumber(status.gap, 0);
+  }
+  if (status.required !== undefined) {
+    row.required = formatNumber(status.required, 0);
+  }
+  if (status.storedPreviousHeight !== undefined) {
+    row.stored_previous = formatNumber(status.storedPreviousHeight, 0);
+  }
+
+  console.table([row]);
+}
+
+export function logReserveDiffReport(report: ReserveDiffReport, tolerance: number): boolean {
+  console.log(
+    `[reserve] diff source | block=${formatNumber(report.block_height, 0)} | reserve=${formatNumber(
+      report.reserve_height ?? 0,
+      0
+    )} | source=${report.source}`
+  );
+
+  const rows = report.diffs.map((entry) => ({
+    field: entry.field,
+    on_chain: formatNumber(entry.on_chain, 6),
+    cached: formatNumber(entry.cached, 6),
+    diff: formatNumber(entry.difference, 6),
+    diff_atoms: formatNumber(entry.difference_atoms, 0),
+  }));
+  console.table(rows);
+
+  const zephEntry = report.diffs.find((entry) => entry.field === "zeph_in_reserve");
+  const diffValue = Math.abs(zephEntry?.difference ?? 0);
+  const passed = diffValue <= tolerance;
+  const diffMessage = `[reserve] diff ${passed ? "PASS" : "FAIL"} | |diff|=${formatNumber(diffValue, 6)} | tolerance=${formatNumber(
+    tolerance,
+    6
+  )}`;
+  if (passed) {
+    console.log(diffMessage);
+  } else {
+    console.warn(diffMessage);
+  }
+
+  return passed;
+}
+
+export interface HistoricalReturnRow {
+  period: string;
+  returnPct: number;
+  zsdAccrued: number;
+  apy?: number | null;
+}
+
+export function logHistoricalReturns(rows: HistoricalReturnRow[]) {
+  console.log("[historical] returns");
+  console.table(
+    rows.map((row) => ({
+      period: row.period,
+      return_pct: formatNumber(row.returnPct, 4),
+      zsd_accrued: formatNumber(row.zsdAccrued, 4),
+      effective_apy: row.apy != null ? formatNumber(row.apy, 4) : "-",
+    }))
+  );
+}
+
+export interface ProjectedBaseStats {
+  blockHeight: number;
+  zephPrice: number;
+  zysPrice: number;
+  zsdCirc: number;
+  zysCirc: number;
+  zsdReserve: number;
+  reserveRatio: number;
+  fallbackPricing: boolean;
+}
+
+export function logProjectedBaseStats(stats: ProjectedBaseStats) {
+  console.log("[projected] base stats");
+  console.table([
+    {
+      block_height: formatNumber(stats.blockHeight, 0),
+      zeph_price: formatNumber(stats.zephPrice, 4),
+      zys_price: formatNumber(stats.zysPrice, 4),
+      zsd_circ: formatNumber(stats.zsdCirc, 4),
+      zys_circ: formatNumber(stats.zysCirc, 4),
+      zsd_reserve: formatNumber(stats.zsdReserve, 4),
+      reserve_ratio: formatNumber(stats.reserveRatio, 4),
+      fallback_pricing: stats.fallbackPricing ? "yes" : "no",
+    },
+  ]);
+}
+
+export interface ProjectedAccrualRow {
+  period: string;
+  low: number;
+  simple: number;
+  high: number;
+}
+
+export function logProjectedAccruals(rows: ProjectedAccrualRow[]) {
+  console.log("[projected] zsd accruals");
+  console.table(
+    rows.map((row) => ({
+      period: row.period,
+      low: formatNumber(row.low, 4),
+      simple: formatNumber(row.simple, 4),
+      high: formatNumber(row.high, 4),
+    }))
+  );
+}
+
+export interface ProjectedReturnRow {
+  period: string;
+  lowAmount: number;
+  lowPct: number;
+  simpleAmount: number;
+  simplePct: number;
+  highAmount: number;
+  highPct: number;
+}
+
+export function logProjectedReturns(rows: ProjectedReturnRow[]) {
+  console.log("[projected] zys returns");
+  console.table(
+    rows.map((row) => ({
+      period: row.period,
+      low_amount: formatNumber(row.lowAmount, 4),
+      low_pct: formatNumber(row.lowPct, 4),
+      simple_amount: formatNumber(row.simpleAmount, 4),
+      simple_pct: formatNumber(row.simplePct, 4),
+      high_amount: formatNumber(row.highAmount, 4),
+      high_pct: formatNumber(row.highPct, 4),
+    }))
+  );
+}
+
+export interface ProjectedAssumptionRow {
+  label: string;
+  value: number;
+  decimals?: number;
+}
+
+export function logProjectedAssumptions(rows: ProjectedAssumptionRow[]) {
+  console.log("[projected] assumptions");
+  console.table(
+    rows.map((row) => ({
+      label: row.label,
+      value: formatNumber(row.value, row.decimals ?? 4),
+    }))
+  );
 }
 
 function computeDiff(aggregator: number | undefined, onChain: number | undefined): number | undefined {

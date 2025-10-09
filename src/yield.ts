@@ -3,7 +3,22 @@
 // This is for populating historical returns and projected returns.
 import redis from "./redis";
 import { UNAUDITABLE_ZEPH_MINT } from "./constants";
-import { AggregatedData, getAggregatedProtocolStatsFromRedis, getCurrentBlockHeight, getLatestProtocolStats, getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
+import {
+  AggregatedData,
+  getAggregatedProtocolStatsFromRedis,
+  getCurrentBlockHeight,
+  getLatestProtocolStats,
+  getPricingRecordFromBlock,
+  getRedisHeight,
+  getReserveInfo,
+} from "./utils";
+import {
+  logHistoricalReturns,
+  logProjectedAccruals,
+  logProjectedAssumptions,
+  logProjectedBaseStats,
+  logProjectedReturns,
+} from "./logger";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
@@ -242,15 +257,50 @@ export async function determineHistoricalReturns() {
     // save to redis
     await redis.set("historical_returns", JSON.stringify(historicalStats));
 
-    console.log("----------------------------------------------------------");
-    console.log(`Last block       [${historicalStats.lastBlock.return}%   | +${historicalStats.lastBlock.ZSDAccrued} ZSD from block reward]`);
-    console.log(`1 Day            [${historicalStats.oneDay.return}%  | +${historicalStats.oneDay.ZSDAccrued} ZSD from block reward]`);
-    console.log(`1 Week           [${historicalStats.oneWeek.return}%  | +${historicalStats.oneWeek.ZSDAccrued} ZSD from block reward]`);
-    console.log(`1 Month          [${historicalStats.oneMonth.return}%  | +${historicalStats.oneMonth.ZSDAccrued} ZSD from block reward]`);
-    console.log(`3 Months         [${historicalStats.threeMonths.return}%  | +${historicalStats.threeMonths.ZSDAccrued} ZSD from block reward]`);
-    console.log(`1 Year           [${historicalStats.oneYear.return}%  | +${historicalStats.oneYear.ZSDAccrued} ZSD from block reward]`);
-    console.log(`ALL TIME         [${historicalStats.allTime.return}%  | +${historicalStats.allTime.ZSDAccrued} ZSD from block reward]`);
-    console.log("----------------------------------------------------------");
+    logHistoricalReturns([
+      {
+        period: "Last block",
+        returnPct: historicalStats.lastBlock.return,
+        zsdAccrued: historicalStats.lastBlock.ZSDAccrued,
+        apy: historicalStats.lastBlock.effectiveApy,
+      },
+      {
+        period: "1 Day",
+        returnPct: historicalStats.oneDay.return,
+        zsdAccrued: historicalStats.oneDay.ZSDAccrued,
+        apy: historicalStats.oneDay.effectiveApy,
+      },
+      {
+        period: "1 Week",
+        returnPct: historicalStats.oneWeek.return,
+        zsdAccrued: historicalStats.oneWeek.ZSDAccrued,
+        apy: historicalStats.oneWeek.effectiveApy,
+      },
+      {
+        period: "1 Month",
+        returnPct: historicalStats.oneMonth.return,
+        zsdAccrued: historicalStats.oneMonth.ZSDAccrued,
+        apy: historicalStats.oneMonth.effectiveApy,
+      },
+      {
+        period: "3 Months",
+        returnPct: historicalStats.threeMonths.return,
+        zsdAccrued: historicalStats.threeMonths.ZSDAccrued,
+        apy: historicalStats.threeMonths.effectiveApy,
+      },
+      {
+        period: "1 Year",
+        returnPct: historicalStats.oneYear.return,
+        zsdAccrued: historicalStats.oneYear.ZSDAccrued,
+        apy: historicalStats.oneYear.effectiveApy,
+      },
+      {
+        period: "All Time",
+        returnPct: historicalStats.allTime.return,
+        zsdAccrued: historicalStats.allTime.ZSDAccrued,
+        apy: historicalStats.allTime.effectiveApy,
+      },
+    ]);
 
 
   }
@@ -276,6 +326,7 @@ export async function determineProjectedReturns(test = false) {
         zys_circ: 238_861,
         zsd_in_reserve: 239_119,
         reserve_ratio: 5.38,
+        usedFallbackPricing: false,
       };
       return dummyProtocolStats;
     }
@@ -305,7 +356,16 @@ export async function determineProjectedReturns(test = false) {
     // leave early if we don't have reserve info
     if (!reserveInfo || !reserveInfo.result) {
       console.log("Error in determineProjectedReturns getting reserveInfo, ending processing projected returns");
-      return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
+      return {
+        currentBlockHeight: 0,
+        zeph_price: 0,
+        zys_price: 0,
+        zsd_circ: 0,
+        zys_circ: 0,
+        zsd_in_reserve: 0,
+        reserve_ratio: 0,
+        usedFallbackPricing: false,
+      };
     }
 
     const DEATOMIZE = 10 ** -12;
@@ -340,11 +400,19 @@ export async function determineProjectedReturns(test = false) {
       !Number.isFinite(yieldPriceAtoms)
     ) {
       console.log("Error in determineProjectedReturns getting pricing data, ending processing projected returns");
-      return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
+      return {
+        currentBlockHeight: 0,
+        zeph_price: 0,
+        zys_price: 0,
+        zsd_circ: 0,
+        zys_circ: 0,
+        zsd_in_reserve: 0,
+        reserve_ratio: 0,
+        usedFallbackPricing: false,
+      };
     }
 
     if (usedFallbackPricing) {
-      console.log("determineProjectedReturns: Pricing data missing from reserve info, using cached protocol stats");
     }
 
     const zeph_price = Number((spotAtoms * DEATOMIZE).toFixed(4));
@@ -361,7 +429,16 @@ export async function determineProjectedReturns(test = false) {
       zsd_in_reserve = zsd_circ / 2;
     }
 
-    return { currentBlockHeight, zeph_price, zys_price, zsd_circ, zys_circ, zsd_in_reserve, reserve_ratio };
+    return {
+      currentBlockHeight,
+      zeph_price,
+      zys_price,
+      zsd_circ,
+      zys_circ,
+      zsd_in_reserve,
+      reserve_ratio,
+      usedFallbackPricing,
+    };
   }
   // ----------------------------------------------------------
   // 1 Week           [Low: 0.60% | Simple: 1.00% | High: 2.60%]
@@ -370,7 +447,7 @@ export async function determineProjectedReturns(test = false) {
   // 6 Months         [Low: 10.50% | Simple: 20.50% | High: 30.60%]
   // 1 Year           [Low: 20.50% | Simple: 30.50% | High: 40.60%]
   // -----------------------------------------------------------
-  console.log("Determining projected returns...");
+  console.log(`[projected] running (test=${test})`);
 
   // We need to calcuate the projected returns based on the amount of zeph emmissions that will occur in the future.
   // for a simple projection we can use pre-calculated zeph emmissions for each time period and assume competition for the yield will remain the same, and zeph's price will remain the same.
@@ -381,7 +458,17 @@ export async function determineProjectedReturns(test = false) {
   // We can determine a low competition state where a lower percentage of zsd is staked (compared to current, down to say 50%) and the reserve ratio is high
 
 
-  const { currentBlockHeight, zeph_price, zys_price, zsd_circ, zys_circ, zsd_in_reserve, reserve_ratio } = await getStats(test);
+  const {
+    currentBlockHeight,
+    zeph_price,
+    zys_price,
+    zsd_circ,
+    zys_circ,
+    zsd_in_reserve,
+    reserve_ratio,
+    usedFallbackPricing,
+  } =
+    await getStats(test);
   // check none of the values are 0
   if (!currentBlockHeight || !zeph_price || !zys_price || !zsd_circ || !zys_circ || !zsd_in_reserve || !reserve_ratio) {
     console.log("Error in determineProjectedReturns getting stats, ending processing projected returns");
@@ -395,22 +482,20 @@ export async function determineProjectedReturns(test = false) {
     return;
   }
 
-  console.log(`determineProjectedReturns - test: ${test}`)
-  console.log(`Starting Stats:`)
-  console.log(`currentBlockHeight: ${currentBlockHeight}
-                    zeph_price: ${zeph_price}
-                    zys_price: ${zys_price}
-                    zsd_circ: ${zsd_circ}
-                    zys_circ: ${zys_circ}
-                    zsd_in_reserve: ${zsd_in_reserve}
-                    reserve_ratio: ${reserve_ratio}`);
+  logProjectedBaseStats({
+    blockHeight: currentBlockHeight,
+    zephPrice: zeph_price,
+    zysPrice: zys_price,
+    zsdCirc: zsd_circ,
+    zysCirc: zys_circ,
+    zsdReserve: zsd_in_reserve,
+    reserveRatio: reserve_ratio,
+    fallbackPricing: usedFallbackPricing,
+  });
 
 
-  const zeph_price_200RR = zeph_price / reserve_ratio * 2;
-  const zeph_price_800RR = zeph_price / reserve_ratio * 8;
-
-  console.log(`zeph_price_200RR: ${zeph_price_200RR} - High Competition/Low Price`)
-  console.log(`zeph_price_800RR: ${zeph_price_800RR} - Low Competition/High Price`)
+  const zeph_price_200RR = (zeph_price / reserve_ratio) * 2;
+  const zeph_price_800RR = (zeph_price / reserve_ratio) * 8;
 
   const precalcuatedBlockRewards = await getPrecalculatedBlockRewards(currentBlockHeight);
   if (!precalcuatedBlockRewards) {
@@ -479,12 +564,33 @@ export async function determineProjectedReturns(test = false) {
     }
   }
 
-  console.log(`Projected ZSD Accured in the future:`)
-  console.log(`1 Week: [Low: ${oneweek_accured_zsd.low} | Simple: ${oneweek_accured_zsd.simple} | High: ${oneweek_accured_zsd.high}]`)
-  console.log(`1 Month: [Low: ${onemonth_accured_zsd.low} | Simple: ${onemonth_accured_zsd.simple} | High: ${onemonth_accured_zsd.high}]`)
-  console.log(`3 Months: [Low: ${threemonths_accured_zsd.low} | Simple: ${threemonths_accured_zsd.simple} | High: ${threemonths_accured_zsd.high}]`)
-  console.log(`6 Months: [Low: ${sixmonths_accured_zsd.low} | Simple: ${sixmonths_accured_zsd.simple} | High: ${sixmonths_accured_zsd.high}]`)
-  console.log(`1 Year: [Low: ${oneyear_accured_zsd.low} | Simple: ${oneyear_accured_zsd.simple} | High: ${oneyear_accured_zsd.high}]`)
+  logProjectedAccruals([
+    { period: "1 Week", low: oneweek_accured_zsd.low, simple: oneweek_accured_zsd.simple, high: oneweek_accured_zsd.high },
+    {
+      period: "1 Month",
+      low: onemonth_accured_zsd.low,
+      simple: onemonth_accured_zsd.simple,
+      high: onemonth_accured_zsd.high,
+    },
+    {
+      period: "3 Months",
+      low: threemonths_accured_zsd.low,
+      simple: threemonths_accured_zsd.simple,
+      high: threemonths_accured_zsd.high,
+    },
+    {
+      period: "6 Months",
+      low: sixmonths_accured_zsd.low,
+      simple: sixmonths_accured_zsd.simple,
+      high: sixmonths_accured_zsd.high,
+    },
+    {
+      period: "1 Year",
+      low: oneyear_accured_zsd.low,
+      simple: oneyear_accured_zsd.simple,
+      high: oneyear_accured_zsd.high,
+    },
+  ]);
 
 
   // Let determine what the simple projection of ZYS price would be
@@ -504,8 +610,7 @@ export async function determineProjectedReturns(test = false) {
   let additional_zys = 0;
   if (zys_circ < zsd_in_reserve_high_competition) {
     // we need to adjust so that the equivilant amount of zsd staked has zys minted
-    additional_zys = (zsd_in_reserve_high_competition / zys_price) - zys_circ; // this is assuming that 100% of zsd is staked and needs to be adjusted if we change our low projection to <100% staked
-    console.log(`Additional simulated ZYS minted: ${additional_zys}`)
+    additional_zys = zsd_in_reserve_high_competition / zys_price - zys_circ; // this is assuming that 100% of zsd is staked and needs to be adjusted if we change our low projection to <100% staked
   }
 
 
@@ -527,9 +632,13 @@ export async function determineProjectedReturns(test = false) {
   const high_projection_sixmonths_zys_price = (zsd_in_reserve_low_competition + sixmonths_accured_zsd.high) / simulated_zys_circ;
   const high_projection_oneyear_zys_price = (zsd_in_reserve_low_competition + oneyear_accured_zsd.high) / simulated_zys_circ;
 
-  console.log("zsd_in_reserve_low_competition: ", zsd_in_reserve_low_competition)
-  console.log("oneweek_accured_zsd.high: ", oneweek_accured_zsd.high)
-  console.log("zys_circ: ", zys_circ)
+  logProjectedAssumptions([
+    { label: "zeph_price_200_rr", value: zeph_price_200RR },
+    { label: "zeph_price_800_rr", value: zeph_price_800RR },
+    { label: "additional_zys", value: additional_zys },
+    { label: "zsd_reserve_low_comp", value: zsd_in_reserve_low_competition },
+    { label: "simulated_zys_circ", value: simulated_zys_circ },
+  ]);
 
 
   // Lets determine the percentage returns for each time period
@@ -626,13 +735,53 @@ export async function determineProjectedReturns(test = false) {
   };
 
 
-  console.log("----------------------------------------------------------");
-  console.log(`1 Week           [Low: ${projectedStats.oneWeek.low.zys_price} ZSD (${projectedStats.oneWeek.low.return} %) | Simple: ${projectedStats.oneWeek.simple.zys_price} ZSD (${projectedStats.oneWeek.simple.return} %) | High: ${projectedStats.oneWeek.high.zys_price} ZSD (${projectedStats.oneWeek.high.return} %)]`);
-  console.log(`1 Month          [Low: ${projectedStats.oneMonth.low.zys_price} ZSD (${projectedStats.oneMonth.low.return} %) | Simple: ${projectedStats.oneMonth.simple.zys_price} ZSD (${projectedStats.oneMonth.simple.return} %) | High: ${projectedStats.oneMonth.high.zys_price} ZSD (${projectedStats.oneMonth.high.return} %)]`);
-  console.log(`3 Months         [Low: ${projectedStats.threeMonths.low.zys_price} ZSD (${projectedStats.threeMonths.low.return} %) | Simple: ${projectedStats.threeMonths.simple.zys_price} ZSD (${projectedStats.threeMonths.simple.return} %) | High: ${projectedStats.threeMonths.high.zys_price} ZSD (${projectedStats.threeMonths.high.return} %)]`);
-  console.log(`6 Months         [Low: ${projectedStats.sixMonths.low.zys_price} ZSD (${projectedStats.sixMonths.low.return} %) | Simple: ${projectedStats.sixMonths.simple.zys_price} ZSD (${projectedStats.sixMonths.simple.return} %) | High: ${projectedStats.sixMonths.high.zys_price} ZSD (${projectedStats.sixMonths.high.return} %)]`);
-  console.log(`1 Year           [Low: ${projectedStats.oneYear.low.zys_price} ZSD (${projectedStats.oneYear.low.return} %) | Simple: ${projectedStats.oneYear.simple.zys_price} ZSD (${projectedStats.oneYear.simple.return} %) | High: ${projectedStats.oneYear.high.zys_price} ZSD (${projectedStats.oneYear.high.return} %)]`);
-  console.log("----------------------------------------------------------");
+  logProjectedReturns([
+    {
+      period: "1 Week",
+      lowAmount: projectedStats.oneWeek.low.zys_price,
+      lowPct: projectedStats.oneWeek.low.return,
+      simpleAmount: projectedStats.oneWeek.simple.zys_price,
+      simplePct: projectedStats.oneWeek.simple.return,
+      highAmount: projectedStats.oneWeek.high.zys_price,
+      highPct: projectedStats.oneWeek.high.return,
+    },
+    {
+      period: "1 Month",
+      lowAmount: projectedStats.oneMonth.low.zys_price,
+      lowPct: projectedStats.oneMonth.low.return,
+      simpleAmount: projectedStats.oneMonth.simple.zys_price,
+      simplePct: projectedStats.oneMonth.simple.return,
+      highAmount: projectedStats.oneMonth.high.zys_price,
+      highPct: projectedStats.oneMonth.high.return,
+    },
+    {
+      period: "3 Months",
+      lowAmount: projectedStats.threeMonths.low.zys_price,
+      lowPct: projectedStats.threeMonths.low.return,
+      simpleAmount: projectedStats.threeMonths.simple.zys_price,
+      simplePct: projectedStats.threeMonths.simple.return,
+      highAmount: projectedStats.threeMonths.high.zys_price,
+      highPct: projectedStats.threeMonths.high.return,
+    },
+    {
+      period: "6 Months",
+      lowAmount: projectedStats.sixMonths.low.zys_price,
+      lowPct: projectedStats.sixMonths.low.return,
+      simpleAmount: projectedStats.sixMonths.simple.zys_price,
+      simplePct: projectedStats.sixMonths.simple.return,
+      highAmount: projectedStats.sixMonths.high.zys_price,
+      highPct: projectedStats.sixMonths.high.return,
+    },
+    {
+      period: "1 Year",
+      lowAmount: projectedStats.oneYear.low.zys_price,
+      lowPct: projectedStats.oneYear.low.return,
+      simpleAmount: projectedStats.oneYear.simple.zys_price,
+      simplePct: projectedStats.oneYear.simple.return,
+      highAmount: projectedStats.oneYear.high.zys_price,
+      highPct: projectedStats.oneYear.high.return,
+    },
+  ]);
 
   // save to redis
   if (!test) {

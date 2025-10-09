@@ -29,7 +29,7 @@ import {
   DAILY_PENDING_KEY,
 } from "./utils";
 import { UNAUDITABLE_ZEPH_MINT } from "./constants";
-import { logAggregatedSummary } from "./logger";
+import { logAggregatedSummary, logReserveDiffReport, logReserveHeights, logReserveSnapshotStatus } from "./logger";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -864,9 +864,7 @@ async function handleReserveIntegrity(latestHeight: number) {
     }
 
     const daemonPreviousHeight = result.height - 1;
-    console.log(
-      `[reserve] Heights | aggregated=${latestHeight} | daemon_height=${result.height} | daemon_previous=${daemonPreviousHeight}`
-    );
+    logReserveHeights({ aggregated: latestHeight, daemon: result.height, daemonPrevious: daemonPreviousHeight });
 
     if (daemonPreviousHeight !== latestHeight) {
       console.log(`[reserve] Skipping snapshot – latest aggregated height does not match daemon previous height`);
@@ -877,20 +875,23 @@ async function handleReserveIntegrity(latestHeight: number) {
       const lastSnapshotHeight = await getLastReserveSnapshotPreviousHeight();
       const heightGap = lastSnapshotHeight === null ? Infinity : latestHeight - lastSnapshotHeight;
       if (!lastSnapshotHeight) {
-        console.log(`[reserve] No prior snapshot – capturing for height ${latestHeight}`);
+        logReserveSnapshotStatus({ action: "initial", aggregatedHeight: latestHeight });
       } else {
-        console.log(
-          `[reserve] Snapshot gap check | last=${lastSnapshotHeight} | gap=${heightGap} | required=${RESERVE_SNAPSHOT_INTERVAL}`
-        );
+        logReserveSnapshotStatus({
+          action: "gap-check",
+          lastSnapshotHeight,
+          gap: heightGap,
+          required: RESERVE_SNAPSHOT_INTERVAL,
+        });
       }
 
       if (!lastSnapshotHeight || heightGap >= RESERVE_SNAPSHOT_INTERVAL) {
         const stored = await saveReserveSnapshotToRedis(reserveInfo);
         if (stored) {
-          console.log(`[reserve] Snapshot stored for previous height ${stored.previous_height}`);
+          logReserveSnapshotStatus({ action: "store", storedPreviousHeight: stored.previous_height });
         }
       } else {
-        console.log(`[reserve] Skipping snapshot – gap ${heightGap} < interval ${RESERVE_SNAPSHOT_INTERVAL}`);
+        logReserveSnapshotStatus({ action: "skip", gap: heightGap, required: RESERVE_SNAPSHOT_INTERVAL });
       }
     }
 
@@ -899,26 +900,8 @@ async function handleReserveIntegrity(latestHeight: number) {
       allowSnapshots: true,
       snapshotSource: "redis",
     });
-    console.log(
-      `[reserve] Diff source for ${diffReport.block_height}: ${diffReport.source} (reserve_height=${diffReport.reserve_height})`
-    );
-    diffReport.diffs.forEach((entry) => {
-      console.log(
-        `[reserve] ${diffReport.block_height} | ${entry.field} | on_chain=${entry.on_chain} | cached=${
-          entry.cached
-        } | diff=${entry.difference} | diff_atoms=${entry.difference_atoms ?? 0}`
-      );
-    });
-    const zephEntry = diffReport.diffs.find((entry) => entry.field === "zeph_in_reserve");
-    const diffValue = Math.abs(zephEntry?.difference ?? 0);
     const toleranceValue = RESERVE_DIFF_TOLERANCE;
-
-    const passedTolerance = diffValue <= toleranceValue;
-    if (passedTolerance) {
-      console.log(`[reserve] Diff check PASS at ${diffReport.block_height} (|diff|=${diffValue} <= ${toleranceValue})`);
-    } else {
-      console.warn(`[reserve] Diff check FAIL at ${diffReport.block_height} (|diff|=${diffValue} > ${toleranceValue})`);
-    }
+    const passedTolerance = logReserveDiffReport(diffReport, toleranceValue);
 
     if (!passedTolerance || diffReport.mismatch) {
       await recordReserveMismatch(diffReport.block_height, diffReport);
