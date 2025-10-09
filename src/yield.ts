@@ -2,7 +2,7 @@
 // Yield Reserve circ, ZYS price and circ, yield conversions count and fees, are all available in /stats and are handled in aggregator.ts
 // This is for populating historical returns and projected returns.
 import redis from "./redis";
-import { AggregatedData, getAggregatedProtocolStatsFromRedis, getCurrentBlockHeight, getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
+import { AggregatedData, getAggregatedProtocolStatsFromRedis, getCurrentBlockHeight, getLatestProtocolStats, getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
@@ -302,15 +302,52 @@ export async function determineProjectedReturns(test = false) {
     const reserveInfo = await getReserveInfo();
 
     // leave early if we don't have reserve info
-    if (!reserveInfo) {
+    if (!reserveInfo || !reserveInfo.result) {
       console.log("Error in determineProjectedReturns getting reserveInfo, ending processing projected returns");
       return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
     }
 
     const DEATOMIZE = 10 ** -12;
 
-    const zeph_price = Number((reserveInfo.result.pr.spot * DEATOMIZE).toFixed(4));
-    let zys_price = Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4))
+    let spotAtoms = reserveInfo.result.pr?.spot;
+    let yieldPriceAtoms = reserveInfo.result.pr?.yield_price;
+    let usedFallbackPricing = false;
+
+    if (
+      typeof spotAtoms !== "number" ||
+      !Number.isFinite(spotAtoms) ||
+      typeof yieldPriceAtoms !== "number" ||
+      !Number.isFinite(yieldPriceAtoms)
+    ) {
+      const latestStats = await getLatestProtocolStats();
+      if (latestStats) {
+        if (typeof spotAtoms !== "number" || !Number.isFinite(spotAtoms)) {
+          spotAtoms = latestStats.spot;
+          usedFallbackPricing = true;
+        }
+        if (typeof yieldPriceAtoms !== "number" || !Number.isFinite(yieldPriceAtoms)) {
+          yieldPriceAtoms = latestStats.yield_price;
+          usedFallbackPricing = true;
+        }
+      }
+    }
+
+    if (
+      typeof spotAtoms !== "number" ||
+      !Number.isFinite(spotAtoms) ||
+      typeof yieldPriceAtoms !== "number" ||
+      !Number.isFinite(yieldPriceAtoms)
+    ) {
+      console.log("Error in determineProjectedReturns getting pricing data, ending processing projected returns");
+      return { currentBlockHeight: 0, zeph_price: 0, zys_price: 0, zsd_circ: 0, zys_circ: 0, zsd_in_reserve: 0, reserve_ratio: 0 };
+    }
+
+    if (usedFallbackPricing) {
+      console.log("determineProjectedReturns: Pricing data missing from reserve info, using cached protocol stats");
+    }
+
+    const zeph_price = Number((spotAtoms * DEATOMIZE).toFixed(4));
+    let zys_price = Number((yieldPriceAtoms * DEATOMIZE).toFixed(4));
     let zsd_circ = Number((Number(reserveInfo.result.num_stables) * DEATOMIZE).toFixed(4));
     let zys_circ = Number((Number(reserveInfo.result.num_zyield) * DEATOMIZE).toFixed(4));
     let zsd_in_reserve = Number((Number(reserveInfo.result.zyield_reserve) * DEATOMIZE).toFixed(4));

@@ -137,7 +137,7 @@ interface ReserveInfoResponse {
     num_reserves: string;
     num_stables: string;
     num_zyield: string;
-    pr: {
+    pr?: {
       moving_average: number;
       reserve: number;
       reserve_ma: number;
@@ -1000,19 +1000,60 @@ export async function getLiveStats() {
 
     const reserveInfo = await getReserveInfo();
 
-    if (!reserveInfo) {
+    if (!reserveInfo || !reserveInfo.result) {
       console.log(`getLiveStats: No reserve info returned from daemon`);
       return;
     }
 
-    const zeph_price = Number((reserveInfo.result.pr.spot * DEATOMIZE).toFixed(4));
-    const zsd_rate = Number((reserveInfo.result.pr.stable * DEATOMIZE).toFixed(4));
+    const pricingRecord = reserveInfo.result.pr;
+    const needsFallback =
+      !pricingRecord ||
+      typeof pricingRecord.spot !== "number" ||
+      typeof pricingRecord.stable !== "number" ||
+      typeof pricingRecord.reserve !== "number";
+
+    const latestStats = needsFallback ? await getLatestProtocolStats() : null;
+
+    if (needsFallback) {
+      if (!latestStats) {
+        console.log(`getLiveStats: Pricing record missing from daemon and no cached stats available`);
+        return;
+      }
+      console.log(`getLiveStats: Pricing record missing from daemon, using cached protocol stats`);
+    }
+
+    const spotAtoms =
+      typeof pricingRecord?.spot === "number" ? pricingRecord.spot : latestStats?.spot;
+    const stableAtoms =
+      typeof pricingRecord?.stable === "number" ? pricingRecord.stable : latestStats?.stable;
+    const reserveAtoms =
+      typeof pricingRecord?.reserve === "number" ? pricingRecord.reserve : latestStats?.reserve;
+    const yieldPriceAtoms =
+      typeof pricingRecord?.yield_price === "number"
+        ? pricingRecord.yield_price
+        : latestStats?.yield_price;
+
+    if (
+      typeof spotAtoms !== "number" ||
+      typeof stableAtoms !== "number" ||
+      typeof reserveAtoms !== "number" ||
+      !Number.isFinite(spotAtoms) ||
+      !Number.isFinite(stableAtoms) ||
+      !Number.isFinite(reserveAtoms)
+    ) {
+      console.log(`getLiveStats: Unable to determine pricing metrics from daemon or cache`);
+      return;
+    }
+
+    const zeph_price = Number((spotAtoms * DEATOMIZE).toFixed(4));
+    const zsd_rate = Number((stableAtoms * DEATOMIZE).toFixed(4));
     const zsd_price = Number((zsd_rate * zeph_price).toFixed(4));
-    const zrs_rate = Number((reserveInfo.result.pr.reserve * DEATOMIZE).toFixed(4));
+    const zrs_rate = Number((reserveAtoms * DEATOMIZE).toFixed(4));
     const zrs_price = Number((zrs_rate * zeph_price).toFixed(4));
-    const zys_price = reserveInfo.result.pr.yield_price
-      ? Number((reserveInfo.result.pr.yield_price * DEATOMIZE).toFixed(4))
-      : 1;
+    const zys_price =
+      typeof yieldPriceAtoms === "number" && Number.isFinite(yieldPriceAtoms) && yieldPriceAtoms > 0
+        ? Number((yieldPriceAtoms * DEATOMIZE).toFixed(4))
+        : 1;
 
     const zsd_circ = Number(reserveInfo.result.num_stables) * DEATOMIZE;
     const zrs_circ = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
