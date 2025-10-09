@@ -26,6 +26,7 @@ import {
   WALKTHROUGH_SNAPSHOT_SOURCE,
   RESERVE_DIFF_TOLERANCE,
 } from "./utils";
+import { UNAUDITABLE_ZEPH_MINT } from "./constants";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -479,8 +480,8 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
 
   // We need to reset circulating supply values to the audited amounts on HFv11
   if (blockData.block_height === VERSION_2_3_0_HF_V11_BLOCK_HEIGHT + 1) {
-    const audited_zeph_amount = 7828285.273529857474;
-    blockData.zeph_circ = audited_zeph_amount; // Audited amount at HFv11
+    const audited_zeph_amount = 7_828_285.273529857474;
+    blockData.zeph_circ = audited_zeph_amount + UNAUDITABLE_ZEPH_MINT; // Include post-audit mint
     blockData.zephusd_circ = 370722.218621489316; // Audited amount at HFv11
     blockData.zephrsv_circ = 1023512.020210500202; // Audited amount at HFv11
     blockData.zyield_circ = 185474.354977384066; // Audited amount at HFv11

@@ -2,6 +2,7 @@
 // Yield Reserve circ, ZYS price and circ, yield conversions count and fees, are all available in /stats and are handled in aggregator.ts
 // This is for populating historical returns and projected returns.
 import redis from "./redis";
+import { UNAUDITABLE_ZEPH_MINT } from "./constants";
 import { AggregatedData, getAggregatedProtocolStatsFromRedis, getCurrentBlockHeight, getLatestProtocolStats, getPricingRecordFromBlock, getRedisHeight, getReserveInfo } from "./utils";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
@@ -709,9 +710,9 @@ async function precalculateBlockRewards(current_block_height: number, ending_blo
       console.log(`HFv11 detected at block ${block_height}, setting current supply to audited amount...`);
       console.log(`Current supply before HFv11: ${current_supply}`);
 
-      const audited_zeph_amount = 7828285.273529857474
-      const minted_unauditable_zeph_amount = 1921650; // This is the amount of zeph that was minted after HFv11
-      current_supply = audited_zeph_amount + minted_unauditable_zeph_amount // Audited amount at HFv11
+      const audited_zeph_amount = 7_828_285.273529857474;
+      const minted_unauditable_zeph_amount = UNAUDITABLE_ZEPH_MINT; // Amount minted after HFv11
+      current_supply = audited_zeph_amount + minted_unauditable_zeph_amount; // Audited amount at HFv11 plus unauditable mint
 
       console.log(`Current supply after HFv11: ${current_supply}`);
     }
