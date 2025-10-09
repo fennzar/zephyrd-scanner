@@ -36,15 +36,15 @@ function buildMetricRow(config: MetricConfig, data: AggregatedData) {
   };
 }
 
-function printTable(title: string, configs: MetricConfig[], data: AggregatedData) {
+function printTable(windowType: WindowType, title: string, configs: MetricConfig[], data: AggregatedData) {
   if (configs.length === 0) {
     return;
   }
-  console.log(`[aggregation] ${title}`);
+  console.log(`[aggregation-${windowType}] ${title}`);
   console.table(configs.map((cfg) => buildMetricRow(cfg, data)));
 }
 
-function formatCounters(data: AggregatedData, windowStart: number) {
+function formatCounters(windowType: WindowType, data: AggregatedData, windowStart: number) {
   const rows = [
     {
       asset: "ZSD",
@@ -72,11 +72,11 @@ function formatCounters(data: AggregatedData, windowStart: number) {
     },
   ];
 
-  console.log("[aggregation] counters & fees");
+  console.log(`[aggregation-${windowType}] counters & fees`);
   console.table(rows);
 
   console.log(
-    `[aggregation] pending=${data.pending ? "yes" : "no"} | window=[${formatNumber(
+    `[aggregation-${windowType}] pending=${data.pending ? "yes" : "no"} | window=[${formatNumber(
       windowStart,
       0
     )} → ${formatNumber(data.window_end, 0)}] | conversions=${formatNumber(
@@ -87,9 +87,10 @@ function formatCounters(data: AggregatedData, windowStart: number) {
 }
 
 export function logAggregatedSummary(windowType: WindowType, windowStart: number, data: AggregatedData) {
-  console.log(`[aggregation] ${windowType} summary for window ${formatNumber(windowStart, 0)}`);
+  console.log(`[aggregation-${windowType}] summary for window ${formatNumber(windowStart, 0)}`);
 
   printTable(
+    windowType,
     "prices",
     [
       { label: "spot", prefix: "spot" },
@@ -104,6 +105,7 @@ export function logAggregatedSummary(windowType: WindowType, windowStart: number
   );
 
   printTable(
+    windowType,
     "reserves & circulating",
     [
       { label: "zeph_in_reserve", prefix: "zeph_in_reserve", decimals: 2 },
@@ -117,6 +119,7 @@ export function logAggregatedSummary(windowType: WindowType, windowStart: number
   );
 
   printTable(
+    windowType,
     "balances & ratios",
     [
       { label: "assets", prefix: "assets", decimals: 2 },
@@ -130,7 +133,7 @@ export function logAggregatedSummary(windowType: WindowType, windowStart: number
     data
   );
 
-  formatCounters(data, windowStart);
+  formatCounters(windowType, data, windowStart);
 }
 
 export interface TotalsSummary {
@@ -198,9 +201,12 @@ export function logTotals(totals: Record<string, unknown>): TotalsSummary {
   console.log("[totals] rewards");
   console.table(rewardRows);
 
+  const yieldConversions =
+    numericTotals.yield_conversion_transactions ?? numericTotals.yield_conversion_transactions_count ?? 0;
+
   console.log(
     `[totals] conversions=${formatNumber(numericTotals.conversion_transactions, 0)} | yield_conversions=${formatNumber(
-      numericTotals.yield_conversion_transactions_count,
+      yieldConversions,
       0
     )}`
   );

@@ -25,6 +25,8 @@ import {
   RESERVE_SNAPSHOT_START_HEIGHT,
   WALKTHROUGH_SNAPSHOT_SOURCE,
   RESERVE_DIFF_TOLERANCE,
+  HOURLY_PENDING_KEY,
+  DAILY_PENDING_KEY,
 } from "./utils";
 import { UNAUDITABLE_ZEPH_MINT } from "./constants";
 import { logAggregatedSummary } from "./logger";
@@ -1440,20 +1442,25 @@ async function aggregateByTimestamp(
       });
 
       // Store the aggregated data for the hour
-      if (windowType === "hourly") {
-        await redis.zremrangebyscore("protocol_stats_hourly", windowStart, windowStart);
-        await redis.zadd("protocol_stats_hourly", windowStart, JSON.stringify(aggregatedData));
-        console.log(`Hourly stats aggregated for window starting at ${windowStart}`);
-        if (windowComplete) {
-          await redis.set("timestamp_aggregator_hourly", windowEnd);
+      const zsetKey = windowType === "hourly" ? "protocol_stats_hourly" : "protocol_stats_daily";
+      const pendingKey = windowType === "hourly" ? HOURLY_PENDING_KEY : DAILY_PENDING_KEY;
+
+      if (windowComplete) {
+        const pipeline = redis.pipeline();
+        pipeline.zremrangebyscore(zsetKey, windowStart, windowStart);
+        pipeline.zadd(zsetKey, windowStart, JSON.stringify(aggregatedData));
+        pipeline.del(pendingKey);
+        if (windowType === "hourly") {
+          pipeline.set("timestamp_aggregator_hourly", windowEnd);
+          console.log(`Hourly stats aggregated for window starting at ${windowStart}`);
+        } else {
+          pipeline.set("timestamp_aggregator_daily", windowEnd);
+          console.log(`Daily stats aggregated for window starting at ${windowStart}`);
         }
-      } else if (windowType === "daily") {
-        await redis.zremrangebyscore("protocol_stats_daily", windowStart, windowStart);
-        await redis.zadd("protocol_stats_daily", windowStart, JSON.stringify(aggregatedData));
-        console.log(`Daily stats aggregated for window starting at ${windowStart}`);
-        if (windowComplete) {
-          await redis.set("timestamp_aggregator_daily", windowEnd);
-        }
+        await pipeline.exec();
+      } else {
+        await redis.set(pendingKey, JSON.stringify(aggregatedData));
+        console.log(`[aggregation-${windowType}] pending window updated at ${windowStart}`);
       }
 
       logAggregatedSummary(windowType, windowStart, aggregatedData);

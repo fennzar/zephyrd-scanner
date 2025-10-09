@@ -18,6 +18,8 @@ const RESERVE_SNAPSHOT_DIR = process.env.RESERVE_SNAPSHOT_DIR ?? "reserve_snapsh
 export const RESERVE_SNAPSHOT_INTERVAL_BLOCKS = Number(process.env.RESERVE_SNAPSHOT_INTERVAL_BLOCKS ?? "100");
 export const RESERVE_SNAPSHOT_START_HEIGHT = Number(process.env.RESERVE_SNAPSHOT_START_HEIGHT ?? "89300");
 const RESERVE_SNAPSHOT_REDIS_KEY = "reserve_snapshots";
+export const HOURLY_PENDING_KEY = "protocol_stats_hourly_pending";
+export const DAILY_PENDING_KEY = "protocol_stats_daily_pending";
 const RESERVE_SNAPSHOT_LAST_KEY = "reserve_snapshots:last_previous_height";
 export const RESERVE_SNAPSHOT_SOURCE = (process.env.RESERVE_SNAPSHOT_SOURCE ?? "redis").toLowerCase();
 export const WALKTHROUGH_SNAPSHOT_SOURCE = (
@@ -697,12 +699,34 @@ export async function getAggregatedProtocolStatsFromRedis<T extends keyof Aggreg
   to?: string,
   fields?: T[]
 ): Promise<AggregatedProtocolStatsResponse<T>[]> {
-  let redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
-  let startScore = from ? parseInt(from) : "-inf";
-  let endScore = to ? parseInt(to) : "+inf";
-  let results = await redis.zrangebyscore(redisKey, startScore, endScore, "WITHSCORES");
+  const redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
+  const pendingKey = scale === "hour" ? HOURLY_PENDING_KEY : DAILY_PENDING_KEY;
+  const startScore = from ? parseInt(from) : "-inf";
+  const endScore = to ? parseInt(to) : "+inf";
+  const results = await redis.zrangebyscore(redisKey, startScore, endScore, "WITHSCORES");
 
-  return formatZrangeResults(results, fields);
+  const formatted = formatZrangeResults(results, fields);
+  const existingTimestamps = new Set(formatted.map((entry) => entry.timestamp));
+
+  const pendingJson = await redis.get(pendingKey);
+  if (pendingJson) {
+    try {
+      let data = JSON.parse(pendingJson);
+      const timestamp = Number(data?.window_start);
+      if (!existingTimestamps.has(timestamp)) {
+        if (fields && fields.length > 0) {
+          data = filterFields(data, fields);
+        }
+        formatted.push({ timestamp, data });
+        existingTimestamps.add(timestamp);
+      }
+    } catch (error) {
+      console.error(`Failed to parse pending aggregated stats for ${pendingKey}:`, error);
+    }
+  }
+
+  formatted.sort((a, b) => a.timestamp - b.timestamp);
+  return formatted;
 }
 
 // Helper function for formatting results
