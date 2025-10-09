@@ -28,7 +28,8 @@ You can run two scanner instances side by side by pointing each one at a differe
 npm run start
 
 # background rescan (scanner only, writes to DB 1)
-REDIS_DB=1 npm run bg-scan
+REDIS_PASSWORD="$(grep -E '^REDIS_PASSWORD=' .env | cut -d= -f2-)" \
+  REDIS_DB=1 npm run bg-scan
 ```
 
 The `bg-scan` script sets `ENABLE_SERVER=false`, so the background instance skips binding the HTTP port while it repopulates Redis.
@@ -39,10 +40,12 @@ Before running a background scan you can seed the target DB using the `prepare-b
 
 ```sh
 # Copy DB 0 into DB 1, then clear aggregation keys (soft mode – default)
-npm run prepare-bg -- --target-db=1 --mode=soft
+REDIS_PASSWORD="$(grep -E '^REDIS_PASSWORD=' .env | cut -d= -f2-)" \
+  npm run prepare-bg -- --target-db=1 --mode=soft
 
 # Flush DB 1 so the scanner starts from a blank slate (hard mode)
-npm run prepare-bg -- --target-db=1 --mode=hard
+REDIS_PASSWORD="$(grep -E '^REDIS_PASSWORD=' .env | cut -d= -f2-)" \
+  npm run prepare-bg -- --target-db=1 --mode=hard
 ```
 
 Soft mode keeps pricing records, transactions, etc. intact while deleting `protocol_stats` and other derived aggregates so the scanner can rebuild them. Hard mode simply flushes the target DB. Omit `--source-db` to default to `REDIS_SOURCE_DB` (0) and `--target-db` to default to `REDIS_DB` (1).
