@@ -1,3 +1,6 @@
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import dotenv from "dotenv";
 
 import { aggregate } from "./aggregator";
@@ -18,6 +21,20 @@ import { detectAndHandleReorg } from "./rollback";
 import redis from "./redis";
 
 dotenv.config();
+
+const AUTO_EXPORT_ENABLED = process.env.AUTO_EXPORT_ENABLED !== "false";
+const AUTO_EXPORT_INTERVAL = (() => {
+  const value = Number(process.env.AUTO_EXPORT_INTERVAL ?? "100000");
+  return Number.isFinite(value) && value > 0 ? value : 100000;
+})();
+const AUTO_EXPORT_DIR = process.env.AUTO_EXPORT_DIR?.trim() ?? "";
+const AUTO_EXPORT_PRETTY = process.env.AUTO_EXPORT_PRETTY === "true";
+const AUTO_EXPORT_KEY = "auto_export:last_height";
+const AUTO_EXPORT_LOG_PREFIX = "[auto-export]";
+
+const requireForCli = createRequire(__filename);
+const TSX_CLI_PATH = requireForCli.resolve("tsx/cli");
+const EXPORT_SCRIPT_PATH = path.join(__dirname, "scripts", "exportRedisData.ts");
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
@@ -95,12 +112,87 @@ export async function runScannerCycle(): Promise<void> {
     console.log("Scanner Height (protocol_stats/height_aggregator): ", latestScannerHeight);
     console.log("Pricing Records Height: ", latestPricingHeight);
     console.log("Transactions Height: ", latestTxHeight);
+    await maybeAutoExport(latestScannerHeight);
     console.log("---------| MAIN |-----------");
   } catch (error) {
     console.error("Error running scanner cycle:", error);
   } finally {
     mainRunning = false;
   }
+}
+
+async function maybeAutoExport(currentHeight: number): Promise<void> {
+  if (!AUTO_EXPORT_ENABLED) {
+    return;
+  }
+  if (!Number.isFinite(currentHeight) || currentHeight <= 0) {
+    return;
+  }
+  if (!Number.isFinite(AUTO_EXPORT_INTERVAL) || AUTO_EXPORT_INTERVAL <= 0) {
+    return;
+  }
+
+  const highestMilestone = Math.floor(currentHeight / AUTO_EXPORT_INTERVAL) * AUTO_EXPORT_INTERVAL;
+  if (highestMilestone === 0) {
+    return;
+  }
+
+  const lastHeightRaw = await redis.get(AUTO_EXPORT_KEY);
+  let lastHeight = lastHeightRaw ? Number(lastHeightRaw) : 0;
+  if (!Number.isFinite(lastHeight) || lastHeight < 0) {
+    lastHeight = 0;
+  }
+
+  if (highestMilestone <= lastHeight) {
+    return;
+  }
+
+  let nextMilestone =
+    lastHeight === 0
+      ? AUTO_EXPORT_INTERVAL
+      : Math.floor(lastHeight / AUTO_EXPORT_INTERVAL) * AUTO_EXPORT_INTERVAL + AUTO_EXPORT_INTERVAL;
+
+  if (nextMilestone <= 0) {
+    nextMilestone = AUTO_EXPORT_INTERVAL;
+  }
+
+  for (let milestone = nextMilestone; milestone <= highestMilestone; milestone += AUTO_EXPORT_INTERVAL) {
+    try {
+      console.log(`${AUTO_EXPORT_LOG_PREFIX} Triggering export for block ${milestone}`);
+      await runAutoExport();
+      await redis.set(AUTO_EXPORT_KEY, milestone.toString());
+      console.log(`${AUTO_EXPORT_LOG_PREFIX} Completed export for block ${milestone}`);
+    } catch (error) {
+      console.error(`${AUTO_EXPORT_LOG_PREFIX} Failed to export at block ${milestone}`, error);
+      break;
+    }
+  }
+}
+
+async function runAutoExport(): Promise<void> {
+  const cliArgs = [TSX_CLI_PATH, EXPORT_SCRIPT_PATH];
+  if (AUTO_EXPORT_DIR) {
+    cliArgs.push("--dir", AUTO_EXPORT_DIR);
+  }
+  if (AUTO_EXPORT_PRETTY) {
+    cliArgs.push("--pretty");
+  }
+
+  const child = spawn(process.execPath, cliArgs, {
+    stdio: "inherit",
+    env: { ...process.env },
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Export process exited with ${signal ?? `code ${code}`}`));
+      }
+    });
+    child.on("error", reject);
+  });
 }
 
 export async function startScanner(): Promise<void> {
@@ -142,4 +234,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-

@@ -7,7 +7,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "npx tsx src/index.ts",
     "scanner": "npx tsx src/scanner-runner.ts",
-    "walkthrough": "npx tsx src/walkthrough.ts"
+    "walkthrough": "npx tsx src/walkthrough.ts",
+    "bg-scan": "ENABLE_SERVER=false npx tsx src/scanner-runner.ts",
+    "prepare-bg": "npx tsx src/scripts/prepareBackgroundDb.ts"
   },
   "keywords": [],
   "author": "",

@@ -25,6 +25,7 @@ dotenv.config();
 
 const PORT = Number(process.env.PORT ?? 4000);
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
+const ENABLE_SERVER = process.env.ENABLE_SERVER !== "false";
 const LOCAL_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const SCANNER_PAUSE_KEY = "scanner_paused";
 
@@ -321,6 +322,11 @@ export function startServer(): { app: ReturnType<typeof createApp>; server: Serv
 
   if (WALKTHROUGH_MODE) {
     console.log("Walkthrough mode enabled – HTTP server not started.");
+    return { app, server: null };
+  }
+
+  if (!ENABLE_SERVER) {
+    console.log("ENABLE_SERVER=false – HTTP server disabled.");
     return { app, server: null };
   }
 

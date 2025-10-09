@@ -12,6 +12,58 @@ IMPORTANT NOTE - THIS IS A WIP Project
 Uses redis to store information.
 Polls every minute to check for new blocks/transactions.
 
+### Redis configuration
+
+The scanner reads Redis connection details from environment variables. Defaults are `localhost:6379`, database `0`.
+
+- `REDIS_URL` – optional full connection string (overrides the fields below).
+- `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_DB` – individual connection properties.
+- `REDIS_SOURCE_DB` – optional source DB index (used by the background preparation script, defaults to `0`).
+- `AUTO_EXPORT_ENABLED`, `AUTO_EXPORT_INTERVAL`, `AUTO_EXPORT_DIR`, `AUTO_EXPORT_PRETTY` – control automatic milestone exports (see below).
+
+You can run two scanner instances side by side by pointing each one at a different Redis DB index:
+
+```sh
+# production (HTTP + scanner on DB 0)
+npm run start
+
+# background rescan (scanner only, writes to DB 1)
+REDIS_DB=1 npm run bg-scan
+```
+
+The `bg-scan` script sets `ENABLE_SERVER=false`, so the background instance skips binding the HTTP port while it repopulates Redis.
+
+#### Preparing the staging database
+
+Before running a background scan you can seed the target DB using the `prepare-bg` helper:
+
+```sh
+# Copy DB 0 into DB 1, then clear aggregation keys (soft mode – default)
+npm run prepare-bg -- --target-db=1 --mode=soft
+
+# Flush DB 1 so the scanner starts from a blank slate (hard mode)
+npm run prepare-bg -- --target-db=1 --mode=hard
+```
+
+Soft mode keeps pricing records, transactions, etc. intact while deleting `protocol_stats` and other derived aggregates so the scanner can rebuild them. Hard mode simply flushes the target DB. Omit `--source-db` to default to `REDIS_SOURCE_DB` (0) and `--target-db` to default to `REDIS_DB` (1).
+
+#### Automatic milestone exports
+
+During a scan the runner writes a Redis snapshot to disk whenever the aggregated block height crosses each `AUTO_EXPORT_INTERVAL` (default: 100 000 blocks). Configure the behaviour with:
+
+- `AUTO_EXPORT_ENABLED` – set to `false` to disable automated exports.
+- `AUTO_EXPORT_INTERVAL` – block interval between exports.
+- `AUTO_EXPORT_DIR` – optional export root (passed to `--dir`).
+- `AUTO_EXPORT_PRETTY` – set to `true` to pretty-print JSON output.
+
+After the background run finishes you can atomically swap the databases and clear the old one:
+
+```sh
+redis-cli SWAPDB 0 1   # promote DB 1 to live
+redis-cli SELECT 1
+redis-cli FLUSHDB      # clear the staging data if desired
+```
+
 ### Reserve snapshots
 
 The scanner stores daemon `get_reserve_info` snapshots in Redis whenever the aggregated height matches the daemon height and the previous snapshot is at least `RESERVE_SNAPSHOT_INTERVAL_BLOCKS` (default 720) behind. Snapshots start at `RESERVE_SNAPSHOT_START_HEIGHT` (default 89300). This runs in normal mode and during walkthroughs using the following keys:
