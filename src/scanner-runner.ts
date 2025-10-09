@@ -9,6 +9,8 @@ import { scanTransactions } from "./tx";
 import {
   getPricingRecordHeight,
   getRedisHeight,
+  getLatestProtocolStats,
+  getLatestReserveSnapshot,
   getTotalsFromRedis,
   getTransactionHeight,
 } from "./utils";
@@ -19,6 +21,7 @@ import {
 } from "./yield";
 import { detectAndHandleReorg } from "./rollback";
 import redis from "./redis";
+import { logScannerHealth, logTotals, TotalsSummary } from "./logger";
 
 dotenv.config();
 
@@ -105,13 +108,23 @@ export async function runScannerCycle(): Promise<void> {
     }
 
     const totals = await getTotalsFromRedis();
-    console.log(totals);
+    let totalsSummary: TotalsSummary | null = null;
+    if (totals) {
+      totalsSummary = logTotals(totals);
+    }
     const latestScannerHeight = await getRedisHeight();
     const latestPricingHeight = await getPricingRecordHeight();
     const latestTxHeight = await getTransactionHeight();
-    console.log("Scanner Height (protocol_stats/height_aggregator): ", latestScannerHeight);
-    console.log("Pricing Records Height: ", latestPricingHeight);
-    console.log("Transactions Height: ", latestTxHeight);
+    console.log(
+      `[heights] scanner=${latestScannerHeight.toLocaleString("en-US")} | pricing=${latestPricingHeight.toLocaleString(
+        "en-US"
+      )} | tx=${latestTxHeight.toLocaleString("en-US")}`
+    );
+    const [latestStats, latestSnapshot] = await Promise.all([
+      getLatestProtocolStats(),
+      getLatestReserveSnapshot(),
+    ]);
+    logScannerHealth(totalsSummary, latestStats, latestSnapshot);
     await maybeAutoExport(latestScannerHeight);
     console.log("---------| MAIN |-----------");
   } catch (error) {

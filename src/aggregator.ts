@@ -27,6 +27,7 @@ import {
   RESERVE_DIFF_TOLERANCE,
 } from "./utils";
 import { UNAUDITABLE_ZEPH_MINT } from "./constants";
+import { logAggregatedSummary } from "./logger";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -1455,8 +1456,7 @@ async function aggregateByTimestamp(
         }
       }
 
-      console.log(aggregatedData);
-      console.log(`\n\n`);
+      logAggregatedSummary(windowType, windowStart, aggregatedData);
 
       //show some progress
       // Calculate and log the progress

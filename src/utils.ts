@@ -158,7 +158,7 @@ interface ReserveInfoResponse {
   };
 }
 
-interface ReserveSnapshot {
+export interface ReserveSnapshot {
   captured_at: string;
   reserve_height: number;
   previous_height: number;
@@ -277,9 +277,28 @@ async function loadReserveSnapshotByPreviousHeightFromRedis(
   }
   try {
     const snapshot = JSON.parse(json) as ReserveSnapshot;
-    return { snapshot, filePath: `redis:${previousHeight}` };
+  return { snapshot, filePath: `redis:${previousHeight}` };
   } catch (error) {
     console.error(`Failed to parse reserve snapshot from redis for height ${previousHeight}:`, error);
+    return null;
+  }
+}
+
+export async function getLatestReserveSnapshot(): Promise<ReserveSnapshot | null> {
+  const previousHeight = await getLastReserveSnapshotPreviousHeight();
+  if (previousHeight === null) {
+    return null;
+  }
+
+  const json = await redis.hget(RESERVE_SNAPSHOT_REDIS_KEY, previousHeight.toString());
+  if (!json) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(json) as ReserveSnapshot;
+  } catch (error) {
+    console.error(`Failed to parse latest reserve snapshot (previous_height=${previousHeight}):`, error);
     return null;
   }
 }
