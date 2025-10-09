@@ -10,6 +10,7 @@ dotenv.config();
 interface CliOptions {
   outputDir: string;
   pretty: boolean;
+  tag?: string;
 }
 
 function printHelp() {
@@ -18,6 +19,7 @@ function printHelp() {
 Options:
   --dir, -d <path>     Directory root for export (default: exports/<version>)
   --pretty, -p         Pretty-print JSON output
+  --tag <label>        Optional label appended to the export directory name
   --help, -h           Show this help message
 `);
 }
@@ -26,6 +28,7 @@ function parseArgs(): CliOptions {
   const args = process.argv.slice(2);
   let outputDir = "";
   let pretty = false;
+  let tag: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -43,6 +46,14 @@ function parseArgs(): CliOptions {
       case "-p":
         pretty = true;
         break;
+      case "--tag": {
+        const next = args[++i];
+        if (!next) {
+          throw new Error(`${arg} requires a label`);
+        }
+        tag = next;
+        break;
+      }
       case "--help":
       case "-h":
         printHelp();
@@ -52,7 +63,7 @@ function parseArgs(): CliOptions {
     }
   }
 
-  return { outputDir, pretty };
+  return { outputDir, pretty, tag };
 }
 
 function sanitizeKey(key: string): string {
@@ -191,7 +202,8 @@ async function exportRedis(options: CliOptions) {
   const version = pkg?.version ?? "unknown";
   const height = await getRedisHeight();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const baseName = `redis_export_${version}_${height}_${timestamp}`;
+  const tagPart = options.tag ? `_${sanitizeKey(options.tag)}` : "";
+  const baseName = `redis_export_${version}_h${height}${tagPart}_${timestamp}`;
   const exportRoot = options.outputDir
     ? path.resolve(process.cwd(), options.outputDir, baseName)
     : path.resolve(process.cwd(), "exports", version, baseName);

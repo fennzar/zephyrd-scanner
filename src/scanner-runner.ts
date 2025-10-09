@@ -147,35 +147,28 @@ async function maybeAutoExport(currentHeight: number): Promise<void> {
     return;
   }
 
-  let nextMilestone =
-    lastHeight === 0
-      ? AUTO_EXPORT_INTERVAL
-      : Math.floor(lastHeight / AUTO_EXPORT_INTERVAL) * AUTO_EXPORT_INTERVAL + AUTO_EXPORT_INTERVAL;
+  const milestone = highestMilestone;
 
-  if (nextMilestone <= 0) {
-    nextMilestone = AUTO_EXPORT_INTERVAL;
-  }
-
-  for (let milestone = nextMilestone; milestone <= highestMilestone; milestone += AUTO_EXPORT_INTERVAL) {
-    try {
-      console.log(`${AUTO_EXPORT_LOG_PREFIX} Triggering export for block ${milestone}`);
-      await runAutoExport();
-      await redis.set(AUTO_EXPORT_KEY, milestone.toString());
-      console.log(`${AUTO_EXPORT_LOG_PREFIX} Completed export for block ${milestone}`);
-    } catch (error) {
-      console.error(`${AUTO_EXPORT_LOG_PREFIX} Failed to export at block ${milestone}`, error);
-      break;
-    }
+  try {
+    console.log(`${AUTO_EXPORT_LOG_PREFIX} Triggering export for block ${milestone}`);
+    await runAutoExport(milestone);
+    await redis.set(AUTO_EXPORT_KEY, milestone.toString());
+    console.log(`${AUTO_EXPORT_LOG_PREFIX} Completed export for block ${milestone}`);
+  } catch (error) {
+    console.error(`${AUTO_EXPORT_LOG_PREFIX} Failed to export at block ${milestone}`, error);
   }
 }
 
-async function runAutoExport(): Promise<void> {
+async function runAutoExport(milestone: number): Promise<void> {
   const cliArgs = [TSX_CLI_PATH, EXPORT_SCRIPT_PATH];
   if (AUTO_EXPORT_DIR) {
     cliArgs.push("--dir", AUTO_EXPORT_DIR);
   }
   if (AUTO_EXPORT_PRETTY) {
     cliArgs.push("--pretty");
+  }
+  if (Number.isFinite(milestone) && milestone > 0) {
+    cliArgs.push("--tag", `milestone-${milestone}`);
   }
 
   const child = spawn(process.execPath, cliArgs, {
