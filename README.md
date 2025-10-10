@@ -1,7 +1,7 @@
 # zephyrdscanner
 
 Tool for scanning the Zephyr Blockchain.
-Powehouse for website data and all 
+Powehouse for website data and all
 
 IMPORTANT NOTE - THIS IS A WIP Project
 
@@ -31,6 +31,7 @@ npm run start
 REDIS_DB=1 npm run bg-scan
 ```
 
+WIP: We currently make too many calls to the redis server which results in the connections dropping when there are 2 instances running.
 The `bg-scan` script sets `ENABLE_SERVER=false`, so the background instance skips binding the HTTP port while it repopulates Redis.
 
 #### Preparing the staging database
@@ -98,7 +99,7 @@ curl "http://127.0.0.1:17767/json_rpc" \
 
 Exporting the stored snapshots to JSON files:
 
-```sh
+````sh
 # write each snapshot to reserve_snapshots/HEIGHT.json (skips existing files)
 npx tsx src/scripts/exportReserveSnapshots.ts --dir reserve_snapshots
 
@@ -128,8 +129,9 @@ npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_61
 
 # skip keys that already exist during import
 npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --skip-existing
-```
-```
+````
+
+````
 
 Configuration knobs:
 
@@ -171,23 +173,27 @@ An instance of `zephyrdscanner` is running on `157.245.130.75:4000`. There is a 
 
 ```sh
 curl "http://157.245.130.75:4000/"
-```
+````
 
 ### Route: `/stats`
+
 **Description**: Retrieves statistics on the Zephyr Protocol over different time scales.
 
 **Params**:
+
 - **scale** (required): The granularity of data. Can be `block`, `hour`, or `day`.
 - **from** (optional): Starting block number or timestamp (applicable for `hour` and `day` scales).
 - **to** (optional): Ending block number or timestamp (applicable for `hour` and `day` scales).
 - **fields** (optional): A comma-separated string of fields to request (e.g., `spot_open,spot_close`).
 
 **Example**:
+
 ```sh
 curl "157.245.130.75:4000/stats?scale=day&from=1729468800&to=1729598400&fields=spot_open,spot_close,moving_average_open,moving_average_close" | jq
 ```
 
-Notes: 
+Notes:
+
 - When requesting data with block scale, the response structure and available fields differs compared to hour and day scales.
 - There is a lot of data, avoid not passing in from and to params where possible.
 
@@ -196,6 +202,7 @@ curl "http://157.245.130.75:4000/stats?scale=block&from=500000&to=500100&fields=
 ```
 
 ### Route: `/historicalreturns`
+
 Returns cached historical yield returns. Optional `?test=true` serves dummy data.
 
 ```sh
@@ -203,6 +210,7 @@ curl "http://157.245.130.75:4000/historicalreturns"
 ```
 
 ### Route: `/projectedreturns`
+
 Returns projected yield returns. Optional `?test=true` serves dummy data.
 
 ```sh
@@ -210,14 +218,17 @@ curl "http://157.245.130.75:4000/projectedreturns"
 ```
 
 ### Route: `/livestats`
+
 **Description**: Retrieves (some) current live stats of Zephyr Protocol from Redis.
 
 **Example**:
+
 ```sh
 curl "157.245.130.75:4000/livestats" | jq
 ```
 
 **Response**:
+
 ```sh
 {
   "zeph_price": 3.8466,
@@ -244,6 +255,7 @@ curl "157.245.130.75:4000/livestats" | jq
 ```
 
 ### Route: `/zyspricehistory`
+
 Returns the processed ZYS price history stored in Redis.
 
 ```sh
@@ -251,6 +263,7 @@ curl "http://157.245.130.75:4000/zyspricehistory"
 ```
 
 ### Route: `/apyhistory`
+
 Returns the cached APY history.
 
 ```sh
@@ -262,6 +275,7 @@ curl "http://157.245.130.75:4000/apyhistory"
 ## Private Routes (localhost only)
 
 ### Route: `/rollback`
+
 Roll the scanner back to a given `height` and rebuild forward.
 
 ```sh
@@ -269,6 +283,7 @@ curl "http://127.0.0.1:4000/rollback?height=500000"
 ```
 
 ### Route: `/retallytotals`
+
 Recompute cumulative totals from existing aggregated data.
 
 ```sh
@@ -276,6 +291,7 @@ curl "http://127.0.0.1:4000/retallytotals"
 ```
 
 ### Route: `/redetermineapyhistory`
+
 Force a full APY history rebuild.
 
 ```sh
@@ -283,6 +299,7 @@ curl "http://127.0.0.1:4000/redetermineapyhistory"
 ```
 
 ### Route: `/reservediff`
+
 Compare daemon reserve info with cached stats (absolute differences).
 
 ```sh
@@ -290,14 +307,17 @@ curl "http://127.0.0.1:4000/reservediff"
 ```
 
 ### Route: `/reset`
+
 **Method**: `POST`
 
 **Description**: Rebuilds scanner state.
 
 **Params**:
+
 - **scope** (optional): `aggregation` (default) clears aggregation artefacts and recomputes derived data. Use `full` to flush the Redis database and rescan pricing records and transactions from scratch.
 
 **Examples**:
+
 ```sh
 # Rebuild only aggregate data
 curl -X POST "http://127.0.0.1:4000/reset"

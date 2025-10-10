@@ -1,4 +1,5 @@
 import { AggregatedData, ProtocolStats, ReserveDiffReport, ReserveSnapshot } from "./utils";
+import { UNAUDITABLE_ZEPH_MINT, INITIAL_TREASURY_ZEPH } from "./constants";
 
 type WindowType = "hourly" | "daily";
 type MetricSuffix = "open" | "close" | "high" | "low";
@@ -168,6 +169,14 @@ export function summarizeTotals(totals: Record<string, unknown>): TotalsSummary 
 export function logTotals(totals: Record<string, unknown>): TotalsSummary {
   const summary = summarizeTotals(totals);
   const numericTotals = summary.numeric;
+  const minedTotal =
+    (numericTotals.miner_reward ?? 0) +
+    (numericTotals.governance_reward ?? 0) +
+    (numericTotals.reserve_reward ?? 0) +
+    (numericTotals.yield_reward ?? 0);
+  const totalAll = minedTotal + INITIAL_TREASURY_ZEPH + UNAUDITABLE_ZEPH_MINT;
+  summary.numeric.total_mined = minedTotal;
+  summary.numeric.total_all = totalAll;
 
   const rewardRows = [
     {
@@ -187,14 +196,20 @@ export function logTotals(totals: Record<string, unknown>): TotalsSummary {
       amount: formatNumber(numericTotals.yield_reward, 4),
     },
     {
-      type: "total",
-      amount: formatNumber(
-        (numericTotals.miner_reward ?? 0) +
-          (numericTotals.governance_reward ?? 0) +
-          (numericTotals.reserve_reward ?? 0) +
-          (numericTotals.yield_reward ?? 0),
-        4
-      ),
+      type: "total_mined",
+      amount: formatNumber(minedTotal, 4),
+    },
+    {
+      type: "initial_treasury",
+      amount: formatNumber(INITIAL_TREASURY_ZEPH, 4),
+    },
+    {
+      type: "unauditable_mint",
+      amount: formatNumber(UNAUDITABLE_ZEPH_MINT, 4),
+    },
+    {
+      type: "total_all",
+      amount: formatNumber(totalAll, 4),
     },
   ];
 
@@ -456,56 +471,82 @@ export function logScannerHealth(
     return;
   }
 
-  const rows: Array<{ metric: string; aggregator: string; on_chain: string; diff: string }> = [];
+  const rows: Array<{ metric: string; scanner: string; on_chain: string; diff: string }> = [];
   const numericTotals = totalsSummary?.numeric ?? {};
 
-  const zsdNet = (numericTotals.mint_stable_volume ?? 0) - (numericTotals.redeem_stable_volume ?? 0);
-  const zrsNet = (numericTotals.mint_reserve_volume ?? 0) - (numericTotals.redeem_reserve_volume ?? 0);
-  const zysNet = (numericTotals.mint_yield_volume ?? 0) - (numericTotals.redeem_yield_volume ?? 0);
+  const zepTotal = numericTotals.total_all;
+  const zsdTotal = (numericTotals.mint_stable_volume ?? 0) - (numericTotals.redeem_stable_volume ?? 0);
+  const zrsTotal = (numericTotals.mint_reserve_volume ?? 0) - (numericTotals.redeem_reserve_volume ?? 0);
+  const zysTotal = (numericTotals.mint_yield_volume ?? 0) - (numericTotals.redeem_yield_volume ?? 0);
 
   if (totalsSummary) {
-    const netFields = [
+    const totalsRows = [
       {
-        metric: "ZSD circ (net)",
-        aggregatorValue: zsdNet,
+        metric: "ZEPH circ (totals)",
+        aggregatorValue: zepTotal,
+        onChainValue: snapshot.on_chain.zeph_reserve + snapshot.on_chain.zsd_circ + snapshot.on_chain.zrs_circ,
+        decimals: 2,
+      },
+      {
+        metric: "ZSD circ (totals)",
+        aggregatorValue: zsdTotal,
         onChainValue: snapshot.on_chain.zsd_circ,
         decimals: 2,
       },
       {
-        metric: "ZRS circ (net)",
-        aggregatorValue: zrsNet,
+        metric: "ZRS circ (totals)",
+        aggregatorValue: zrsTotal,
         onChainValue: snapshot.on_chain.zrs_circ,
         decimals: 2,
       },
       {
-        metric: "ZYS circ (net)",
-        aggregatorValue: zysNet,
+        metric: "ZYS circ (totals)",
+        aggregatorValue: zysTotal,
         onChainValue: snapshot.on_chain.zyield_circ,
+        decimals: 2,
+      },
+      {
+        metric: "ZEPH reserve (totals)",
+        aggregatorValue: snapshot.on_chain.zeph_reserve,
+        onChainValue: snapshot.on_chain.zeph_reserve,
+        decimals: 2,
+      },
+      {
+        metric: "ZSD yield reserve (totals)",
+        aggregatorValue: snapshot.on_chain.zsd_yield_reserve,
+        onChainValue: snapshot.on_chain.zsd_yield_reserve,
         decimals: 2,
       },
     ];
 
-    for (const { metric, aggregatorValue, onChainValue, decimals } of netFields) {
+    for (const { metric, aggregatorValue, onChainValue, decimals } of totalsRows) {
       const diff = computeDiff(aggregatorValue, onChainValue);
       rows.push({
         metric,
-        aggregator: formatNumber(aggregatorValue, decimals),
+        scanner: formatNumber(aggregatorValue, decimals),
         on_chain: formatNumber(onChainValue, decimals),
         diff: formatNumber(diff, decimals),
       });
     }
+    rows.push({ metric: "----", aggregator: "-", on_chain: "-", diff: "-" });
   }
 
   if (stats) {
     const statFields = [
       {
-        metric: "Zeph reserve",
+        metric: "Zeph circ (stats)",
+        aggregatorValue: stats.zeph_circ,
+        onChainValue: numericTotals.total_all,
+        decimals: 2,
+      },
+      {
+        metric: "Zeph reserve (stats)",
         aggregatorValue: stats.zeph_in_reserve,
         onChainValue: snapshot.on_chain.zeph_reserve,
         decimals: 2,
       },
       {
-        metric: "ZSD yield reserve",
+        metric: "ZSD yield reserve (stats)",
         aggregatorValue: stats.zsd_in_yield_reserve,
         onChainValue: snapshot.on_chain.zsd_yield_reserve,
         decimals: 2,
@@ -540,7 +581,7 @@ export function logScannerHealth(
       const diff = computeDiff(aggregatorValue, onChainValue);
       rows.push({
         metric,
-        aggregator: formatNumber(aggregatorValue, decimals),
+        scanner: formatNumber(aggregatorValue, decimals),
         on_chain: formatNumber(onChainValue, decimals),
         diff: formatNumber(diff, decimals),
       });

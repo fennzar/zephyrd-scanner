@@ -1154,6 +1154,19 @@ export async function getLiveStats() {
     const zeph_in_reserve_value = zeph_in_reserve * zeph_price;
 
     const zsd_in_yield_reserve = Number(reserveInfo.result.zyield_reserve) * DEATOMIZE;
+    const reserve_ratio_value_raw = reserveInfo.result.reserve_ratio ?? latestStats?.reserve_ratio ?? 0;
+    const reserve_ratio_value = Number(reserve_ratio_value_raw);
+
+    const reserve_ratio_ma_value_raw = reserveInfo.result.reserve_ratio_ma ?? latestStats?.reserve_ratio_ma ?? null;
+    const reserve_ratio_ma_value =
+      typeof reserve_ratio_ma_value_raw === "number"
+        ? reserve_ratio_ma_value_raw
+        : reserve_ratio_ma_value_raw == null
+        ? null
+        : Number(reserve_ratio_ma_value_raw);
+    const reserve_ratio_ma = reserve_ratio_ma_value != null && Number.isFinite(reserve_ratio_ma_value)
+      ? reserve_ratio_ma_value
+      : null;
 
     const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
     const zsd_in_yield_reserve_percent = zsd_in_yield_reserve / zsd_circ;
@@ -1196,6 +1209,8 @@ export async function getLiveStats() {
       zsd_in_yield_reserve,
       zsd_in_yield_reserve_percent,
       zys_current_variable_apy: zysCurrentVariableApy,
+      reserve_ratio: Number.isFinite(reserve_ratio_value) ? reserve_ratio_value : 0,
+      reserve_ratio_ma,
     };
 
     // save all these to redis to be called back in case of daemon/explorer api failure
