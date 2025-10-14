@@ -13,6 +13,7 @@ import {
   getLatestReserveSnapshot,
   getTotalsFromRedis,
   getTransactionHeight,
+  refreshLiveStatsCache,
 } from "./utils";
 import {
   determineAPYHistory,
@@ -125,6 +126,10 @@ export async function runScannerCycle(): Promise<void> {
       getLatestReserveSnapshot(),
     ]);
     logScannerHealth(totalsSummary, latestStats, latestSnapshot);
+    const refreshedLiveStats = await refreshLiveStatsCache();
+    if (!refreshedLiveStats) {
+      console.warn("runScannerCycle: Unable to refresh live stats cache");
+    }
     await maybeAutoExport(latestScannerHeight);
     console.log("---------| MAIN |-----------");
   } catch (error) {

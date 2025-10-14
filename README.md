@@ -217,6 +217,50 @@ Returns projected yield returns. Optional `?test=true` serves dummy data.
 curl "http://157.245.130.75:4000/projectedreturns"
 ```
 
+### Route: `/txs`
+
+**Description**: Returns cached conversion transactions stored by the scanner. Supports pagination, timestamp windows, and filtering by conversion type.
+
+**Params**:
+
+- **from** (optional): Lower bound for `block_timestamp`. Accepts UNIX seconds or ISO-8601 date strings.
+- **to** (optional): Upper bound for `block_timestamp`. Accepts UNIX seconds or ISO-8601 date strings.
+- **types** (optional): Comma separated list of conversion types to include (e.g. `mint_stable,redeem_stable,mint_reserve`).
+- **limit** (optional): Maximum number of rows to return (default `100`). Use `limit=all` or `limit=0` to retrieve the full result set.
+- **offset** (optional): Number of rows to skip before returning results (default `0`). Useful for sequential pagination (e.g. page two = `offset=20&limit=20`).
+- **page** and **pageSize** (optional): Alternative pagination controls. `page` is 1-based and uses `pageSize` (or the current `limit`) for sizing.
+- **order** (optional): Sort direction by timestamp (`asc` or `desc`, default `desc`).
+
+**Example**:
+
+```sh
+# Latest 25 stable mint/redemptions from the past day
+curl "http://157.245.130.75:4000/txs?types=mint_stable,redeem_stable&from=$(date -d '1 day ago' +%s)&limit=25" | jq
+```
+
+```sh
+# Oldest reserve conversions within a time window
+curl "http://157.245.130.75:4000/txs?types=mint_reserve,redeem_reserve&from=1729468800&to=1729555200&order=asc&limit=10" | jq
+```
+
+```sh
+# Grab every mint_yield event in a single response
+curl "http://157.245.130.75:4000/txs?types=mint_yield&limit=all" | jq
+```
+
+```sh
+# Page through the latest results (page 1 of 20-row slices)
+curl "http://157.245.130.75:4000/txs?page=1&pageSize=20" | jq
+```
+
+**Paginated response fields**:
+
+- `total`: Total rows matching the filters.
+- `limit`: Page size used for the current response (null when `limit=all`).
+- `offset`: Starting index (relative to newest when `order=desc`).
+- `next_offset` / `prev_offset`: Cursor-style hints for subsequent requests.
+- `results`: Array of transaction objects (same shape as stored in Redis).
+
 ### Route: `/livestats`
 
 **Description**: Retrieves (some) current live stats of Zephyr Protocol from Redis.

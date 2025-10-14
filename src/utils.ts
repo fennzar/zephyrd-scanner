@@ -27,6 +27,9 @@ export const WALKTHROUGH_SNAPSHOT_SOURCE = (
 ).toLowerCase();
 export const RESERVE_DIFF_TOLERANCE = Number(process.env.RESERVE_DIFF_TOLERANCE ?? "1");
 const RESERVE_MISMATCH_REDIS_KEY = "reserve_mismatch_heights";
+const LIVE_STATS_REDIS_KEY = "live_stats";
+const ATOMIC_UNITS = 1_000_000_000_000n;
+const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
 export async function getCurrentBlockHeight(): Promise<number> {
   try {
@@ -103,7 +106,7 @@ interface GetBlockResponse {
   };
 }
 
-export async function getBlock(height: number) {
+export async function getBlock(height: number): Promise<GetBlockResponse | null> {
   try {
     const response = await fetch(`${RPC_URL}/json_rpc`, {
       method: "POST",
@@ -114,14 +117,32 @@ export async function getBlock(height: number) {
         method: "get_block",
         params: { height },
       }),
+      agent,
     });
 
-    return (await response.json()) as GetBlockResponse;
+    const data = (await response.json()) as GetBlockResponse;
+
+    if (!data || typeof data !== "object") {
+      console.warn(`getBlock: Unexpected response for height ${height}`, data);
+      return null;
+    }
+
+    if ("error" in data && data.error) {
+      console.warn(`getBlock: Daemon returned error for height ${height}`, data.error);
+      return null;
+    }
+
+    if (!data.result || !data.result.block_header) {
+      console.warn(`getBlock: Missing result for height ${height}`, data);
+      return null;
+    }
+
+    return data;
   } catch (e) {
     console.log(e);
     console.log(`getBlock rpc no response - Daemon could be down - waiting 1 second...`);
     await new Promise((r) => setTimeout(r, 1000));
-    return;
+    return null;
   }
 }
 
@@ -988,64 +1009,334 @@ export async function getRedisTransaction(hash: string) {
   return JSON.parse(txs);
 }
 
-async function getCirculatingSuppliesFromExplorer() {
+interface CoinbaseTxSumResponse {
+  id: string;
+  jsonrpc: string;
+  result?: {
+    emission_amount?: number | string;
+    fee_amount?: number | string;
+    status?: string;
+  };
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+async function getZephCircFromDaemon(targetHeight: number): Promise<number | null> {
+  if (!Number.isFinite(targetHeight) || targetHeight <= 0) {
+    return null;
+  }
+
   try {
-    // Fetch Zeph circulating supply
-    const zephResponse = await fetch("https://explorer.zephyrprotocol.com/api/circulating");
-    const zeph_circ = Number(await zephResponse.json());
+    const response = await fetch(`${RPC_URL}/json_rpc`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "0",
+        method: "get_coinbase_tx_sum",
+        params: {
+          height: 0,
+          count: Math.floor(targetHeight),
+        },
+      }),
+      agent,
+    });
 
-    // WE CAN GET THIS FROM /get_reserve_info RPC COMMAND
+    const data = (await response.json()) as CoinbaseTxSumResponse;
+    if (!data || typeof data !== "object" || !data.result) {
+      console.warn("getZephCircFromDaemon: Missing result payload from daemon");
+      return null;
+    }
 
-    // // Fetch ZSD circulating supply
-    // const zsdResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zsd');
-    // const zsd_circ = Number(await zsdResponse.json());
+    const emissionRaw = data.result.emission_amount;
+    const emissionAtoms =
+      typeof emissionRaw === "string" ? Number(emissionRaw) : typeof emissionRaw === "number" ? emissionRaw : null;
+    if (emissionAtoms == null || !Number.isFinite(emissionAtoms)) {
+      console.warn("getZephCircFromDaemon: Invalid emission amount from daemon", emissionRaw);
+      return null;
+    }
 
-    // // Fetch ZRS circulating supply
-    // const zrsResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zrs');
-    // const zrs_circ = Number(await zrsResponse.json());
-
-    // // Fetch ZYS circulating supply
-    // const zysResponse = await fetch('https://explorer.zephyrprotocol.com/api/circulating/zys');
-    // const zys_circ = Number(await zysResponse.json());
-
-    // Logging all the results
-    // console.log('Zeph Circulating Supply:', zeph_circ);
-    // console.log('ZSD Circulating Supply:', zsd_circ);
-    // console.log('ZRS Circulating Supply:', zrs_circ);
-    // console.log('ZYS Circulating Supply:', zys_circ);
-
-    return {
-      zeph_circ,
-      // zsd_circ,
-      // zrs_circ,
-      // zys_circ
-    };
+    return emissionAtoms * DEATOMIZE;
   } catch (error) {
-    console.error("Error fetching circulating supplies:", error);
-    return {
-      zeph_circ: 0,
-      // zsd_circ: 0,
-      // zrs_circ: 0,
-      // zys_circ: 0
-    };
+    console.error("getZephCircFromDaemon: Failed to fetch coinbase sum from daemon", error);
+    return null;
   }
 }
 
-export async function getLiveStats() {
-  try {
-    // we can get prices from the pr?
-    // get accurate circ from the explorer api
-    // we can get circulating supply for all assets except ZEPH from the reserve info call.
-    // we can get current and previous circ amounts from the aggregated data to get 24h change
+interface CirculatingSupplyEntryRaw {
+  amount: string;
+  currency_label: string;
+}
 
+interface CirculatingSupplyResponse {
+  id: string;
+  jsonrpc: string;
+  result?: {
+    status?: string;
+    supply_tally?: CirculatingSupplyEntryRaw[];
+  };
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+export interface CirculatingSupplyEntry {
+  currency: string;
+  amount_atoms: string;
+  amount: number;
+}
+
+export async function getCirculatingSupplyFromDaemon(): Promise<CirculatingSupplyEntry[] | null> {
+  try {
+    const response = await fetch(`${RPC_URL}/json_rpc`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "0",
+        method: "get_circulating_supply",
+      }),
+      agent,
+    });
+
+    const data = (await response.json()) as CirculatingSupplyResponse;
+    if (!data || typeof data !== "object" || !data.result) {
+      console.warn("getCirculatingSupplyFromDaemon: Missing result payload");
+      return null;
+    }
+
+    if (data.result.status !== "OK") {
+      console.warn("getCirculatingSupplyFromDaemon: Unexpected status", data.result.status);
+      return null;
+    }
+
+    const tally = data.result.supply_tally;
+    if (!Array.isArray(tally) || tally.length === 0) {
+      console.warn("getCirculatingSupplyFromDaemon: Empty supply_tally");
+      return null;
+    }
+
+    return tally.map((entry) => {
+      const atoms = entry.amount;
+      const amountAtoms = typeof atoms === "string" ? atoms : "0";
+      const amountNumber = Number(amountAtoms);
+      const amount = Number.isFinite(amountNumber) ? amountNumber * DEATOMIZE : 0;
+      return {
+        currency: entry.currency_label,
+        amount_atoms: amountAtoms,
+        amount,
+      };
+    });
+  } catch (error) {
+    console.error("getCirculatingSupplyFromDaemon: Failed to fetch circulating supply", error);
+    return null;
+  }
+}
+
+export interface TransactionRecord {
+  hash: string;
+  block_height: number;
+  block_timestamp: number;
+  conversion_type: string;
+  conversion_rate?: number | null;
+  from_asset?: string | null;
+  from_amount?: number | null;
+  from_amount_atoms?: string;
+  to_asset?: string | null;
+  to_amount?: number | null;
+  to_amount_atoms?: string;
+  conversion_fee_asset?: string | null;
+  conversion_fee_amount?: number | null;
+  tx_fee_asset?: string | null;
+  tx_fee_amount?: number | null;
+  tx_fee_atoms?: string;
+}
+
+export interface TransactionQueryOptions {
+  fromTimestamp?: number;
+  toTimestamp?: number;
+  types?: string[];
+  limit?: number;
+  offset?: number;
+  order?: "asc" | "desc";
+}
+
+export interface TransactionQueryResult {
+  total: number;
+  results: TransactionRecord[];
+  limit: number | null;
+  offset: number;
+  order: "asc" | "desc";
+}
+
+function sanitizeTransactionRecord(raw: unknown): TransactionRecord | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const record = raw as Record<string, unknown>;
+  const hash = typeof record.hash === "string" ? record.hash : null;
+  const blockHeight = Number(record.block_height);
+  const blockTimestamp = Number(record.block_timestamp);
+
+  if (!hash || !Number.isFinite(blockHeight) || !Number.isFinite(blockTimestamp)) {
+    return null;
+  }
+
+  const conversionType =
+    typeof record.conversion_type === "string" ? record.conversion_type : (record.conversion_type ?? "na").toString();
+
+  const toNumber = (value: unknown): number | null => {
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
+
+  return {
+    hash,
+    block_height: blockHeight,
+    block_timestamp: blockTimestamp,
+    conversion_type: conversionType,
+    conversion_rate: toNumber(record.conversion_rate),
+    from_asset: typeof record.from_asset === "string" ? record.from_asset : null,
+    from_amount: toNumber(record.from_amount),
+    from_amount_atoms: typeof record.from_amount_atoms === "string" ? record.from_amount_atoms : undefined,
+    to_asset: typeof record.to_asset === "string" ? record.to_asset : null,
+    to_amount: toNumber(record.to_amount),
+    to_amount_atoms: typeof record.to_amount_atoms === "string" ? record.to_amount_atoms : undefined,
+    conversion_fee_asset:
+      typeof record.conversion_fee_asset === "string" ? record.conversion_fee_asset : null,
+    conversion_fee_amount: toNumber(record.conversion_fee_amount),
+    tx_fee_asset: typeof record.tx_fee_asset === "string" ? record.tx_fee_asset : null,
+    tx_fee_amount: toNumber(record.tx_fee_amount),
+    tx_fee_atoms: typeof record.tx_fee_atoms === "string" ? record.tx_fee_atoms : undefined,
+  };
+}
+
+export async function getTransactionsFromRedis(options: TransactionQueryOptions = {}): Promise<TransactionQueryResult> {
+  const {
+    fromTimestamp,
+    toTimestamp,
+    types,
+    limit,
+    offset = 0,
+    order = "desc",
+  } = options;
+
+  const rawValues = await redis.hvals("txs");
+  const records: TransactionRecord[] = [];
+
+  for (const raw of rawValues) {
+    try {
+      const parsed = JSON.parse(raw);
+      const record = sanitizeTransactionRecord(parsed);
+      if (record) {
+        records.push(record);
+      }
+    } catch (error) {
+      console.warn("getTransactionsFromRedis: Unable to parse transaction record", error);
+    }
+  }
+
+  const typeSet =
+    types && types.length > 0
+      ? new Set(types.map((value) => value.toLowerCase()))
+      : null;
+
+  const filtered = records.filter((record) => {
+    if (typeSet && !typeSet.has(record.conversion_type.toLowerCase())) {
+      return false;
+    }
+    if (fromTimestamp != null && record.block_timestamp < fromTimestamp) {
+      return false;
+    }
+    if (toTimestamp != null && record.block_timestamp > toTimestamp) {
+      return false;
+    }
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    const timestampDelta = a.block_timestamp - b.block_timestamp;
+    if (timestampDelta !== 0) {
+      return order === "asc" ? timestampDelta : -timestampDelta;
+    }
+    const heightDelta = a.block_height - b.block_height;
+    if (heightDelta !== 0) {
+      return order === "asc" ? heightDelta : -heightDelta;
+    }
+    return order === "asc" ? a.hash.localeCompare(b.hash) : b.hash.localeCompare(a.hash);
+  });
+
+  const total = filtered.length;
+  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const resolvedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+  const sliceStart = Math.min(resolvedOffset, filtered.length);
+  const sliceEnd =
+    resolvedLimit != null ? Math.min(sliceStart + resolvedLimit, filtered.length) : filtered.length;
+
+  return {
+    total,
+    results: filtered.slice(sliceStart, sliceEnd),
+    limit: resolvedLimit ?? null,
+    offset: sliceStart,
+    order,
+  };
+}
+
+export interface LiveStats {
+  zeph_price: number;
+  zsd_rate: number;
+  zsd_price: number;
+  zrs_rate: number;
+  zrs_price: number;
+  zys_price: number;
+  zeph_circ: number;
+  zsd_circ: number;
+  zrs_circ: number;
+  zys_circ: number;
+  zeph_circ_daily_change: number;
+  zsd_circ_daily_change: number;
+  zrs_circ_daily_change: number;
+  zys_circ_daily_change: number;
+  zeph_in_reserve: number;
+  zeph_in_reserve_value: number;
+  zeph_in_reserve_percent: number;
+  zsd_in_yield_reserve: number;
+  zsd_in_yield_reserve_percent: number;
+  zys_current_variable_apy: number | null;
+  reserve_ratio: number;
+  reserve_ratio_ma: number | null;
+}
+
+async function calculateLiveStats(): Promise<LiveStats | null> {
+  try {
     const currentBlockHeight = await getRedisHeight();
-    console.log(`getLiveStats: Current Block Height: ${currentBlockHeight}`);
+    console.log(`calculateLiveStats: Current Block Height: ${currentBlockHeight}`);
 
     const reserveInfo = await getReserveInfo();
 
     if (!reserveInfo || !reserveInfo.result) {
-      console.log(`getLiveStats: No reserve info returned from daemon`);
-      return;
+      console.log(`calculateLiveStats: No reserve info returned from daemon`);
+      return null;
+    }
+
+    const circulatingSupplyEntries = await getCirculatingSupplyFromDaemon();
+    const circulatingSupplyMap = new Map<string, CirculatingSupplyEntry>();
+    if (circulatingSupplyEntries) {
+      for (const entry of circulatingSupplyEntries) {
+        circulatingSupplyMap.set(entry.currency, entry);
+      }
     }
 
     const pricingRecord = reserveInfo.result.pr;
@@ -1059,10 +1350,10 @@ export async function getLiveStats() {
 
     if (needsFallback) {
       if (!latestStats) {
-        console.log(`getLiveStats: Pricing record missing from daemon and no cached stats available`);
-        return;
+        console.log(`calculateLiveStats: Pricing record missing from daemon and no cached stats available`);
+        return null;
       }
-      console.log(`getLiveStats: Pricing record missing from daemon, using cached protocol stats`);
+      console.log(`calculateLiveStats: Pricing record missing from daemon, using cached protocol stats`);
     }
 
     const spotAtoms =
@@ -1084,8 +1375,8 @@ export async function getLiveStats() {
       !Number.isFinite(stableAtoms) ||
       !Number.isFinite(reserveAtoms)
     ) {
-      console.log(`getLiveStats: Unable to determine pricing metrics from daemon or cache`);
-      return;
+      console.log(`calculateLiveStats: Unable to determine pricing metrics from daemon or cache`);
+      return null;
     }
 
     const zeph_price = Number((spotAtoms * DEATOMIZE).toFixed(4));
@@ -1098,62 +1389,101 @@ export async function getLiveStats() {
         ? Number((yieldPriceAtoms * DEATOMIZE).toFixed(4))
         : 1;
 
-    const zsd_circ = Number(reserveInfo.result.num_stables) * DEATOMIZE;
-    const zrs_circ = Number(reserveInfo.result.num_reserves) * DEATOMIZE;
-    const zys_circ = Number(reserveInfo.result.num_zyield) * DEATOMIZE;
+    const zephCircFromSupply = circulatingSupplyMap.get("ZPH")?.amount ?? null;
+    const zsdCircFromSupply = circulatingSupplyMap.get("ZSD")?.amount ?? null;
+    const zrsCircFromSupply = circulatingSupplyMap.get("ZRS")?.amount ?? null;
+    const zysCircFromSupply = circulatingSupplyMap.get("ZYS")?.amount ?? null;
+    const zephReserveFromSupply = circulatingSupplyMap.get("DJED")?.amount ?? null;
+    const zsdYieldReserveFromSupply = circulatingSupplyMap.get("YIELD")?.amount ?? null;
 
-    // to calcuate the 24hr circulating supply change we can use the aggregated data, most recent protocol stats and 720 records ago
-    // Fetch previous block's data for initialization
+    const zsd_circ =
+      typeof zsdCircFromSupply === "number" && Number.isFinite(zsdCircFromSupply)
+        ? zsdCircFromSupply
+        : atomsToNumberFromString(reserveInfo.result.num_stables);
+    const zrs_circ =
+      typeof zrsCircFromSupply === "number" && Number.isFinite(zrsCircFromSupply)
+        ? zrsCircFromSupply
+        : atomsToNumberFromString(reserveInfo.result.num_reserves);
+    const zys_circ =
+      typeof zysCircFromSupply === "number" && Number.isFinite(zysCircFromSupply)
+        ? zysCircFromSupply
+        : atomsToNumberFromString(reserveInfo.result.num_zyield);
+
+    if (!Number.isFinite(currentBlockHeight) || currentBlockHeight <= 0) {
+      console.log(`calculateLiveStats: Invalid currentBlockHeight ${currentBlockHeight}`);
+      return null;
+    }
+
     const currentBlockProtocolStatsData = await redis.hget("protocol_stats", currentBlockHeight.toString());
     const currentBlockProtocolStats: ProtocolStats | null = currentBlockProtocolStatsData
       ? JSON.parse(currentBlockProtocolStatsData)
       : null;
 
-    const onedayagoBlockProtocolStatsData = await redis.hget("protocol_stats", (currentBlockHeight - 720).toString());
+    const oneDayHeight = currentBlockHeight - 720;
+    const onedayagoBlockProtocolStatsData =
+      oneDayHeight > 0 ? await redis.hget("protocol_stats", oneDayHeight.toString()) : null;
     const onedayagoBlockProtocolStats: ProtocolStats | null = onedayagoBlockProtocolStatsData
       ? JSON.parse(onedayagoBlockProtocolStatsData)
       : null;
 
     if (!onedayagoBlockProtocolStats || !currentBlockProtocolStats) {
       console.log(
-        `getLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${currentBlockHeight} & ${
-          currentBlockHeight - 720
-        }`
+        `calculateLiveStats: No currentBlockProtocolStats or onedayagoBlockProtocolStats found for blocks: ${currentBlockHeight} & ${oneDayHeight}`
       );
-      return;
+      return null;
     }
 
-    // DEBUG print out the current and previous block protocol stats
-    // console.log(`getLiveStats: currentBlockProtocolStats:`, currentBlockProtocolStats);
-    // console.log(`getLiveStats: onedayagoBlockProtocolStats:`, onedayagoBlockProtocolStats);
+    const zephCircFromStats = currentBlockProtocolStats.zeph_circ;
 
-    const zeph_circ_from_explorer = (await getCirculatingSuppliesFromExplorer()).zeph_circ; // Source of "Truth"
-    const zeph_circ_currentBlockProtocolStatus = currentBlockProtocolStats.zeph_circ; // Fallback
-
-    // warn if explorer and currentBlockProtocolStats differ by more than 1000
-    if (Math.abs(zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus) > 1000) {
+    if (
+      typeof zephCircFromSupply === "number" &&
+      Number.isFinite(zephCircFromSupply) &&
+      Math.abs(zephCircFromSupply - zephCircFromStats) > 1000
+    ) {
       console.warn(
-        `getLiveStats: Zeph circulating supply from explorer (${zeph_circ_from_explorer}) does not match currentBlockProtocolStats (${zeph_circ_currentBlockProtocolStatus}) significantly || difference: ${Math.abs(
-          zeph_circ_from_explorer - zeph_circ_currentBlockProtocolStatus
+        `calculateLiveStats: Zeph circulating supply from daemon tally (${zephCircFromSupply}) differs from protocol stats (${zephCircFromStats}) by ${Math.abs(
+          zephCircFromSupply - zephCircFromStats
         )}`
       );
     }
-    const zeph_circ = zeph_circ_from_explorer || zeph_circ_currentBlockProtocolStatus; // Use explorer data if available, otherwise fallback to currentBlockProtocolStats
 
-    // We don't use the accurate current circulating supply from the explorer api to comapre to as there may be an issue with the aggregated data
+    let zeph_circ =
+      typeof zephCircFromSupply === "number" && Number.isFinite(zephCircFromSupply)
+        ? zephCircFromSupply
+        : Number.NaN;
+
+    if (!Number.isFinite(zeph_circ)) {
+      const reserveHeight = reserveInfo.result.height;
+      const zephCircFromDaemon =
+        typeof reserveHeight === "number" ? await getZephCircFromDaemon(reserveHeight) : null;
+      if (typeof zephCircFromDaemon === "number" && Number.isFinite(zephCircFromDaemon)) {
+        zeph_circ = zephCircFromDaemon;
+      }
+    }
+
+    if (!Number.isFinite(zeph_circ)) {
+      zeph_circ = zephCircFromStats;
+    }
+
     const zeph_circ_daily_change = currentBlockProtocolStats.zeph_circ - onedayagoBlockProtocolStats.zeph_circ;
     const zsd_circ_daily_change = currentBlockProtocolStats.zephusd_circ - onedayagoBlockProtocolStats.zephusd_circ;
     const zrs_circ_daily_change = currentBlockProtocolStats.zephrsv_circ - onedayagoBlockProtocolStats.zephrsv_circ;
     const zys_circ_daily_change = currentBlockProtocolStats.zyield_circ - onedayagoBlockProtocolStats.zyield_circ;
 
     if (zeph_circ_daily_change < 0) {
-      console.log(`getLiveStats: zeph_circ_daily_change is negative: ${zeph_circ_daily_change}`);
+      console.log(`calculateLiveStats: zeph_circ_daily_change is negative: ${zeph_circ_daily_change}`);
     }
 
-    const zeph_in_reserve = Number(reserveInfo.result.zeph_reserve) * DEATOMIZE;
+    const zeph_in_reserve =
+      typeof zephReserveFromSupply === "number" && Number.isFinite(zephReserveFromSupply)
+        ? zephReserveFromSupply
+        : atomsToNumberFromString(reserveInfo.result.zeph_reserve);
     const zeph_in_reserve_value = zeph_in_reserve * zeph_price;
 
-    const zsd_in_yield_reserve = Number(reserveInfo.result.zyield_reserve) * DEATOMIZE;
+    const zsd_in_yield_reserve =
+      typeof zsdYieldReserveFromSupply === "number" && Number.isFinite(zsdYieldReserveFromSupply)
+        ? zsdYieldReserveFromSupply
+        : atomsToNumberFromString(reserveInfo.result.zyield_reserve);
     const reserve_ratio_value_raw = reserveInfo.result.reserve_ratio ?? latestStats?.reserve_ratio ?? 0;
     const reserve_ratio_value = Number(reserve_ratio_value_raw);
 
@@ -1168,8 +1498,8 @@ export async function getLiveStats() {
       ? reserve_ratio_ma_value
       : null;
 
-    const zeph_in_reserve_percent = zeph_in_reserve / zeph_circ;
-    const zsd_in_yield_reserve_percent = zsd_in_yield_reserve / zsd_circ;
+    const zeph_in_reserve_percent = zeph_circ > 0 ? zeph_in_reserve / zeph_circ : 0;
+    const zsd_in_yield_reserve_percent = zsd_circ > 0 ? zsd_in_yield_reserve / zsd_circ : 0;
 
     let zysCurrentVariableApy: number | null = null;
 
@@ -1184,11 +1514,11 @@ export async function getLiveStats() {
           zysCurrentVariableApy = Number(simpleReturn.toFixed(4));
         }
       } catch (error) {
-        console.warn("getLiveStats: Unable to parse projected returns for current variable APY", error);
+        console.warn("calculateLiveStats: Unable to parse projected returns for current variable APY", error);
       }
     }
 
-    const liveStats = {
+    const liveStats: LiveStats = {
       zeph_price,
       zsd_rate,
       zsd_price,
@@ -1213,26 +1543,33 @@ export async function getLiveStats() {
       reserve_ratio_ma,
     };
 
-    // save all these to redis to be called back in case of daemon/explorer api failure
-    await redis.set("live_stats", JSON.stringify(liveStats));
-
     return liveStats;
   } catch (error) {
-    console.error("Error fetching live stats:", error);
-    console.log(`getLiveStats: Error fetching live stats - using redis data instead`);
-
-    // Fetch from Redis as a fallback
-    const liveStatsString = await redis.get("live_stats");
-    const liveStats = liveStatsString ? JSON.parse(liveStatsString) : null;
-
-    // Handle case when Redis might return null or empty object
-    if (!liveStats || Object.keys(liveStats).length === 0) {
-      console.error("Failed to retrieve live stats from both API and Redis.");
-      return;
-    }
-
-    return liveStats;
+    console.error("calculateLiveStats: Error building live stats", error);
+    return null;
   }
+}
+
+export async function refreshLiveStatsCache(): Promise<LiveStats | null> {
+  const liveStats = await calculateLiveStats();
+  if (!liveStats) {
+    return null;
+  }
+  await redis.set(LIVE_STATS_REDIS_KEY, JSON.stringify(liveStats));
+  return liveStats;
+}
+
+export async function getLiveStats(): Promise<LiveStats | null> {
+  const cached = await redis.get(LIVE_STATS_REDIS_KEY);
+  if (cached) {
+    try {
+      return JSON.parse(cached) as LiveStats;
+    } catch (error) {
+      console.warn("getLiveStats: Unable to parse cached live stats, rebuilding cache", error);
+    }
+  }
+
+  return refreshLiveStatsCache();
 }
 
 // Example usage

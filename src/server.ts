@@ -10,6 +10,7 @@ import {
   getBlockProtocolStatsFromRedis,
   getLiveStats,
   getReserveDiffs,
+  getTransactionsFromRedis,
 } from "./utils";
 import {
   determineAPYHistory,
@@ -176,10 +177,170 @@ export function createApp() {
     }
   });
 
+  app.get("/txs", async (req: Request, res: Response) => {
+    console.log(`zephyrdscanner /txs called`);
+
+    const getFirstQueryValue = (value: unknown): string | undefined => {
+      if (Array.isArray(value)) {
+        return typeof value[0] === "string" ? value[0] : undefined;
+      }
+      return typeof value === "string" ? value : undefined;
+    };
+
+    const parseTimestamp = (label: string, raw?: string): number | undefined => {
+      if (raw == null || raw.trim() === "") {
+        return undefined;
+      }
+      const numeric = Number(raw);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+      const parsed = Date.parse(raw);
+      if (!Number.isNaN(parsed)) {
+        return Math.floor(parsed / 1000);
+      }
+      throw new Error(`Invalid ${label} timestamp '${raw}'. Provide a UNIX seconds value or ISO-8601 string.`);
+    };
+
+    const parseNonNegativeInt = (label: string, raw?: string): number | undefined => {
+      if (raw == null || raw.trim() === "") {
+        return undefined;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+        throw new Error(`${label} must be an integer greater than or equal to 0.`);
+      }
+      return value;
+    };
+
+    const parsePositiveInt = (label: string, raw?: string, options?: { min?: number; max?: number }): number | undefined => {
+      if (raw == null || raw.trim() === "") {
+        return undefined;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value) || !Number.isInteger(value)) {
+        throw new Error(`${label} must be an integer value.`);
+      }
+      if (options?.min != null && value < options.min) {
+        throw new Error(`${label} must be >= ${options.min}.`);
+      }
+      if (options?.max != null && value > options.max) {
+        throw new Error(`${label} must be <= ${options.max}.`);
+      }
+      return value;
+    };
+
+    const parseLimitParam = (raw?: string): number | null | undefined => {
+      if (raw == null || raw.trim() === "") {
+        return undefined;
+      }
+      const normalized = raw.trim().toLowerCase();
+      if (normalized === "all") {
+        return null;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value) || !Number.isInteger(value)) {
+        throw new Error("limit must be a non-negative integer or 'all'.");
+      }
+      if (value < 0) {
+        throw new Error("limit must be >= 0.");
+      }
+      if (value === 0) {
+        return null;
+      }
+      return value;
+    };
+
+    try {
+      const fromParam = getFirstQueryValue(req.query.from);
+      const toParam = getFirstQueryValue(req.query.to);
+      const typesParam = getFirstQueryValue(req.query.types);
+      const limitParam = getFirstQueryValue(req.query.limit);
+      const offsetParam = getFirstQueryValue(req.query.offset);
+      const orderParam = getFirstQueryValue(req.query.order);
+      const pageParam = getFirstQueryValue(req.query.page);
+      const pageSizeParam = getFirstQueryValue(req.query.pageSize);
+
+      const fromTimestamp = parseTimestamp("from", fromParam);
+      const toTimestamp = parseTimestamp("to", toParam);
+      const limitParsed = parseLimitParam(limitParam);
+      const offsetParsed = parseNonNegativeInt("offset", offsetParam) ?? 0;
+      const pageParsed = parsePositiveInt("page", pageParam, { min: 1 });
+      const pageSizeParsed = parsePositiveInt("pageSize", pageSizeParam, { min: 1 });
+      const order = orderParam === "asc" ? "asc" : orderParam === "desc" || orderParam == null ? "desc" : null;
+      if (!order) {
+        throw new Error("order must be either 'asc' or 'desc'.");
+      }
+
+      const types =
+        typesParam && typesParam.trim() !== ""
+          ? typesParam.split(",").map((value) => value.trim()).filter((value) => value.length > 0)
+          : undefined;
+
+      let effectiveLimit: number | null;
+      if (limitParsed === undefined) {
+        effectiveLimit = pageSizeParsed ?? 100;
+      } else {
+        effectiveLimit = limitParsed;
+      }
+
+      let effectiveOffset = offsetParsed;
+
+      if (pageParsed != null) {
+        const pageSize = pageSizeParsed ?? (effectiveLimit === null ? 100 : effectiveLimit);
+        effectiveLimit = pageSize;
+        effectiveOffset = (pageParsed - 1) * pageSize;
+      }
+
+      if (effectiveLimit === null) {
+        effectiveOffset = 0;
+      }
+
+      const result = await getTransactionsFromRedis({
+        fromTimestamp,
+        toTimestamp,
+        types,
+        limit: effectiveLimit === null ? undefined : effectiveLimit,
+        offset: effectiveOffset,
+        order,
+      });
+
+      const responseBody = {
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+        order: result.order,
+        next_offset:
+          result.limit != null && result.offset + result.limit < result.total
+            ? result.offset + result.limit
+            : null,
+        prev_offset:
+          result.limit != null && result.offset > 0
+            ? Math.max(0, result.offset - result.limit)
+            : null,
+        results: result.results,
+      };
+
+      res.status(200).json(responseBody);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid request";
+      if (message.startsWith("Invalid") || message.includes("must be")) {
+        res.status(400).json({ error: message });
+      } else {
+        console.error("/txs - Error retrieving transactions:", error);
+        res.status(500).send("Internal server error");
+      }
+    }
+  });
+
   app.get("/livestats", async (req: Request, res: Response) => {
     console.log(`zephyrdscanner /livestats called from ${getClientIp(req)}`);
     try {
       const result = await getLiveStats();
+      if (!result) {
+        res.status(503).json({ error: "Live stats unavailable" });
+        return;
+      }
       res.status(200).json(result);
     } catch (error) {
       console.error("Error retrieving live stats:", error);

@@ -528,7 +528,7 @@ export function logScannerHealth(
         diff: formatNumber(diff, decimals),
       });
     }
-    rows.push({ metric: "----", aggregator: "-", on_chain: "-", diff: "-" });
+    rows.push({ metric: "----", scanner: "-", on_chain: "-", diff: "-" });
   }
 
   if (stats) {
