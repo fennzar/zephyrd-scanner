@@ -217,6 +217,73 @@ Returns projected yield returns. Optional `?test=true` serves dummy data.
 curl "http://157.245.130.75:4000/projectedreturns"
 ```
 
+### Route: `/blockrewards`
+
+**Description**: Returns per-block reward breakdowns (miner, governance, reserve, yield) stored by the scanner.
+
+**Params**:
+
+- **from** / **to** (optional): Height range to include.
+- **limit** (optional): Maximum rows to return (default `all` in range). Use `limit=all` to disable.
+- **order** (optional): `asc` (default) or `desc`.
+
+**Examples**:
+
+```sh
+# Latest 20 reward records
+curl "http://157.245.130.75:4000/blockrewards?order=desc&limit=20" | jq
+```
+
+```sh
+# Rewards around height 500000
+curl "http://157.245.130.75:4000/blockrewards?from=499990&to=500010" | jq
+```
+
+### Route: `/pricingrecords`
+
+**Description**: Returns cached pricing records (spot, reserve ratios, yield price) keyed by block height.
+
+**Params**:
+
+- **from** / **to** (optional): Height range to include.
+- **limit** (optional): Maximum rows to return (default `all` in range). Use `limit=all` to disable.
+- **order** (optional): `asc` (default) or `desc`.
+
+**Examples**:
+
+```sh
+# First 5 pricing records after the v2 fork
+curl "http://157.245.130.75:4000/pricingrecords?from=360000&limit=5" | jq
+```
+
+```sh
+# Most recent pricing record
+curl "http://157.245.130.75:4000/pricingrecords?order=desc&limit=1" | jq
+```
+
+### Route: `/reservesnapshots`
+
+**Description**: Returns reserve snapshots captured by the scanner (indexed by `previous_height`).
+
+**Params**:
+
+- **height** (optional): Exact `previous_height` to fetch.
+- **from** / **to** (optional): Range of `previous_height` values.
+- **limit** (optional): Maximum rows to return (default `all` in range). Use `limit=all` to disable.
+- **order** (optional): `asc` (default) or `desc`.
+
+**Examples**:
+
+```sh
+# Specific snapshot by previous height
+curl "http://157.245.130.75:4000/reservesnapshots?height=520000" | jq
+```
+
+```sh
+# Latest 3 reserve snapshots
+curl "http://157.245.130.75:4000/reservesnapshots?order=desc&limit=3" | jq
+```
+
 ### Route: `/txs`
 
 **Description**: Returns cached conversion transactions stored by the scanner. Supports pagination, timestamp windows, and filtering by conversion type.
@@ -226,7 +293,7 @@ curl "http://157.245.130.75:4000/projectedreturns"
 - **from** (optional): Lower bound for `block_timestamp`. Accepts UNIX seconds or ISO-8601 date strings.
 - **to** (optional): Upper bound for `block_timestamp`. Accepts UNIX seconds or ISO-8601 date strings.
 - **types** (optional): Comma separated list of conversion types to include (e.g. `mint_stable,redeem_stable,mint_reserve`).
-- **limit** (optional): Maximum number of rows to return (default `100`). Use `limit=all` or `limit=0` to retrieve the full result set.
+- **limit** (optional): Maximum number of rows to return (default `1000`). Use `limit=all` or `limit=0` to retrieve the full result set.
 - **offset** (optional): Number of rows to skip before returning results (default `0`). Useful for sequential pagination (e.g. page two = `offset=20&limit=20`).
 - **page** and **pageSize** (optional): Alternative pagination controls. `page` is 1-based and uses `pageSize` (or the current `limit`) for sizing.
 - **order** (optional): Sort direction by timestamp (`asc` or `desc`, default `desc`).
@@ -251,6 +318,11 @@ curl "http://157.245.130.75:4000/txs?types=mint_yield&limit=all" | jq
 ```sh
 # Page through the latest results (page 1 of 20-row slices)
 curl "http://157.245.130.75:4000/txs?page=1&pageSize=20" | jq
+```
+
+```sh
+# Grab all transactions in a single response (may be large)
+curl "http://157.245.130.75:4000/txs" | jq
 ```
 
 **Paginated response fields**:

@@ -11,6 +11,9 @@ import {
   getLiveStats,
   getReserveDiffs,
   getTransactionsFromRedis,
+  getBlockRewardsFromRedis,
+  getPricingRecordsFromRedis,
+  getReserveSnapshotsFromRedis,
 } from "./utils";
 import {
   determineAPYHistory,
@@ -279,7 +282,7 @@ export function createApp() {
 
       let effectiveLimit: number | null;
       if (limitParsed === undefined) {
-        effectiveLimit = pageSizeParsed ?? 100;
+        effectiveLimit = pageSizeParsed ?? 1000;
       } else {
         effectiveLimit = limitParsed;
       }
@@ -287,7 +290,7 @@ export function createApp() {
       let effectiveOffset = offsetParsed;
 
       if (pageParsed != null) {
-        const pageSize = pageSizeParsed ?? (effectiveLimit === null ? 100 : effectiveLimit);
+        const pageSize = pageSizeParsed ?? (effectiveLimit === null ? 1000 : effectiveLimit);
         effectiveLimit = pageSize;
         effectiveOffset = (pageParsed - 1) * pageSize;
       }
@@ -328,6 +331,180 @@ export function createApp() {
         res.status(400).json({ error: message });
       } else {
         console.error("/txs - Error retrieving transactions:", error);
+        res.status(500).send("Internal server error");
+      }
+    }
+  });
+
+  function parseHeightParam(label: string, raw?: string): number | undefined {
+    if (!raw || raw.trim() === "") {
+      return undefined;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+      throw new Error(`${label} must be a non-negative integer height.`);
+    }
+    return value;
+  }
+
+  function parseLimitParam(raw?: string): number | null | undefined {
+    if (!raw || raw.trim() === "") {
+      return undefined;
+    }
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "all" || normalized === "0") {
+      return null;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+      throw new Error("limit must be a positive integer or 'all'.");
+    }
+    return value;
+  }
+
+  function parseOrderParam(raw?: string, defaultOrder: "asc" | "desc" = "asc"): "asc" | "desc" {
+    if (!raw || raw.trim() === "") {
+      return defaultOrder;
+    }
+    if (raw === "asc" || raw === "desc") {
+      return raw;
+    }
+    throw new Error("order must be either 'asc' or 'desc'.");
+  }
+
+  app.get("/blockrewards", async (req: Request, res: Response) => {
+    console.log(`zephyrdscanner /blockrewards called`);
+
+    const getFirstQueryValue = (value: unknown): string | undefined => {
+      if (Array.isArray(value)) {
+        return typeof value[0] === "string" ? value[0] : undefined;
+      }
+      return typeof value === "string" ? value : undefined;
+    };
+
+    try {
+      const fromParam = getFirstQueryValue(req.query.from);
+      const toParam = getFirstQueryValue(req.query.to);
+      const limitParam = getFirstQueryValue(req.query.limit);
+      const orderParam = getFirstQueryValue(req.query.order);
+
+      const fromHeight = parseHeightParam("from", fromParam);
+      const toHeight = parseHeightParam("to", toParam);
+      const limitParsed = parseLimitParam(limitParam);
+      const order = parseOrderParam(orderParam, "asc");
+
+      const result = await getBlockRewardsFromRedis({
+        fromHeight,
+        toHeight,
+        limit: limitParsed === null ? undefined : limitParsed,
+        order,
+      });
+
+      res.status(200).json({
+        total: result.total,
+        limit: result.limit,
+        order: result.order,
+        results: result.results,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid request";
+      if (message.includes("height") || message.includes("limit") || message.includes("order")) {
+        res.status(400).json({ error: message });
+      } else {
+        console.error("/blockrewards - Error retrieving block rewards:", error);
+        res.status(500).send("Internal server error");
+      }
+    }
+  });
+
+  app.get("/pricingrecords", async (req: Request, res: Response) => {
+    console.log(`zephyrdscanner /pricingrecords called`);
+
+    const getFirstQueryValue = (value: unknown): string | undefined => {
+      if (Array.isArray(value)) {
+        return typeof value[0] === "string" ? value[0] : undefined;
+      }
+      return typeof value === "string" ? value : undefined;
+    };
+
+    try {
+      const fromParam = getFirstQueryValue(req.query.from);
+      const toParam = getFirstQueryValue(req.query.to);
+      const limitParam = getFirstQueryValue(req.query.limit);
+      const orderParam = getFirstQueryValue(req.query.order);
+
+      const fromHeight = parseHeightParam("from", fromParam);
+      const toHeight = parseHeightParam("to", toParam);
+      const limitParsed = parseLimitParam(limitParam);
+      const order = parseOrderParam(orderParam, "asc");
+
+      const result = await getPricingRecordsFromRedis({
+        fromHeight,
+        toHeight,
+        limit: limitParsed === null ? undefined : limitParsed,
+        order,
+      });
+
+      res.status(200).json({
+        total: result.total,
+        limit: result.limit,
+        order: result.order,
+        results: result.results,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid request";
+      if (message.includes("height") || message.includes("limit") || message.includes("order")) {
+        res.status(400).json({ error: message });
+      } else {
+        console.error("/pricingrecords - Error retrieving pricing records:", error);
+        res.status(500).send("Internal server error");
+      }
+    }
+  });
+
+  app.get("/reservesnapshots", async (req: Request, res: Response) => {
+    console.log(`zephyrdscanner /reservesnapshots called`);
+
+    const getFirstQueryValue = (value: unknown): string | undefined => {
+      if (Array.isArray(value)) {
+        return typeof value[0] === "string" ? value[0] : undefined;
+      }
+      return typeof value === "string" ? value : undefined;
+    };
+
+    try {
+      const heightParam = getFirstQueryValue(req.query.height);
+      const fromParam = getFirstQueryValue(req.query.from);
+      const toParam = getFirstQueryValue(req.query.to);
+      const limitParam = getFirstQueryValue(req.query.limit);
+      const orderParam = getFirstQueryValue(req.query.order);
+
+      const previousHeight = parseHeightParam("height", heightParam);
+      const fromPreviousHeight = parseHeightParam("from", fromParam);
+      const toPreviousHeight = parseHeightParam("to", toParam);
+      const limitParsed = parseLimitParam(limitParam);
+      const order = parseOrderParam(orderParam, "asc");
+
+      const result = await getReserveSnapshotsFromRedis({
+        previousHeight,
+        fromPreviousHeight,
+        toPreviousHeight,
+        limit: limitParsed === null ? undefined : limitParsed,
+        order,
+      });
+
+      res.status(200).json({
+        total: result.total,
+        limit: result.limit,
+        order: result.order,
+        results: result.results,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid request";
+      if (message.includes("height") || message.includes("limit") || message.includes("order")) {
+        res.status(400).json({ error: message });
+      } else {
+        console.error("/reservesnapshots - Error retrieving reserve snapshots:", error);
         res.status(500).send("Internal server error");
       }
     }

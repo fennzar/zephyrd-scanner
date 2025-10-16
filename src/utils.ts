@@ -1001,12 +1001,321 @@ export async function getRedisBlockRewardInfo(height: number) {
   return JSON.parse(bri);
 }
 
+export interface PricingRecord {
+  height: number;
+  timestamp?: number;
+  spot?: number;
+  moving_average?: number;
+  reserve?: number;
+  reserve_ma?: number;
+  stable?: number;
+  stable_ma?: number;
+  yield_price?: number;
+}
+
+function sanitizePricingRecord(raw: unknown): PricingRecord | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const record = raw as Record<string, unknown>;
+  const height = Number(record.height ?? record.block_height);
+  if (!Number.isFinite(height)) {
+    return null;
+  }
+
+  const toNumber = (value: unknown): number | undefined => {
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : undefined;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
+  };
+
+  return {
+    height,
+    timestamp: toNumber(record.timestamp),
+    spot: toNumber(record.spot),
+    moving_average: toNumber(record.moving_average),
+    reserve: toNumber(record.reserve),
+    reserve_ma: toNumber(record.reserve_ma),
+    stable: toNumber(record.stable),
+    stable_ma: toNumber(record.stable_ma),
+    yield_price: toNumber(record.yield_price),
+  };
+}
+
+export interface PricingRecordQueryOptions {
+  fromHeight?: number;
+  toHeight?: number;
+  limit?: number;
+  order?: "asc" | "desc";
+}
+
+export interface PricingRecordQueryResult {
+  total: number;
+  results: PricingRecord[];
+  limit: number | null;
+  order: "asc" | "desc";
+}
+
+export async function getPricingRecordsFromRedis(
+  options: PricingRecordQueryOptions = {}
+): Promise<PricingRecordQueryResult> {
+  const { fromHeight, toHeight, limit, order = "asc" } = options;
+
+  const entries = await redis.hgetall("pricing_records");
+  const records: PricingRecord[] = [];
+
+  for (const [heightStr, value] of Object.entries(entries)) {
+    const parsedHeight = Number(heightStr);
+    if (!Number.isFinite(parsedHeight)) {
+      continue;
+    }
+    try {
+      const parsedValue = JSON.parse(value);
+      const record = sanitizePricingRecord(parsedValue);
+      if (record) {
+        records.push(record);
+      }
+    } catch (error) {
+      console.warn("getPricingRecordsFromRedis: Unable to parse pricing record", error);
+    }
+  }
+
+  const filtered = records.filter((record) => {
+    if (fromHeight != null && record.height < fromHeight) {
+      return false;
+    }
+    if (toHeight != null && record.height > toHeight) {
+      return false;
+    }
+    return true;
+  });
+
+  filtered.sort((a, b) => (order === "asc" ? a.height - b.height : b.height - a.height));
+
+  const total = filtered.length;
+  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const sliceEnd = resolvedLimit != null ? Math.min(resolvedLimit, filtered.length) : filtered.length;
+
+  return {
+    total,
+    results: filtered.slice(0, sliceEnd),
+    limit: resolvedLimit ?? null,
+    order,
+  };
+}
+
+export interface BlockRewardRecord {
+  height: number;
+  miner_reward: number;
+  governance_reward: number;
+  reserve_reward: number;
+  yield_reward: number;
+  miner_reward_atoms?: string;
+  governance_reward_atoms?: string;
+  reserve_reward_atoms?: string;
+  yield_reward_atoms?: string;
+  base_reward_atoms?: string;
+  fee_adjustment_atoms?: string;
+}
+
+function sanitizeBlockRewardRecord(raw: unknown): BlockRewardRecord | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const record = raw as Record<string, unknown>;
+  const height = Number(record.height);
+  if (!Number.isFinite(height)) {
+    return null;
+  }
+
+  const toNumber = (value: unknown): number | null => {
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  };
+
+  const minerReward = toNumber(record.miner_reward);
+  const governanceReward = toNumber(record.governance_reward);
+  const reserveReward = toNumber(record.reserve_reward);
+  const yieldReward = toNumber(record.yield_reward);
+
+  return {
+    height,
+    miner_reward: minerReward ?? 0,
+    governance_reward: governanceReward ?? 0,
+    reserve_reward: reserveReward ?? 0,
+    yield_reward: yieldReward ?? 0,
+    miner_reward_atoms: typeof record.miner_reward_atoms === "string" ? record.miner_reward_atoms : undefined,
+    governance_reward_atoms:
+      typeof record.governance_reward_atoms === "string" ? record.governance_reward_atoms : undefined,
+    reserve_reward_atoms:
+      typeof record.reserve_reward_atoms === "string" ? record.reserve_reward_atoms : undefined,
+    yield_reward_atoms: typeof record.yield_reward_atoms === "string" ? record.yield_reward_atoms : undefined,
+    base_reward_atoms: typeof record.base_reward_atoms === "string" ? record.base_reward_atoms : undefined,
+    fee_adjustment_atoms:
+      typeof record.fee_adjustment_atoms === "string" ? record.fee_adjustment_atoms : undefined,
+  };
+}
+
+export interface BlockRewardQueryOptions {
+  fromHeight?: number;
+  toHeight?: number;
+  limit?: number;
+  order?: "asc" | "desc";
+}
+
+export interface BlockRewardQueryResult {
+  total: number;
+  results: BlockRewardRecord[];
+  limit: number | null;
+  order: "asc" | "desc";
+}
+
+export async function getBlockRewardsFromRedis(
+  options: BlockRewardQueryOptions = {}
+): Promise<BlockRewardQueryResult> {
+  const {
+    fromHeight,
+    toHeight,
+    limit,
+    order = "asc",
+  } = options;
+
+  const entries = await redis.hgetall("block_rewards");
+  const records: BlockRewardRecord[] = [];
+
+  for (const [heightStr, value] of Object.entries(entries)) {
+    const parsedHeight = Number(heightStr);
+    if (!Number.isFinite(parsedHeight)) {
+      continue;
+    }
+    try {
+      const parsedValue = JSON.parse(value);
+      const record = sanitizeBlockRewardRecord(parsedValue);
+      if (record) {
+        records.push(record);
+      }
+    } catch (error) {
+      console.warn("getBlockRewardsFromRedis: Unable to parse block reward record", error);
+    }
+  }
+
+  const filtered = records.filter((record) => {
+    if (fromHeight != null && record.height < fromHeight) {
+      return false;
+    }
+    if (toHeight != null && record.height > toHeight) {
+      return false;
+    }
+    return true;
+  });
+
+  filtered.sort((a, b) => (order === "asc" ? a.height - b.height : b.height - a.height));
+
+  const total = filtered.length;
+  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const sliceEnd = resolvedLimit != null ? Math.min(resolvedLimit, filtered.length) : filtered.length;
+
+  return {
+    total,
+    results: filtered.slice(0, sliceEnd),
+    limit: resolvedLimit ?? null,
+    order,
+  };
+}
+
 export async function getRedisTransaction(hash: string) {
   const txs = await redis.hget("txs", hash);
   if (!txs) {
     return null;
   }
   return JSON.parse(txs);
+}
+
+export interface ReserveSnapshotQueryOptions {
+  previousHeight?: number;
+  fromPreviousHeight?: number;
+  toPreviousHeight?: number;
+  limit?: number;
+  order?: "asc" | "desc";
+}
+
+export interface ReserveSnapshotQueryResult {
+  total: number;
+  results: ReserveSnapshot[];
+  limit: number | null;
+  order: "asc" | "desc";
+}
+
+export async function getReserveSnapshotsFromRedis(
+  options: ReserveSnapshotQueryOptions = {}
+): Promise<ReserveSnapshotQueryResult> {
+  const {
+    previousHeight,
+    fromPreviousHeight,
+    toPreviousHeight,
+    limit,
+    order = "asc",
+  } = options;
+
+  const entries = await redis.hgetall(RESERVE_SNAPSHOT_REDIS_KEY);
+  const records: ReserveSnapshot[] = [];
+
+  for (const [key, value] of Object.entries(entries)) {
+    const parsedPreviousHeight = Number(key);
+    if (!Number.isFinite(parsedPreviousHeight)) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(value) as ReserveSnapshot;
+      if (Number(parsed.previous_height) !== parsedPreviousHeight) {
+        parsed.previous_height = parsedPreviousHeight;
+      }
+      records.push(parsed);
+    } catch (error) {
+      console.warn("getReserveSnapshotsFromRedis: Unable to parse snapshot", error);
+    }
+  }
+
+  const filtered = records.filter((snapshot) => {
+    if (previousHeight != null && snapshot.previous_height !== previousHeight) {
+      return false;
+    }
+    if (fromPreviousHeight != null && snapshot.previous_height < fromPreviousHeight) {
+      return false;
+    }
+    if (toPreviousHeight != null && snapshot.previous_height > toPreviousHeight) {
+      return false;
+    }
+    return true;
+  });
+
+  filtered.sort((a, b) =>
+    order === "asc" ? a.previous_height - b.previous_height : b.previous_height - a.previous_height
+  );
+
+  const total = filtered.length;
+  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const sliceEnd = resolvedLimit != null ? Math.min(resolvedLimit, filtered.length) : filtered.length;
+
+  return {
+    total,
+    results: filtered.slice(0, sliceEnd),
+    limit: resolvedLimit ?? null,
+    order,
+  };
 }
 
 interface CoinbaseTxSumResponse {
