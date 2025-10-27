@@ -1473,6 +1473,7 @@ export interface TransactionQueryOptions {
   limit?: number;
   offset?: number;
   order?: "asc" | "desc";
+  fromIndex?: number;
 }
 
 export interface TransactionQueryResult {
@@ -1540,6 +1541,7 @@ export async function getTransactionsFromRedis(options: TransactionQueryOptions 
     limit,
     offset = 0,
     order = "desc",
+    fromIndex,
   } = options;
 
   const rawValues = await redis.hvals("txs");
@@ -1575,28 +1577,40 @@ export async function getTransactionsFromRedis(options: TransactionQueryOptions 
     return true;
   });
 
-  filtered.sort((a, b) => {
+  const compareAscending = (a: TransactionRecord, b: TransactionRecord): number => {
     const timestampDelta = a.block_timestamp - b.block_timestamp;
     if (timestampDelta !== 0) {
-      return order === "asc" ? timestampDelta : -timestampDelta;
+      return timestampDelta;
     }
     const heightDelta = a.block_height - b.block_height;
     if (heightDelta !== 0) {
-      return order === "asc" ? heightDelta : -heightDelta;
+      return heightDelta;
     }
-    return order === "asc" ? a.hash.localeCompare(b.hash) : b.hash.localeCompare(a.hash);
-  });
+    return a.hash.localeCompare(b.hash);
+  };
 
-  const total = filtered.length;
   const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
   const resolvedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
-  const sliceStart = Math.min(resolvedOffset, filtered.length);
-  const sliceEnd =
-    resolvedLimit != null ? Math.min(sliceStart + resolvedLimit, filtered.length) : filtered.length;
+
+  let ordered: TransactionRecord[];
+
+  if (fromIndex != null && Number.isFinite(fromIndex) && fromIndex > 0) {
+    const ascRecords = filtered.slice().sort(compareAscending);
+    const startIndex = Math.min(Math.floor(fromIndex), ascRecords.length);
+    const trimmedAsc = ascRecords.slice(startIndex);
+    ordered = order === "asc" ? trimmedAsc : trimmedAsc.slice().reverse();
+  } else {
+    const base = filtered.slice().sort(compareAscending);
+    ordered = order === "asc" ? base : base.reverse();
+  }
+
+  const total = ordered.length;
+  const sliceStart = Math.min(resolvedOffset, total);
+  const sliceEnd = resolvedLimit != null ? Math.min(sliceStart + resolvedLimit, total) : total;
 
   return {
     total,
-    results: filtered.slice(sliceStart, sliceEnd),
+    results: ordered.slice(sliceStart, sliceEnd),
     limit: resolvedLimit ?? null,
     offset: sliceStart,
     order,

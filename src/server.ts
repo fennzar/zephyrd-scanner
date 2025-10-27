@@ -255,16 +255,30 @@ export function createApp() {
     };
 
     try {
-      const fromParam = getFirstQueryValue(req.query.from);
-      const toParam = getFirstQueryValue(req.query.to);
-      const typesParam = getFirstQueryValue(req.query.types);
-      const limitParam = getFirstQueryValue(req.query.limit);
-      const offsetParam = getFirstQueryValue(req.query.offset);
-      const orderParam = getFirstQueryValue(req.query.order);
-      const pageParam = getFirstQueryValue(req.query.page);
-      const pageSizeParam = getFirstQueryValue(req.query.pageSize);
+      const query = req.query as Record<string, unknown>;
+      const fromParam = getFirstQueryValue(query["from"]);
+      const toParam = getFirstQueryValue(query["to"]);
+      const typesParam = getFirstQueryValue(query["types"]);
+      const limitParam = getFirstQueryValue(query["limit"]);
+      const offsetParam = getFirstQueryValue(query["offset"]);
+      const orderParam = getFirstQueryValue(query["order"]);
+      const pageParam = getFirstQueryValue(query["page"]);
+      const pageSizeParam = getFirstQueryValue(query["pageSize"]);
+      const rawFromIndexParam =
+        getFirstQueryValue(query["from_index"]) ?? getFirstQueryValue(query["fromIndex"]);
 
-      const fromTimestamp = parseTimestamp("from", fromParam);
+      let fromIndexParsed = parseNonNegativeInt("from_index", rawFromIndexParam);
+      let fromTimestampSource = fromParam;
+
+      if (fromTimestampSource) {
+        const indexAliasMatch = fromTimestampSource.match(/^(?:idx|index):(\d+)$/i);
+        if (indexAliasMatch) {
+          fromIndexParsed = parseNonNegativeInt("from_index", indexAliasMatch[1]);
+          fromTimestampSource = undefined;
+        }
+      }
+
+      const fromTimestamp = parseTimestamp("from", fromTimestampSource);
       const toTimestamp = parseTimestamp("to", toParam);
       const limitParsed = parseLimitParam(limitParam);
       const offsetParsed = parseNonNegativeInt("offset", offsetParam) ?? 0;
@@ -306,6 +320,7 @@ export function createApp() {
         limit: effectiveLimit === null ? undefined : effectiveLimit,
         offset: effectiveOffset,
         order,
+        fromIndex: fromIndexParsed,
       });
 
       const responseBody = {

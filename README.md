@@ -291,6 +291,7 @@ curl "http://157.245.130.75:4000/reservesnapshots?order=desc&limit=3" | jq
 **Params**:
 
 - **from** (optional): Lower bound for `block_timestamp`. Accepts UNIX seconds or ISO-8601 date strings.
+- **from_index** (optional): Skip the first N results when sorted from oldest to newest. Useful for polling incremental updates (e.g. `from_index=26963`). Also accepts the alias `from=idx:26963`.
 - **to** (optional): Upper bound for `block_timestamp`. Accepts UNIX seconds or ISO-8601 date strings.
 - **types** (optional): Comma separated list of conversion types to include (e.g. `mint_stable,redeem_stable,mint_reserve`).
 - **limit** (optional): Maximum number of rows to return (default `1000`). Use `limit=all` or `limit=0` to retrieve the full result set.
@@ -323,6 +324,11 @@ curl "http://157.245.130.75:4000/txs?page=1&pageSize=20" | jq
 ```sh
 # Grab all transactions in a single response (may be large)
 curl "http://157.245.130.75:4000/txs" | jq
+```
+
+```sh
+# Fetch only the transactions added after the initial 26 963 rows
+curl "http://157.245.130.75:4000/txs?from_index=26963&limit=all" | jq
 ```
 
 **Paginated response fields**:
