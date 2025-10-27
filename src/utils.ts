@@ -1637,6 +1637,7 @@ export interface LiveStats {
   zeph_in_reserve_percent: number;
   zsd_in_yield_reserve: number;
   zsd_in_yield_reserve_percent: number;
+  zsd_accrued_in_yield_reserve_from_yield_reward: number;
   zys_current_variable_apy: number | null;
   reserve_ratio: number;
   reserve_ratio_ma: number | null;
@@ -1841,6 +1842,11 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
       }
     }
 
+    const zsdAccruedFromYieldReward =
+      typeof currentBlockProtocolStats.zsd_accrued_in_yield_reserve_from_yield_reward === "number"
+        ? currentBlockProtocolStats.zsd_accrued_in_yield_reserve_from_yield_reward
+        : 0;
+
     const liveStats: LiveStats = {
       zeph_price,
       zsd_rate,
@@ -1861,6 +1867,7 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
       zeph_in_reserve_percent,
       zsd_in_yield_reserve,
       zsd_in_yield_reserve_percent,
+      zsd_accrued_in_yield_reserve_from_yield_reward: zsdAccruedFromYieldReward,
       zys_current_variable_apy: zysCurrentVariableApy,
       reserve_ratio: Number.isFinite(reserve_ratio_value) ? reserve_ratio_value : 0,
       reserve_ratio_ma,

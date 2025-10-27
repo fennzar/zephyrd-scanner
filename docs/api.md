@@ -1,6 +1,6 @@
 # Zephyrd Scanner API
 
-Generated 2025-10-27T22:27:18.909Z from TypeScript definitions.
+Generated 2025-10-27T23:57:05.253Z from TypeScript definitions.
 
 ---
 
@@ -455,6 +455,7 @@ GET /livestats response schema.
 | zeph_in_reserve_percent | number | yes |  |
 | zsd_in_yield_reserve | number | yes |  |
 | zsd_in_yield_reserve_percent | number | yes |  |
+| zsd_accrued_in_yield_reserve_from_yield_reward | number | yes |  |
 | zys_current_variable_apy | number | null | yes |  |
 | reserve_ratio | number | yes |  |
 | reserve_ratio_ma | number | null | yes |  |

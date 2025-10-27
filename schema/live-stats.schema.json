@@ -67,6 +67,9 @@
         "zsd_in_yield_reserve_percent": {
           "type": "number"
         },
+        "zsd_accrued_in_yield_reserve_from_yield_reward": {
+          "type": "number"
+        },
         "zys_current_variable_apy": {
           "type": [
             "number",
@@ -103,6 +106,7 @@
         "zeph_in_reserve_percent",
         "zsd_in_yield_reserve",
         "zsd_in_yield_reserve_percent",
+        "zsd_accrued_in_yield_reserve_from_yield_reward",
         "zys_current_variable_apy",
         "reserve_ratio",
         "reserve_ratio_ma"
