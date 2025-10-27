@@ -1,0 +1,216 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/BlockStatsResponse",
+  "definitions": {
+    "BlockStatsResponse": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/BlockStatsRow"
+      },
+      "title": "GET /stats (scale=block)",
+      "description": "GET /stats (scale=block) payload."
+    },
+    "BlockStatsRow": {
+      "type": "object",
+      "properties": {
+        "block_height": {
+          "type": "number"
+        },
+        "data": {
+          "$ref": "#/definitions/ProtocolStats"
+        }
+      },
+      "required": [
+        "block_height",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "ProtocolStats": {
+      "type": "object",
+      "properties": {
+        "block_height": {
+          "type": "number"
+        },
+        "block_timestamp": {
+          "type": "number"
+        },
+        "spot": {
+          "type": "number"
+        },
+        "moving_average": {
+          "type": "number"
+        },
+        "reserve": {
+          "type": "number"
+        },
+        "reserve_ma": {
+          "type": "number"
+        },
+        "stable": {
+          "type": "number"
+        },
+        "stable_ma": {
+          "type": "number"
+        },
+        "yield_price": {
+          "type": "number"
+        },
+        "zeph_in_reserve": {
+          "type": "number"
+        },
+        "zeph_in_reserve_atoms": {
+          "type": "string"
+        },
+        "zsd_in_yield_reserve": {
+          "type": "number"
+        },
+        "zeph_circ": {
+          "type": "number"
+        },
+        "zephusd_circ": {
+          "type": "number"
+        },
+        "zephrsv_circ": {
+          "type": "number"
+        },
+        "zyield_circ": {
+          "type": "number"
+        },
+        "assets": {
+          "type": "number"
+        },
+        "assets_ma": {
+          "type": "number"
+        },
+        "liabilities": {
+          "type": "number"
+        },
+        "equity": {
+          "type": "number"
+        },
+        "equity_ma": {
+          "type": "number"
+        },
+        "reserve_ratio": {
+          "type": "number"
+        },
+        "reserve_ratio_ma": {
+          "type": "number"
+        },
+        "zsd_accrued_in_yield_reserve_from_yield_reward": {
+          "type": "number"
+        },
+        "zsd_minted_for_yield": {
+          "type": "number"
+        },
+        "conversion_transactions_count": {
+          "type": "number"
+        },
+        "yield_conversion_transactions_count": {
+          "type": "number"
+        },
+        "mint_reserve_count": {
+          "type": "number"
+        },
+        "mint_reserve_volume": {
+          "type": "number"
+        },
+        "fees_zephrsv": {
+          "type": "number"
+        },
+        "redeem_reserve_count": {
+          "type": "number"
+        },
+        "redeem_reserve_volume": {
+          "type": "number"
+        },
+        "fees_zephusd": {
+          "type": "number"
+        },
+        "mint_stable_count": {
+          "type": "number"
+        },
+        "mint_stable_volume": {
+          "type": "number"
+        },
+        "redeem_stable_count": {
+          "type": "number"
+        },
+        "redeem_stable_volume": {
+          "type": "number"
+        },
+        "fees_zeph": {
+          "type": "number"
+        },
+        "mint_yield_count": {
+          "type": "number"
+        },
+        "mint_yield_volume": {
+          "type": "number"
+        },
+        "redeem_yield_count": {
+          "type": "number"
+        },
+        "redeem_yield_volume": {
+          "type": "number"
+        },
+        "fees_zephusd_yield": {
+          "type": "number"
+        },
+        "fees_zyield": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "block_height",
+        "block_timestamp",
+        "spot",
+        "moving_average",
+        "reserve",
+        "reserve_ma",
+        "stable",
+        "stable_ma",
+        "yield_price",
+        "zeph_in_reserve",
+        "zsd_in_yield_reserve",
+        "zeph_circ",
+        "zephusd_circ",
+        "zephrsv_circ",
+        "zyield_circ",
+        "assets",
+        "assets_ma",
+        "liabilities",
+        "equity",
+        "equity_ma",
+        "reserve_ratio",
+        "reserve_ratio_ma",
+        "zsd_accrued_in_yield_reserve_from_yield_reward",
+        "zsd_minted_for_yield",
+        "conversion_transactions_count",
+        "yield_conversion_transactions_count",
+        "mint_reserve_count",
+        "mint_reserve_volume",
+        "fees_zephrsv",
+        "redeem_reserve_count",
+        "redeem_reserve_volume",
+        "fees_zephusd",
+        "mint_stable_count",
+        "mint_stable_volume",
+        "redeem_stable_count",
+        "redeem_stable_volume",
+        "fees_zeph",
+        "mint_yield_count",
+        "mint_yield_volume",
+        "redeem_yield_count",
+        "redeem_yield_volume",
+        "fees_zephusd_yield",
+        "fees_zyield"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /stats (scale=block)",
+  "description": "GET /stats (scale=block) response schema.",
+  "type": "array"
+}

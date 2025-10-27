@@ -5,6 +5,12 @@ import { get } from "http";
 const DEATOMIZE = 10 ** -12;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
+export interface ZysPriceHistoryEntry {
+  timestamp: number;
+  block_height: number;
+  zys_price: number;
+}
+
 async function getPricingRecordFromBlock(height: number) {
   const blockData = await getBlock(height);
   if (!blockData) {
@@ -141,20 +147,21 @@ export async function processZYSPriceHistory() {
   }
 }
 
-export async function getZYSPriceHistoryFromRedis() {
+export async function getZYSPriceHistoryFromRedis(): Promise<ZysPriceHistoryEntry[]> {
   // Retrieve all records from Redis along with their scores (timestamps)
   const result = await redis.zrangebyscore("zys_price_history", "-inf", "+inf", "WITHSCORES");
 
-  const history = [];
+  const history: ZysPriceHistoryEntry[] = [];
 
   // Loop through the result and pair each entry with its corresponding score
   for (let i = 0; i < result.length; i += 2) {
-    const entry = JSON.parse(result[i]); // Parse the JSON entry
-    const timestamp = result[i + 1]; // Get the corresponding timestamp (score)
+    const entry = JSON.parse(result[i]) as { block_height: number; zys_price: number }; // Parse the JSON entry
+    const timestamp = Number(result[i + 1]); // Get the corresponding timestamp (score)
 
     history.push({
-      timestamp: Number(timestamp), // Add the timestamp
-      ...entry, // Spread the block height and zys_price
+      timestamp,
+      block_height: entry.block_height,
+      zys_price: entry.zys_price,
     });
   }
 

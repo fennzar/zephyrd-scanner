@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/HistoricalReturnsResponse",
+  "definitions": {
+    "HistoricalReturnsResponse": {
+      "$ref": "#/definitions/HistoricalReturns",
+      "title": "GET /historicalreturns",
+      "description": "GET /historicalreturns payload."
+    },
+    "HistoricalReturns": {
+      "type": "object",
+      "properties": {
+        "lastBlock": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        },
+        "oneDay": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        },
+        "oneWeek": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        },
+        "oneMonth": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        },
+        "threeMonths": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        },
+        "oneYear": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        },
+        "allTime": {
+          "$ref": "#/definitions/HistoricalReturnEntry"
+        }
+      },
+      "required": [
+        "lastBlock",
+        "oneDay",
+        "oneWeek",
+        "oneMonth",
+        "threeMonths",
+        "oneYear",
+        "allTime"
+      ],
+      "additionalProperties": false
+    },
+    "HistoricalReturnEntry": {
+      "type": "object",
+      "properties": {
+        "return": {
+          "type": "number"
+        },
+        "ZSDAccrued": {
+          "type": "number"
+        },
+        "effectiveApy": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "return",
+        "ZSDAccrued",
+        "effectiveApy"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /historicalreturns",
+  "description": "GET /historicalreturns response schema.",
+  "type": "object"
+}

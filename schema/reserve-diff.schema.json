@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/ReserveDiffResponse",
+  "definitions": {
+    "ReserveDiffResponse": {
+      "$ref": "#/definitions/ReserveDiffReport",
+      "title": "GET /reservediff",
+      "description": "GET /reservediff payload."
+    },
+    "ReserveDiffReport": {
+      "type": "object",
+      "properties": {
+        "block_height": {
+          "type": "number"
+        },
+        "reserve_height": {
+          "type": "number"
+        },
+        "diffs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReserveDiffEntry"
+          }
+        },
+        "mismatch": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "rpc",
+            "snapshot"
+          ]
+        },
+        "source_height": {
+          "type": "number"
+        },
+        "snapshot_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_height",
+        "reserve_height",
+        "diffs",
+        "mismatch",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "ReserveDiffEntry": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "on_chain": {
+          "type": "number"
+        },
+        "cached": {
+          "type": "number"
+        },
+        "difference": {
+          "type": "number"
+        },
+        "difference_atoms": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "on_chain",
+        "cached",
+        "difference"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /reservediff",
+  "description": "GET /reservediff response schema.",
+  "type": "object"
+}

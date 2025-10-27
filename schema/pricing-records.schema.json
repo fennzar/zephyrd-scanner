@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/PricingRecordsResponse",
+  "definitions": {
+    "PricingRecordsResponse": {
+      "$ref": "#/definitions/PricingRecordQueryResult",
+      "title": "GET /pricingrecords",
+      "description": "GET /pricingrecords payload."
+    },
+    "PricingRecordQueryResult": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PricingRecord"
+          }
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      },
+      "required": [
+        "total",
+        "results",
+        "limit",
+        "order"
+      ],
+      "additionalProperties": false
+    },
+    "PricingRecord": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number"
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "spot": {
+          "type": "number"
+        },
+        "moving_average": {
+          "type": "number"
+        },
+        "reserve": {
+          "type": "number"
+        },
+        "reserve_ma": {
+          "type": "number"
+        },
+        "stable": {
+          "type": "number"
+        },
+        "stable_ma": {
+          "type": "number"
+        },
+        "yield_price": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "height"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /pricingrecords",
+  "description": "GET /pricingrecords response schema.",
+  "type": "object"
+}

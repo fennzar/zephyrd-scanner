@@ -166,6 +166,9 @@ An instance of `zephyrdscanner` is running on `157.245.130.75:4000`. There is a 
 
 ## Public Routes
 
+### API Schemas
+Run `npm run generate-api-docs` to regenerate the JSON Schemas and write a human-readable `docs/api.md` snapshot of every endpoint response. The underlying schema files live in `schema/` (for example, `schema/stats-block.schema.json`, `schema/transactions.schema.json`, `schema/live-stats.schema.json`) and are driven by the TypeScript exports in `src/api-types.ts`. Update `schema/schema.config.json` whenever you expose additional response types. Use `npm run generate-schemas` if you only need to refresh the raw JSON schema outputs.
+
 ### Route: `/`
 **Description**: Root endpoint for testing server connection.
 

@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/ProjectedReturnsResponse",
+  "definitions": {
+    "ProjectedReturnsResponse": {
+      "$ref": "#/definitions/ProjectedReturns",
+      "title": "GET /projectedreturns",
+      "description": "GET /projectedreturns payload."
+    },
+    "ProjectedReturns": {
+      "type": "object",
+      "properties": {
+        "oneWeek": {
+          "$ref": "#/definitions/ProjectedReturnTier"
+        },
+        "oneMonth": {
+          "$ref": "#/definitions/ProjectedReturnTier"
+        },
+        "threeMonths": {
+          "$ref": "#/definitions/ProjectedReturnTier"
+        },
+        "sixMonths": {
+          "$ref": "#/definitions/ProjectedReturnTier"
+        },
+        "oneYear": {
+          "$ref": "#/definitions/ProjectedReturnTier"
+        }
+      },
+      "required": [
+        "oneWeek",
+        "oneMonth",
+        "threeMonths",
+        "sixMonths",
+        "oneYear"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectedReturnTier": {
+      "type": "object",
+      "properties": {
+        "low": {
+          "$ref": "#/definitions/ProjectedReturnScenario"
+        },
+        "simple": {
+          "$ref": "#/definitions/ProjectedReturnScenario"
+        },
+        "high": {
+          "$ref": "#/definitions/ProjectedReturnScenario"
+        }
+      },
+      "required": [
+        "low",
+        "simple",
+        "high"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectedReturnScenario": {
+      "type": "object",
+      "properties": {
+        "zys_price": {
+          "type": "number"
+        },
+        "return": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "zys_price",
+        "return"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /projectedreturns",
+  "description": "GET /projectedreturns response schema.",
+  "type": "object"
+}

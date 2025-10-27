@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/ZysPriceHistoryResponse",
+  "definitions": {
+    "ZysPriceHistoryResponse": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ZysPriceHistoryEntry"
+      },
+      "title": "GET /zyspricehistory",
+      "description": "GET /zyspricehistory payload."
+    },
+    "ZysPriceHistoryEntry": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "block_height": {
+          "type": "number"
+        },
+        "zys_price": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "timestamp",
+        "block_height",
+        "zys_price"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /zyspricehistory",
+  "description": "GET /zyspricehistory response schema.",
+  "type": "array"
+}

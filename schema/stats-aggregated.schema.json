@@ -1,0 +1,446 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/AggregatedStatsResponse",
+  "definitions": {
+    "AggregatedStatsResponse": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AggregatedStatsRow"
+      },
+      "title": "GET /stats (scale=hour|day)",
+      "description": "GET /stats (scale=hour|day) payload."
+    },
+    "AggregatedStatsRow": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "data": {
+          "$ref": "#/definitions/AggregatedData"
+        }
+      },
+      "required": [
+        "timestamp",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "AggregatedData": {
+      "type": "object",
+      "properties": {
+        "spot_open": {
+          "type": "number"
+        },
+        "spot_close": {
+          "type": "number"
+        },
+        "spot_high": {
+          "type": "number"
+        },
+        "spot_low": {
+          "type": "number"
+        },
+        "moving_average_open": {
+          "type": "number"
+        },
+        "moving_average_close": {
+          "type": "number"
+        },
+        "moving_average_high": {
+          "type": "number"
+        },
+        "moving_average_low": {
+          "type": "number"
+        },
+        "reserve_open": {
+          "type": "number"
+        },
+        "reserve_close": {
+          "type": "number"
+        },
+        "reserve_high": {
+          "type": "number"
+        },
+        "reserve_low": {
+          "type": "number"
+        },
+        "reserve_ma_open": {
+          "type": "number"
+        },
+        "reserve_ma_close": {
+          "type": "number"
+        },
+        "reserve_ma_high": {
+          "type": "number"
+        },
+        "reserve_ma_low": {
+          "type": "number"
+        },
+        "stable_open": {
+          "type": "number"
+        },
+        "stable_close": {
+          "type": "number"
+        },
+        "stable_high": {
+          "type": "number"
+        },
+        "stable_low": {
+          "type": "number"
+        },
+        "stable_ma_open": {
+          "type": "number"
+        },
+        "stable_ma_close": {
+          "type": "number"
+        },
+        "stable_ma_high": {
+          "type": "number"
+        },
+        "stable_ma_low": {
+          "type": "number"
+        },
+        "zyield_price_open": {
+          "type": "number"
+        },
+        "zyield_price_close": {
+          "type": "number"
+        },
+        "zyield_price_high": {
+          "type": "number"
+        },
+        "zyield_price_low": {
+          "type": "number"
+        },
+        "zeph_in_reserve_open": {
+          "type": "number"
+        },
+        "zeph_in_reserve_close": {
+          "type": "number"
+        },
+        "zeph_in_reserve_high": {
+          "type": "number"
+        },
+        "zeph_in_reserve_low": {
+          "type": "number"
+        },
+        "zsd_in_yield_reserve_open": {
+          "type": "number"
+        },
+        "zsd_in_yield_reserve_close": {
+          "type": "number"
+        },
+        "zsd_in_yield_reserve_high": {
+          "type": "number"
+        },
+        "zsd_in_yield_reserve_low": {
+          "type": "number"
+        },
+        "zeph_circ_open": {
+          "type": "number"
+        },
+        "zeph_circ_close": {
+          "type": "number"
+        },
+        "zeph_circ_high": {
+          "type": "number"
+        },
+        "zeph_circ_low": {
+          "type": "number"
+        },
+        "zephusd_circ_open": {
+          "type": "number"
+        },
+        "zephusd_circ_close": {
+          "type": "number"
+        },
+        "zephusd_circ_high": {
+          "type": "number"
+        },
+        "zephusd_circ_low": {
+          "type": "number"
+        },
+        "zephrsv_circ_open": {
+          "type": "number"
+        },
+        "zephrsv_circ_close": {
+          "type": "number"
+        },
+        "zephrsv_circ_high": {
+          "type": "number"
+        },
+        "zephrsv_circ_low": {
+          "type": "number"
+        },
+        "zyield_circ_open": {
+          "type": "number"
+        },
+        "zyield_circ_close": {
+          "type": "number"
+        },
+        "zyield_circ_high": {
+          "type": "number"
+        },
+        "zyield_circ_low": {
+          "type": "number"
+        },
+        "assets_open": {
+          "type": "number"
+        },
+        "assets_close": {
+          "type": "number"
+        },
+        "assets_high": {
+          "type": "number"
+        },
+        "assets_low": {
+          "type": "number"
+        },
+        "assets_ma_open": {
+          "type": "number"
+        },
+        "assets_ma_close": {
+          "type": "number"
+        },
+        "assets_ma_high": {
+          "type": "number"
+        },
+        "assets_ma_low": {
+          "type": "number"
+        },
+        "liabilities_open": {
+          "type": "number"
+        },
+        "liabilities_close": {
+          "type": "number"
+        },
+        "liabilities_high": {
+          "type": "number"
+        },
+        "liabilities_low": {
+          "type": "number"
+        },
+        "equity_open": {
+          "type": "number"
+        },
+        "equity_close": {
+          "type": "number"
+        },
+        "equity_high": {
+          "type": "number"
+        },
+        "equity_low": {
+          "type": "number"
+        },
+        "equity_ma_open": {
+          "type": "number"
+        },
+        "equity_ma_close": {
+          "type": "number"
+        },
+        "equity_ma_high": {
+          "type": "number"
+        },
+        "equity_ma_low": {
+          "type": "number"
+        },
+        "reserve_ratio_open": {
+          "type": "number"
+        },
+        "reserve_ratio_close": {
+          "type": "number"
+        },
+        "reserve_ratio_high": {
+          "type": "number"
+        },
+        "reserve_ratio_low": {
+          "type": "number"
+        },
+        "reserve_ratio_ma_open": {
+          "type": "number"
+        },
+        "reserve_ratio_ma_close": {
+          "type": "number"
+        },
+        "reserve_ratio_ma_high": {
+          "type": "number"
+        },
+        "reserve_ratio_ma_low": {
+          "type": "number"
+        },
+        "conversion_transactions_count": {
+          "type": "number"
+        },
+        "yield_conversion_transactions_count": {
+          "type": "number"
+        },
+        "mint_reserve_count": {
+          "type": "number"
+        },
+        "mint_reserve_volume": {
+          "type": "number"
+        },
+        "fees_zephrsv": {
+          "type": "number"
+        },
+        "redeem_reserve_count": {
+          "type": "number"
+        },
+        "redeem_reserve_volume": {
+          "type": "number"
+        },
+        "fees_zephusd": {
+          "type": "number"
+        },
+        "mint_stable_count": {
+          "type": "number"
+        },
+        "mint_stable_volume": {
+          "type": "number"
+        },
+        "redeem_stable_count": {
+          "type": "number"
+        },
+        "redeem_stable_volume": {
+          "type": "number"
+        },
+        "fees_zeph": {
+          "type": "number"
+        },
+        "mint_yield_count": {
+          "type": "number"
+        },
+        "mint_yield_volume": {
+          "type": "number"
+        },
+        "fees_zyield": {
+          "type": "number"
+        },
+        "redeem_yield_count": {
+          "type": "number"
+        },
+        "redeem_yield_volume": {
+          "type": "number"
+        },
+        "fees_zephusd_yield": {
+          "type": "number"
+        },
+        "pending": {
+          "type": "boolean"
+        },
+        "window_start": {
+          "type": "number"
+        },
+        "window_end": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "spot_open",
+        "spot_close",
+        "spot_high",
+        "spot_low",
+        "moving_average_open",
+        "moving_average_close",
+        "moving_average_high",
+        "moving_average_low",
+        "reserve_open",
+        "reserve_close",
+        "reserve_high",
+        "reserve_low",
+        "reserve_ma_open",
+        "reserve_ma_close",
+        "reserve_ma_high",
+        "reserve_ma_low",
+        "stable_open",
+        "stable_close",
+        "stable_high",
+        "stable_low",
+        "stable_ma_open",
+        "stable_ma_close",
+        "stable_ma_high",
+        "stable_ma_low",
+        "zyield_price_open",
+        "zyield_price_close",
+        "zyield_price_high",
+        "zyield_price_low",
+        "zeph_in_reserve_open",
+        "zeph_in_reserve_close",
+        "zeph_in_reserve_high",
+        "zeph_in_reserve_low",
+        "zsd_in_yield_reserve_open",
+        "zsd_in_yield_reserve_close",
+        "zsd_in_yield_reserve_high",
+        "zsd_in_yield_reserve_low",
+        "zeph_circ_open",
+        "zeph_circ_close",
+        "zeph_circ_high",
+        "zeph_circ_low",
+        "zephusd_circ_open",
+        "zephusd_circ_close",
+        "zephusd_circ_high",
+        "zephusd_circ_low",
+        "zephrsv_circ_open",
+        "zephrsv_circ_close",
+        "zephrsv_circ_high",
+        "zephrsv_circ_low",
+        "zyield_circ_open",
+        "zyield_circ_close",
+        "zyield_circ_high",
+        "zyield_circ_low",
+        "assets_open",
+        "assets_close",
+        "assets_high",
+        "assets_low",
+        "assets_ma_open",
+        "assets_ma_close",
+        "assets_ma_high",
+        "assets_ma_low",
+        "liabilities_open",
+        "liabilities_close",
+        "liabilities_high",
+        "liabilities_low",
+        "equity_open",
+        "equity_close",
+        "equity_high",
+        "equity_low",
+        "equity_ma_open",
+        "equity_ma_close",
+        "equity_ma_high",
+        "equity_ma_low",
+        "reserve_ratio_open",
+        "reserve_ratio_close",
+        "reserve_ratio_high",
+        "reserve_ratio_low",
+        "reserve_ratio_ma_open",
+        "reserve_ratio_ma_close",
+        "reserve_ratio_ma_high",
+        "reserve_ratio_ma_low",
+        "conversion_transactions_count",
+        "yield_conversion_transactions_count",
+        "mint_reserve_count",
+        "mint_reserve_volume",
+        "fees_zephrsv",
+        "redeem_reserve_count",
+        "redeem_reserve_volume",
+        "fees_zephusd",
+        "mint_stable_count",
+        "mint_stable_volume",
+        "redeem_stable_count",
+        "redeem_stable_volume",
+        "fees_zeph",
+        "mint_yield_count",
+        "mint_yield_volume",
+        "fees_zyield",
+        "redeem_yield_count",
+        "redeem_yield_volume",
+        "fees_zephusd_yield"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /stats (scale=hour|day)",
+  "description": "GET /stats (scale=hour|day) response schema.",
+  "type": "array"
+}

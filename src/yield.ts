@@ -27,7 +27,7 @@ const DAYS_PER_MONTH = 30;
 const MONTHS_PER_YEAR = 12;
 const BLOCKS_PER_YEAR = BLOCKS_PER_DAY * DAYS_PER_MONTH * MONTHS_PER_YEAR;
 
-type HistoricalReturnKey =
+export type HistoricalReturnKey =
   | "lastBlock"
   | "oneDay"
   | "oneWeek"
@@ -36,13 +36,13 @@ type HistoricalReturnKey =
   | "oneYear"
   | "allTime";
 
-type HistoricalReturnEntry = {
+export interface HistoricalReturnEntry {
   return: number;
   ZSDAccrued: number;
   effectiveApy: number | null;
-};
+}
 
-type HistoricalReturns = Record<HistoricalReturnKey, HistoricalReturnEntry>;
+export type HistoricalReturns = Record<HistoricalReturnKey, HistoricalReturnEntry>;
 
 const HISTORICAL_TIMEFRAME_BLOCKS: Record<Exclude<HistoricalReturnKey, "allTime">, number> = {
   lastBlock: 1,
@@ -52,6 +52,32 @@ const HISTORICAL_TIMEFRAME_BLOCKS: Record<Exclude<HistoricalReturnKey, "allTime"
   threeMonths: BLOCKS_PER_DAY * DAYS_PER_MONTH * 3,
   oneYear: BLOCKS_PER_YEAR,
 };
+
+export interface ProjectedReturnScenario {
+  zys_price: number;
+  return: number;
+}
+
+export interface ProjectedReturnTier {
+  low: ProjectedReturnScenario;
+  simple: ProjectedReturnScenario;
+  high: ProjectedReturnScenario;
+}
+
+export interface ProjectedReturns {
+  oneWeek: ProjectedReturnTier;
+  oneMonth: ProjectedReturnTier;
+  threeMonths: ProjectedReturnTier;
+  sixMonths: ProjectedReturnTier;
+  oneYear: ProjectedReturnTier;
+}
+
+export interface ApyHistoryEntry {
+  timestamp: number;
+  block_height: number;
+  return: number;
+  zys_price: number;
+}
 
 function calculateEffectiveApy(returnPercentage: number, timeframeBlocks: number): number | null {
   if (!Number.isFinite(returnPercentage) || timeframeBlocks <= 0) {
@@ -661,7 +687,7 @@ export async function determineProjectedReturns(test = false) {
   const high_projection_sixmonths_returns = ((high_projection_sixmonths_zys_price - zys_price) / zys_price) * 100;
   const high_projection_oneyear_returns = ((high_projection_oneyear_zys_price - zys_price) / zys_price) * 100;
 
-  const projectedStats = {
+  const projectedStats: ProjectedReturns = {
     oneWeek: {
       low: {
         zys_price: parseFloat(low_projection_oneweek_zys_price.toFixed(4)),
@@ -901,10 +927,10 @@ function calculateBlockRewardWithSpeedFactor(
   return Math.max(baseRewardInStandardUnits, tailEmissionReward);
 }
 
-export async function getHistoricalReturnsFromRedis(test = false) {
+export async function getHistoricalReturnsFromRedis(test = false): Promise<HistoricalReturns | null> {
   if (test) {
     // return dummy historical stats for testing route
-    const dummyHistoricalStats = {
+    const dummyHistoricalStats: HistoricalReturns = {
       lastBlock: { return: 0.01, ZSDAccrued: 1, effectiveApy: 0.05 },
       oneDay: { return: 0.70, ZSDAccrued: 720, effectiveApy: 279.44 },
       oneWeek: { return: 2.60, ZSDAccrued: 5040, effectiveApy: 197.06 },
@@ -921,15 +947,15 @@ export async function getHistoricalReturnsFromRedis(test = false) {
   if (!historicalStats) {
     return null;
   }
-  return JSON.parse(historicalStats);
+  return JSON.parse(historicalStats) as HistoricalReturns;
 }
 
 
-export async function getProjectedReturnsFromRedis(test = false) {
+export async function getProjectedReturnsFromRedis(test = false): Promise<ProjectedReturns | null> {
 
   if (test) {
     // return dummy projected stats for testing route
-    const dummyProjectedStats = {
+    const dummyProjectedStats: ProjectedReturns = {
       oneWeek: { low: { zys_price: 1.010, return: 0.01 }, simple: { zys_price: 1.05, return: 0.05 }, high: { zys_price: 1.10, return: 0.10 } },
       oneMonth: { low: { zys_price: 1.05, return: 0.05 }, simple: { zys_price: 1.10, return: 0.10 }, high: { zys_price: 1.20, return: 0.20 } },
       threeMonths: { low: { zys_price: 1.10, return: 0.10 }, simple: { zys_price: 1.20, return: 0.20 }, high: { zys_price: 1.30, return: 0.30 } },
@@ -944,7 +970,7 @@ export async function getProjectedReturnsFromRedis(test = false) {
   if (!projectedStats) {
     return null;
   }
-  return JSON.parse(projectedStats);
+  return JSON.parse(projectedStats) as ProjectedReturns;
 }
 
 
@@ -974,7 +1000,7 @@ export async function determineAPYHistory(reset = false) {
     // Get historical protocol stats from block 360,000 to the current block height
     let fromTimestamp = "1728819352"; // ~~360,000 block height
     let blockHeightPosition = 360_000;
-    const currentRedisAPYHistory = await getAPYHistoryFromRedis() as { timestamp: number; block_height: number; return: number; zys_price: number }[];
+    const currentRedisAPYHistory = await getAPYHistoryFromRedis();
     // If we have historical data, we can start from the 2nd to last timestamp
     if (currentRedisAPYHistory && currentRedisAPYHistory.length > 1) {
       fromTimestamp = currentRedisAPYHistory[currentRedisAPYHistory.length - 2].timestamp.toString();
@@ -990,7 +1016,7 @@ export async function determineAPYHistory(reset = false) {
 
     // use existing apy history if we have it but remove the last 2 entries
     // const apyHistory: { timestamp: number; block_height: number; return: number; zys_price: number }[] = [];
-    const apyHistory = currentRedisAPYHistory ? currentRedisAPYHistory.slice(0, -2) : [];
+    const apyHistory: ApyHistoryEntry[] = currentRedisAPYHistory ? currentRedisAPYHistory.slice(0, -2) : [];
 
     let missingDataCount = 0;
 
@@ -1083,10 +1109,10 @@ export async function determineAPYHistory(reset = false) {
 }
 
 
-export async function getAPYHistoryFromRedis() {
+export async function getAPYHistoryFromRedis(): Promise<ApyHistoryEntry[] | null> {
   const apyHistory = await redis.get("apy_history");
   if (!apyHistory) {
     return null;
   }
-  return JSON.parse(apyHistory);
+  return JSON.parse(apyHistory) as ApyHistoryEntry[];
 }

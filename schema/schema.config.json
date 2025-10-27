@@ -1,0 +1,73 @@
+{
+  "tsconfig": "tsconfig.json",
+  "source": "src/api-types.ts",
+  "schemas": [
+    {
+      "type": "BlockStatsResponse",
+      "output": "schema/stats-block.schema.json",
+      "title": "GET /stats (scale=block)"
+    },
+    {
+      "type": "AggregatedStatsResponse",
+      "output": "schema/stats-aggregated.schema.json",
+      "title": "GET /stats (scale=hour|day)"
+    },
+    {
+      "type": "TransactionsResponse",
+      "output": "schema/transactions.schema.json",
+      "title": "GET /txs"
+    },
+    {
+      "type": "BlockRewardsResponse",
+      "output": "schema/block-rewards.schema.json",
+      "title": "GET /blockrewards"
+    },
+    {
+      "type": "PricingRecordsResponse",
+      "output": "schema/pricing-records.schema.json",
+      "title": "GET /pricingrecords"
+    },
+    {
+      "type": "ReserveSnapshotsResponse",
+      "output": "schema/reserve-snapshots.schema.json",
+      "title": "GET /reservesnapshots"
+    },
+    {
+      "type": "LiveStatsResponse",
+      "output": "schema/live-stats.schema.json",
+      "title": "GET /livestats"
+    },
+    {
+      "type": "HistoricalReturnsResponse",
+      "output": "schema/historical-returns.schema.json",
+      "title": "GET /historicalreturns"
+    },
+    {
+      "type": "ProjectedReturnsResponse",
+      "output": "schema/projected-returns.schema.json",
+      "title": "GET /projectedreturns"
+    },
+    {
+      "type": "ZysPriceHistoryResponse",
+      "output": "schema/zys-price-history.schema.json",
+      "title": "GET /zyspricehistory"
+    },
+    {
+      "type": "ApyHistoryResponse",
+      "output": "schema/apy-history.schema.json",
+      "title": "GET /apyhistory"
+    },
+    {
+      "type": "ReserveDiffResponse",
+      "output": "schema/reserve-diff.schema.json",
+      "title": "GET /reservediff"
+    }
+  ],
+  "options": {
+    "expose": "export",
+    "jsDoc": "extended",
+    "topRef": true,
+    "additionalProperties": false,
+    "skipTypeCheck": true
+  }
+}

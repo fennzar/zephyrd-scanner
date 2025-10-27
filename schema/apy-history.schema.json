@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/ApyHistoryResponse",
+  "definitions": {
+    "ApyHistoryResponse": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ApyHistoryEntry"
+      },
+      "title": "GET /apyhistory",
+      "description": "GET /apyhistory payload."
+    },
+    "ApyHistoryEntry": {
+      "type": "object",
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "block_height": {
+          "type": "number"
+        },
+        "return": {
+          "type": "number"
+        },
+        "zys_price": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "timestamp",
+        "block_height",
+        "return",
+        "zys_price"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /apyhistory",
+  "description": "GET /apyhistory response schema.",
+  "type": "array"
+}

@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/LiveStatsResponse",
+  "definitions": {
+    "LiveStatsResponse": {
+      "$ref": "#/definitions/LiveStats",
+      "title": "GET /livestats",
+      "description": "GET /livestats payload."
+    },
+    "LiveStats": {
+      "type": "object",
+      "properties": {
+        "zeph_price": {
+          "type": "number"
+        },
+        "zsd_rate": {
+          "type": "number"
+        },
+        "zsd_price": {
+          "type": "number"
+        },
+        "zrs_rate": {
+          "type": "number"
+        },
+        "zrs_price": {
+          "type": "number"
+        },
+        "zys_price": {
+          "type": "number"
+        },
+        "zeph_circ": {
+          "type": "number"
+        },
+        "zsd_circ": {
+          "type": "number"
+        },
+        "zrs_circ": {
+          "type": "number"
+        },
+        "zys_circ": {
+          "type": "number"
+        },
+        "zeph_circ_daily_change": {
+          "type": "number"
+        },
+        "zsd_circ_daily_change": {
+          "type": "number"
+        },
+        "zrs_circ_daily_change": {
+          "type": "number"
+        },
+        "zys_circ_daily_change": {
+          "type": "number"
+        },
+        "zeph_in_reserve": {
+          "type": "number"
+        },
+        "zeph_in_reserve_value": {
+          "type": "number"
+        },
+        "zeph_in_reserve_percent": {
+          "type": "number"
+        },
+        "zsd_in_yield_reserve": {
+          "type": "number"
+        },
+        "zsd_in_yield_reserve_percent": {
+          "type": "number"
+        },
+        "zys_current_variable_apy": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reserve_ratio": {
+          "type": "number"
+        },
+        "reserve_ratio_ma": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "zeph_price",
+        "zsd_rate",
+        "zsd_price",
+        "zrs_rate",
+        "zrs_price",
+        "zys_price",
+        "zeph_circ",
+        "zsd_circ",
+        "zrs_circ",
+        "zys_circ",
+        "zeph_circ_daily_change",
+        "zsd_circ_daily_change",
+        "zrs_circ_daily_change",
+        "zys_circ_daily_change",
+        "zeph_in_reserve",
+        "zeph_in_reserve_value",
+        "zeph_in_reserve_percent",
+        "zsd_in_yield_reserve",
+        "zsd_in_yield_reserve_percent",
+        "zys_current_variable_apy",
+        "reserve_ratio",
+        "reserve_ratio_ma"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /livestats",
+  "description": "GET /livestats response schema.",
+  "type": "object"
+}

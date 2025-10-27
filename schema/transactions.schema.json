@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/TransactionsResponse",
+  "definitions": {
+    "TransactionsResponse": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TransactionRecord"
+          }
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "offset": {
+          "type": "number"
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        },
+        "next_offset": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "prev_offset": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "limit",
+        "next_offset",
+        "offset",
+        "order",
+        "prev_offset",
+        "results",
+        "total"
+      ],
+      "additionalProperties": false,
+      "title": "GET /txs",
+      "description": "GET /txs payload."
+    },
+    "TransactionRecord": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        },
+        "block_height": {
+          "type": "number"
+        },
+        "block_timestamp": {
+          "type": "number"
+        },
+        "conversion_type": {
+          "type": "string"
+        },
+        "conversion_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "from_asset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "from_amount_atoms": {
+          "type": "string"
+        },
+        "to_asset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to_amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "to_amount_atoms": {
+          "type": "string"
+        },
+        "conversion_fee_asset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversion_fee_amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tx_fee_asset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tx_fee_amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tx_fee_atoms": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "block_height",
+        "block_timestamp",
+        "conversion_type"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /txs",
+  "description": "GET /txs response schema.",
+  "type": "object"
+}

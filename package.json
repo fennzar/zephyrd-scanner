@@ -9,7 +9,9 @@
     "scanner": "npx tsx src/scanner-runner.ts",
     "walkthrough": "npx tsx src/walkthrough.ts",
     "bg-scan": "ENABLE_SERVER=false npx tsx src/scanner-runner.ts",
-    "prepare-bg": "npx tsx src/scripts/prepareBackgroundDb.ts"
+    "prepare-bg": "npx tsx src/scripts/prepareBackgroundDb.ts",
+    "generate-schemas": "npx tsx schema/generateSchemas.ts",
+    "generate-api-docs": "npx tsx schema/generateApiDocs.ts"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +21,7 @@
     "@types/node": "^20.8.0",
     "@types/redis": "^4.0.11",
     "express": "^4.18.2",
+    "ts-json-schema-generator": "^2.4.0",
     "tsx": "^4.7.0",
     "typescript": "^5.2.2"
   },

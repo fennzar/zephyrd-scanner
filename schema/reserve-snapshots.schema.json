@@ -1,0 +1,313 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/ReserveSnapshotsResponse",
+  "definitions": {
+    "ReserveSnapshotsResponse": {
+      "$ref": "#/definitions/ReserveSnapshotQueryResult",
+      "title": "GET /reservesnapshots",
+      "description": "GET /reservesnapshots payload."
+    },
+    "ReserveSnapshotQueryResult": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ReserveSnapshot"
+          }
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      },
+      "required": [
+        "total",
+        "results",
+        "limit",
+        "order"
+      ],
+      "additionalProperties": false
+    },
+    "ReserveSnapshot": {
+      "type": "object",
+      "properties": {
+        "captured_at": {
+          "type": "string"
+        },
+        "reserve_height": {
+          "type": "number"
+        },
+        "previous_height": {
+          "type": "number"
+        },
+        "hf_version": {
+          "type": "number"
+        },
+        "on_chain": {
+          "type": "object",
+          "properties": {
+            "zeph_reserve_atoms": {
+              "type": "string"
+            },
+            "zeph_reserve": {
+              "type": "number"
+            },
+            "zsd_circ_atoms": {
+              "type": "string"
+            },
+            "zsd_circ": {
+              "type": "number"
+            },
+            "zrs_circ_atoms": {
+              "type": "string"
+            },
+            "zrs_circ": {
+              "type": "number"
+            },
+            "zyield_circ_atoms": {
+              "type": "string"
+            },
+            "zyield_circ": {
+              "type": "number"
+            },
+            "zsd_yield_reserve_atoms": {
+              "type": "string"
+            },
+            "zsd_yield_reserve": {
+              "type": "number"
+            },
+            "reserve_ratio_atoms": {
+              "type": "string"
+            },
+            "reserve_ratio": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "reserve_ratio_ma_atoms": {
+              "type": "string"
+            },
+            "reserve_ratio_ma": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "zeph_reserve_atoms",
+            "zeph_reserve",
+            "zsd_circ_atoms",
+            "zsd_circ",
+            "zrs_circ_atoms",
+            "zrs_circ",
+            "zyield_circ_atoms",
+            "zyield_circ",
+            "zsd_yield_reserve_atoms",
+            "zsd_yield_reserve",
+            "reserve_ratio_atoms",
+            "reserve_ratio"
+          ],
+          "additionalProperties": false
+        },
+        "pricing_record": {
+          "type": "object",
+          "properties": {
+            "moving_average": {
+              "type": "number"
+            },
+            "reserve": {
+              "type": "number"
+            },
+            "reserve_ma": {
+              "type": "number"
+            },
+            "reserve_ratio": {
+              "type": "number"
+            },
+            "reserve_ratio_ma": {
+              "type": "number"
+            },
+            "signature": {
+              "type": "string"
+            },
+            "spot": {
+              "type": "number"
+            },
+            "stable": {
+              "type": "number"
+            },
+            "stable_ma": {
+              "type": "number"
+            },
+            "timestamp": {
+              "type": "number"
+            },
+            "yield_price": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "moving_average",
+            "reserve",
+            "reserve_ma",
+            "reserve_ratio",
+            "reserve_ratio_ma",
+            "signature",
+            "spot",
+            "stable",
+            "stable_ma",
+            "timestamp",
+            "yield_price"
+          ],
+          "additionalProperties": false
+        },
+        "raw": {
+          "type": "object",
+          "properties": {
+            "assets": {
+              "type": "string"
+            },
+            "assets_ma": {
+              "type": "string"
+            },
+            "equity": {
+              "type": "string"
+            },
+            "equity_ma": {
+              "type": "string"
+            },
+            "height": {
+              "type": "number"
+            },
+            "hf_version": {
+              "type": "number"
+            },
+            "liabilities": {
+              "type": "string"
+            },
+            "num_reserves": {
+              "type": "string"
+            },
+            "num_stables": {
+              "type": "string"
+            },
+            "num_zyield": {
+              "type": "string"
+            },
+            "pr": {
+              "type": "object",
+              "properties": {
+                "moving_average": {
+                  "type": "number"
+                },
+                "reserve": {
+                  "type": "number"
+                },
+                "reserve_ma": {
+                  "type": "number"
+                },
+                "reserve_ratio": {
+                  "type": "number"
+                },
+                "reserve_ratio_ma": {
+                  "type": "number"
+                },
+                "signature": {
+                  "type": "string"
+                },
+                "spot": {
+                  "type": "number"
+                },
+                "stable": {
+                  "type": "number"
+                },
+                "stable_ma": {
+                  "type": "number"
+                },
+                "timestamp": {
+                  "type": "number"
+                },
+                "yield_price": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "moving_average",
+                "reserve",
+                "reserve_ma",
+                "reserve_ratio",
+                "reserve_ratio_ma",
+                "signature",
+                "spot",
+                "stable",
+                "stable_ma",
+                "timestamp",
+                "yield_price"
+              ],
+              "additionalProperties": false
+            },
+            "reserve_ratio": {
+              "type": "string"
+            },
+            "reserve_ratio_ma": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "zeph_reserve": {
+              "type": "string"
+            },
+            "zyield_reserve": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "assets",
+            "assets_ma",
+            "equity",
+            "equity_ma",
+            "height",
+            "hf_version",
+            "liabilities",
+            "num_reserves",
+            "num_stables",
+            "num_zyield",
+            "reserve_ratio",
+            "reserve_ratio_ma",
+            "status",
+            "zeph_reserve",
+            "zyield_reserve"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "captured_at",
+        "reserve_height",
+        "previous_height",
+        "hf_version",
+        "on_chain"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /reservesnapshots",
+  "description": "GET /reservesnapshots response schema.",
+  "type": "object"
+}

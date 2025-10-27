@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/BlockRewardsResponse",
+  "definitions": {
+    "BlockRewardsResponse": {
+      "$ref": "#/definitions/BlockRewardQueryResult",
+      "title": "GET /blockrewards",
+      "description": "GET /blockrewards payload."
+    },
+    "BlockRewardQueryResult": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "number"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BlockRewardRecord"
+          }
+        },
+        "limit": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      },
+      "required": [
+        "total",
+        "results",
+        "limit",
+        "order"
+      ],
+      "additionalProperties": false
+    },
+    "BlockRewardRecord": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number"
+        },
+        "miner_reward": {
+          "type": "number"
+        },
+        "governance_reward": {
+          "type": "number"
+        },
+        "reserve_reward": {
+          "type": "number"
+        },
+        "yield_reward": {
+          "type": "number"
+        },
+        "miner_reward_atoms": {
+          "type": "string"
+        },
+        "governance_reward_atoms": {
+          "type": "string"
+        },
+        "reserve_reward_atoms": {
+          "type": "string"
+        },
+        "yield_reward_atoms": {
+          "type": "string"
+        },
+        "base_reward_atoms": {
+          "type": "string"
+        },
+        "fee_adjustment_atoms": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "height",
+        "miner_reward",
+        "governance_reward",
+        "reserve_reward",
+        "yield_reward"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "title": "GET /blockrewards",
+  "description": "GET /blockrewards response schema.",
+  "type": "object"
+}
