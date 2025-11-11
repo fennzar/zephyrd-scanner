@@ -9,6 +9,14 @@ dotenv.config();
 // Create a global agent
 const agent = new Agent({ keepAlive: true });
 import redis from "./redis";
+import { stores } from "./storage/factory";
+import { usePostgres } from "./config";
+import { getTotals as getTotalsRow } from "./db/totals";
+import { upsertReserveSnapshot, getLatestReserveSnapshotRow, getReserveSnapshotByPreviousHeight } from "./db/reserveSnapshots";
+import { upsertReserveMismatch, deleteReserveMismatch } from "./db/reserveMismatches";
+import { upsertLiveStats, getLiveStats as getLiveStatsRow } from "./db/liveStats";
+import { queryTransactions, type ConversionTransactionRecord } from "./db/transactions";
+import { fetchBlockProtocolStats, fetchAggregatedProtocolStats } from "./db/protocolStats";
 const RPC_URL = "http://127.0.0.1:17767";
 const HEADERS = {
   "Content-Type": "application/json",
@@ -279,10 +287,19 @@ export async function saveReserveSnapshotToRedis(reserveInfo: ReserveInfoRespons
   const key = snapshot.previous_height.toString();
   await redis.hset(RESERVE_SNAPSHOT_REDIS_KEY, key, JSON.stringify(snapshot));
   await redis.set(RESERVE_SNAPSHOT_LAST_KEY, key);
+  if (usePostgres()) {
+    await upsertReserveSnapshot(snapshot);
+  }
   return snapshot;
 }
 
 export async function getLastReserveSnapshotPreviousHeight(): Promise<number | null> {
+  if (usePostgres()) {
+    const latest = await getLatestReserveSnapshotRow();
+    if (latest) {
+      return latest.previous_height;
+    }
+  }
   const height = await redis.get(RESERVE_SNAPSHOT_LAST_KEY);
   if (!height) {
     return null;
@@ -294,6 +311,12 @@ export async function getLastReserveSnapshotPreviousHeight(): Promise<number | n
 async function loadReserveSnapshotByPreviousHeightFromRedis(
   previousHeight: number
 ): Promise<ReserveSnapshotWithPath | null> {
+  if (usePostgres()) {
+    const snapshot = await getReserveSnapshotByPreviousHeight(previousHeight);
+    if (snapshot) {
+      return { snapshot, filePath: `postgres:${previousHeight}` };
+    }
+  }
   const json = await redis.hget(RESERVE_SNAPSHOT_REDIS_KEY, previousHeight.toString());
   if (!json) {
     return null;
@@ -308,6 +331,12 @@ async function loadReserveSnapshotByPreviousHeightFromRedis(
 }
 
 export async function getLatestReserveSnapshot(): Promise<ReserveSnapshot | null> {
+  if (usePostgres()) {
+    const latest = await getLatestReserveSnapshotRow();
+    if (latest) {
+      return latest;
+    }
+  }
   const previousHeight = await getLastReserveSnapshotPreviousHeight();
   if (previousHeight === null) {
     return null;
@@ -398,7 +427,8 @@ export interface ReserveDiffEntry {
   note?: string;
 }
 
-function diffField(name: string, onChain: number, cached: number): ReserveDiffEntry {
+function diffField(name: string, onChain: number, cachedInput: number | null | undefined): ReserveDiffEntry {
+  const cached = typeof cachedInput === "number" ? cachedInput : 0;
   const bothNotFinite = !Number.isFinite(onChain) && !Number.isFinite(cached);
   if (bothNotFinite) {
     return { field: name, on_chain: onChain, cached, difference: 0, note: "non-finite" };
@@ -508,10 +538,16 @@ export interface ReserveDiffReport {
 
 export async function recordReserveMismatch(height: number, report: ReserveDiffReport): Promise<void> {
   await redis.hset(RESERVE_MISMATCH_REDIS_KEY, height.toString(), JSON.stringify(report));
+  if (usePostgres()) {
+    await upsertReserveMismatch(report);
+  }
 }
 
 export async function clearReserveMismatch(height: number): Promise<void> {
   await redis.hdel(RESERVE_MISMATCH_REDIS_KEY, height.toString());
+  if (usePostgres()) {
+    await deleteReserveMismatch(height);
+  }
 }
 
 export async function getReserveDiffs(options: ReserveDiffOptions = {}): Promise<ReserveDiffReport> {
@@ -668,6 +704,36 @@ export async function readTx(hash: string) {
 }
 
 export async function getTotalsFromRedis() {
+  if (usePostgres()) {
+    const totalsRow = await getTotalsRow();
+    if (totalsRow) {
+      return {
+        conversion_transactions: totalsRow.conversionTransactions,
+        yield_conversion_transactions: totalsRow.yieldConversionTransactions,
+        mint_reserve_count: totalsRow.mintReserveCount,
+        mint_reserve_volume: totalsRow.mintReserveVolume,
+        fees_zephrsv: totalsRow.feesZephrsv,
+        redeem_reserve_count: totalsRow.redeemReserveCount,
+        redeem_reserve_volume: totalsRow.redeemReserveVolume,
+        fees_zephusd: totalsRow.feesZephusd,
+        mint_stable_count: totalsRow.mintStableCount,
+        mint_stable_volume: totalsRow.mintStableVolume,
+        redeem_stable_count: totalsRow.redeemStableCount,
+        redeem_stable_volume: totalsRow.redeemStableVolume,
+        fees_zeph: totalsRow.feesZeph,
+        mint_yield_count: totalsRow.mintYieldCount,
+        mint_yield_volume: totalsRow.mintYieldVolume,
+        fees_zyield: totalsRow.feesZyield,
+        redeem_yield_count: totalsRow.redeemYieldCount,
+        redeem_yield_volume: totalsRow.redeemYieldVolume,
+        fees_zephusd_yield: totalsRow.feesZephusdYield,
+        miner_reward: totalsRow.minerReward,
+        governance_reward: totalsRow.governanceReward,
+        reserve_reward: totalsRow.reserveReward,
+        yield_reward: totalsRow.yieldReward,
+      };
+    }
+  }
   const totals = await redis.hgetall("totals");
   if (!totals) {
     return null;
@@ -692,6 +758,18 @@ export async function getBlockProtocolStatsFromRedis<T extends keyof ProtocolSta
   to?: string,
   fields?: T[]
 ): Promise<BlockProtocolStatsResponse<T>[]> {
+  if (usePostgres()) {
+    const fromHeight = from ? parseInt(from) : undefined;
+    const toHeight = to ? parseInt(to) : undefined;
+    const rows = await fetchBlockProtocolStats(fromHeight, toHeight);
+    return rows.map((row) => {
+      const data = fields && fields.length > 0 ? (filterFields(row, fields) as Pick<ProtocolStats, T>) : (row as Pick<ProtocolStats, T>);
+      return {
+        block_height: row.block_height,
+        data,
+      };
+    });
+  }
   let redisKey = "protocol_stats";
   let start = from ? parseInt(from) : 0;
   let end = to ? parseInt(to) : Number(await redis.get("height_aggregator"));
@@ -700,14 +778,10 @@ export async function getBlockProtocolStatsFromRedis<T extends keyof ProtocolSta
   for (let i = start; i <= end; i++) {
     const statsJson = await redis.hget(redisKey, i.toString());
     if (statsJson) {
-      let stats = JSON.parse(statsJson);
-
-      // If specific fields are requested, filter the data
-      if (fields && fields.length > 0) {
-        stats = filterFields(stats, fields);
-      }
-
-      blockData.push({ block_height: i, data: stats });
+      const parsed = JSON.parse(statsJson) as ProtocolStats;
+      const shaped: Pick<ProtocolStats, T> =
+        fields && fields.length > 0 ? filterFields(parsed, fields) : (parsed as Pick<ProtocolStats, T>);
+      blockData.push({ block_height: i, data: shaped });
     }
   }
   return blockData;
@@ -720,6 +794,19 @@ export async function getAggregatedProtocolStatsFromRedis<T extends keyof Aggreg
   to?: string,
   fields?: T[]
 ): Promise<AggregatedProtocolStatsResponse<T>[]> {
+  if (usePostgres()) {
+    const fromTimestamp = from ? parseInt(from) : undefined;
+    const toTimestamp = to ? parseInt(to) : undefined;
+    const rows = await fetchAggregatedProtocolStats(scale === "hour" ? "hour" : "day", fromTimestamp, toTimestamp);
+    return rows.map((entry) => {
+      const shaped: Pick<AggregatedData, T> =
+        fields && fields.length > 0 ? filterFields(entry.data, fields) : (entry.data as Pick<AggregatedData, T>);
+      return {
+        timestamp: entry.timestamp,
+        data: shaped,
+      };
+    });
+  }
   const redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
   const pendingKey = scale === "hour" ? HOURLY_PENDING_KEY : DAILY_PENDING_KEY;
   const startScore = from ? parseInt(from) : "-inf";
@@ -732,13 +819,12 @@ export async function getAggregatedProtocolStatsFromRedis<T extends keyof Aggreg
   const pendingJson = await redis.get(pendingKey);
   if (pendingJson) {
     try {
-      let data = JSON.parse(pendingJson);
-      const timestamp = Number(data?.window_start);
+      const parsed = JSON.parse(pendingJson) as AggregatedData;
+      const timestamp = Number(parsed?.window_start);
       if (!existingTimestamps.has(timestamp)) {
-        if (fields && fields.length > 0) {
-          data = filterFields(data, fields);
-        }
-        formatted.push({ timestamp, data });
+        const shaped: Pick<AggregatedData, T> =
+          fields && fields.length > 0 ? filterFields(parsed, fields) : (parsed as Pick<AggregatedData, T>);
+        formatted.push({ timestamp, data: shaped });
         existingTimestamps.add(timestamp);
       }
     } catch (error) {
@@ -755,29 +841,25 @@ function formatZrangeResults<T extends keyof AggregatedData>(
   results: any,
   fields?: T[]
 ): AggregatedProtocolStatsResponse<T>[] {
-  let formattedResults: AggregatedProtocolStatsResponse<T>[] = [];
+  const formattedResults: AggregatedProtocolStatsResponse<T>[] = [];
   for (let i = 0; i < results.length; i += 2) {
-    let data = JSON.parse(results[i]);
-
-    // If specific fields are requested, filter the data
-    if (fields && fields.length > 0) {
-      data = filterFields(data, fields);
-    }
-
-    formattedResults.push({ timestamp: Number(results[i + 1]), data });
+    const parsed = JSON.parse(results[i]) as AggregatedData;
+    const shaped: Pick<AggregatedData, T> =
+      fields && fields.length > 0 ? filterFields(parsed, fields) : (parsed as Pick<AggregatedData, T>);
+    formattedResults.push({ timestamp: Number(results[i + 1]), data: shaped });
   }
   return formattedResults;
 }
 
 // Helper function to filter data points based on requested fields
-function filterFields<T extends string>(data: any, fields: T[]): Pick<typeof data, T> {
-  let filteredData: Partial<typeof data> = {};
+function filterFields<T extends object, K extends keyof T>(data: T, fields: K[]): Pick<T, K> {
+  const filteredData: Partial<Pick<T, K>> = {};
   for (const field of fields) {
-    if (data && data.hasOwnProperty(field)) {
+    if (field in data) {
       filteredData[field] = data[field];
     }
   }
-  return filteredData as Pick<typeof data, T>;
+  return filteredData as Pick<T, K>;
 }
 
 export interface ProtocolStats {
@@ -802,8 +884,8 @@ export interface ProtocolStats {
   liabilities: number;
   equity: number;
   equity_ma: number;
-  reserve_ratio: number;
-  reserve_ratio_ma: number;
+  reserve_ratio: number | null;
+  reserve_ratio_ma: number | null;
   zsd_accrued_in_yield_reserve_from_yield_reward: number;
   zsd_minted_for_yield: number;
   conversion_transactions_count: number;
@@ -942,6 +1024,15 @@ export interface AggregatedData {
 }
 
 export async function getRedisHeight() {
+  if (usePostgres()) {
+    const stored = await stores.scannerState.get("height_aggregator");
+    if (stored) {
+      const parsed = Number(stored);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
   const height = await redis.get("height_aggregator");
   if (!height) {
     return 0;
@@ -986,6 +1077,20 @@ export async function setRedisHeight(height: number) {
 }
 
 export async function getRedisPricingRecord(height: number) {
+  const storeRecord = await stores.pricing.get(height);
+  if (storeRecord) {
+    return {
+      height: storeRecord.blockHeight,
+      timestamp: storeRecord.timestamp,
+      spot: storeRecord.spot,
+      moving_average: storeRecord.movingAverage,
+      reserve: storeRecord.reserve,
+      reserve_ma: storeRecord.reserveMa,
+      stable: storeRecord.stable,
+      stable_ma: storeRecord.stableMa,
+      yield_price: storeRecord.yieldPrice,
+    };
+  }
   const pr = await redis.hget("pricing_records", height.toString());
   if (!pr) {
     return null;
@@ -1533,6 +1638,27 @@ function sanitizeTransactionRecord(raw: unknown): TransactionRecord | null {
   };
 }
 
+function mapDbTransaction(record: ConversionTransactionRecord): TransactionRecord {
+  return {
+    hash: record.hash,
+    block_height: record.blockHeight,
+    block_timestamp: record.blockTimestamp,
+    conversion_type: record.conversionType,
+    conversion_rate: record.conversionRate,
+    from_asset: record.fromAsset,
+    from_amount: record.fromAmount,
+    from_amount_atoms: record.fromAmountAtoms,
+    to_asset: record.toAsset,
+    to_amount: record.toAmount,
+    to_amount_atoms: record.toAmountAtoms,
+    conversion_fee_asset: record.conversionFeeAsset,
+    conversion_fee_amount: record.conversionFeeAmount,
+    tx_fee_asset: record.txFeeAsset,
+    tx_fee_amount: record.txFeeAmount,
+    tx_fee_atoms: record.txFeeAtoms,
+  };
+}
+
 export async function getTransactionsFromRedis(options: TransactionQueryOptions = {}): Promise<TransactionQueryResult> {
   const {
     fromTimestamp,
@@ -1543,6 +1669,28 @@ export async function getTransactionsFromRedis(options: TransactionQueryOptions 
     order = "desc",
     fromIndex,
   } = options;
+
+  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const resolvedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+
+  if (usePostgres()) {
+    const dbResult = await queryTransactions({
+      fromTimestamp,
+      toTimestamp,
+      types,
+      limit: resolvedLimit,
+      offset: resolvedOffset,
+      order,
+      fromIndex,
+    });
+    return {
+      total: dbResult.total,
+      results: dbResult.results.map(mapDbTransaction),
+      limit: resolvedLimit ?? null,
+      offset: dbResult.offset,
+      order,
+    };
+  }
 
   const rawValues = await redis.hvals("txs");
   const records: TransactionRecord[] = [];
@@ -1588,9 +1736,6 @@ export async function getTransactionsFromRedis(options: TransactionQueryOptions 
     }
     return a.hash.localeCompare(b.hash);
   };
-
-  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
-  const resolvedOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
 
   let ordered: TransactionRecord[];
 
@@ -1886,10 +2031,19 @@ export async function refreshLiveStatsCache(): Promise<LiveStats | null> {
     return null;
   }
   await redis.set(LIVE_STATS_REDIS_KEY, JSON.stringify(liveStats));
+  if (usePostgres()) {
+    await upsertLiveStats(liveStats);
+  }
   return liveStats;
 }
 
 export async function getLiveStats(): Promise<LiveStats | null> {
+  if (usePostgres()) {
+    const row = await getLiveStatsRow();
+    if (row) {
+      return row;
+    }
+  }
   const cached = await redis.get(LIVE_STATS_REDIS_KEY);
   if (cached) {
     try {

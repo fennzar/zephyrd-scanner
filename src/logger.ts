@@ -571,7 +571,7 @@ export function logScannerHealth(
       },
       {
         metric: "Reserve ratio",
-        aggregatorValue: stats.reserve_ratio,
+        aggregatorValue: stats.reserve_ratio ?? undefined,
         onChainValue: snapshot.on_chain.reserve_ratio ?? undefined,
         decimals: 4,
       },

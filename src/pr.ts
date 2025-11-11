@@ -1,6 +1,8 @@
 import { getCurrentBlockHeight, getBlock } from "./utils";
 import redis from "./redis";
-import { get } from "http";
+import { stores } from "./storage/factory";
+import { usePostgres } from "./config";
+import { appendZysPriceHistory, fetchZysPriceHistory as fetchZysPriceHistorySql } from "./db/yieldAnalytics";
 
 const DEATOMIZE = 10 ** -12;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
@@ -21,23 +23,15 @@ async function getPricingRecordFromBlock(height: number) {
   return pricingRecord;
 }
 
-async function getRedisHeight() {
-  const height = await redis.get("height_prs");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
-}
-
-export async function setRedisHeightPRs(height: number) {
-  await redis.set("height_prs", height);
+async function getStoredHeight() {
+  return stores.pricing.getLatestHeight();
 }
 
 export async function scanPricingRecords() {
   const hfHeight = 89300;
   const rpcHeight = await getCurrentBlockHeight();
   // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
-  const redisHeight = await getRedisHeight();
+  const redisHeight = await getStoredHeight();
   const startingHeight = Math.max(redisHeight + 1, hfHeight);
 
   console.log("Fired pricing record scanner...");
@@ -60,20 +54,17 @@ export async function scanPricingRecords() {
         const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
         console.log(`PRs SCANNING BLOCK(s): ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
       }
-      let pr_to_save = {
-        height: height,
+      await stores.pricing.save({
+        blockHeight: height,
         timestamp: 0,
         spot: 0,
-        moving_average: 0,
+        movingAverage: 0,
         reserve: 0,
-        reserve_ma: 0,
+        reserveMa: 0,
         stable: 0,
-        stable_ma: 0,
-        yield_price: 0,
-      };
-      const pr_to_save_json = JSON.stringify(pr_to_save);
-      await redis.hset("pricing_records", height, pr_to_save_json);
-      await setRedisHeightPRs(height);
+        stableMa: 0,
+        yieldPrice: 0,
+      });
       continue;
     }
 
@@ -103,9 +94,17 @@ export async function scanPricingRecords() {
       yield_price: yield_price,
     };
 
-    const pr_to_save_json = JSON.stringify(pr_to_save);
-    await redis.hset("pricing_records", height, pr_to_save_json);
-    await setRedisHeightPRs(height);
+    await stores.pricing.save({
+      blockHeight: pr_to_save.height,
+      timestamp: pr_to_save.timestamp,
+      spot: pr_to_save.spot,
+      movingAverage: pr_to_save.moving_average,
+      reserve: pr_to_save.reserve,
+      reserveMa: pr_to_save.reserve_ma,
+      stable: pr_to_save.stable,
+      stableMa: pr_to_save.stable_ma,
+      yieldPrice: pr_to_save.yield_price,
+    });
 
     // (no longer log every block)
     // console.log(`Saved pricing record for height ${height}`);
@@ -116,7 +115,7 @@ export async function scanPricingRecords() {
 export async function processZYSPriceHistory() {
   console.log("Processing ZYS price history...");
   const BLOCK_INTERVAL = 30;
-  const height_prs = await getRedisHeight();
+  const height_prs = await getStoredHeight();
   const most_recent_zys_price_block = await getMostRecentBlockHeightFromRedis();
   const start = Math.max(most_recent_zys_price_block + BLOCK_INTERVAL, VERSION_2_HF_V6_BLOCK_HEIGHT);
   const end = height_prs;
@@ -144,10 +143,25 @@ export async function processZYSPriceHistory() {
 
     // Store in a sorted set with the timestamp as the score and the data as the value
     await redis.zadd("zys_price_history", timestamp, data);
+    if (usePostgres()) {
+      await appendZysPriceHistory([
+        {
+          block_height: height,
+          zys_price,
+          timestamp,
+        },
+      ]);
+    }
   }
 }
 
 export async function getZYSPriceHistoryFromRedis(): Promise<ZysPriceHistoryEntry[]> {
+  if (usePostgres()) {
+    const rows = await fetchZysPriceHistorySql();
+    if (rows.length > 0) {
+      return rows;
+    }
+  }
   // Retrieve all records from Redis along with their scores (timestamps)
   const result = await redis.zrangebyscore("zys_price_history", "-inf", "+inf", "WITHSCORES");
 

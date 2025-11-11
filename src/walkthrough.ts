@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import dotenv from "dotenv";
 import redis from "./redis";
+import { truncatePostgresData } from "./db/admin";
+import { usePostgres } from "./config";
 
 dotenv.config();
 
@@ -48,6 +50,10 @@ async function bootstrap() {
   console.log("[walkthrough] Flushing Redis database...");
   await redis.flushdb();
   console.log("[walkthrough] Redis flushed.");
+  if (usePostgres()) {
+    console.log("[walkthrough] Truncating Postgres tables...");
+    await truncatePostgresData();
+  }
 
   process.env.WALKTHROUGH_MODE = "true";
   if (!process.env.WALKTHROUGH_DIFF_THRESHOLD) {

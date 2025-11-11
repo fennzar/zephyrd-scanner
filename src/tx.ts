@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
+import { Pipeline } from "ioredis";
+
 import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
-import { Pipeline } from "ioredis";
+import { usePostgres } from "./config";
+import { stores } from "./storage/factory";
+import { deleteAllBlockRewards, upsertBlockReward } from "./db/blockRewards";
+import { insertTransactions, ConversionTransactionRecord, deleteAllTransactions } from "./db/transactions";
+import { defaultTotals, getTotals as getTotalsRow, incrementTotals, setTotals } from "./db/totals";
 
 interface IncrTotals {
   miner_reward: number;
@@ -59,7 +65,50 @@ const WALKTHROUGH_DEBUG_LOG = process.env.WALKTHROUGH_DEBUG_LOG ?? "walkthrough_
 const MINER_REWARD_BASELINE = 1391857.1317692809;
 const GOVERNANCE_REWARD_BASELINE = 73255.6385141733;
 
+function toPostgresTransactionRecord(tx: TxInfoType): ConversionTransactionRecord {
+  return {
+    hash: tx.hash,
+    blockHeight: Number(tx.block_height),
+    blockTimestamp: Number(tx.block_timestamp),
+    conversionType: tx.conversion_type,
+    conversionRate: tx.conversion_rate,
+    fromAsset: tx.from_asset,
+    fromAmount: tx.from_amount,
+    fromAmountAtoms: tx.from_amount_atoms,
+    toAsset: tx.to_asset,
+    toAmount: tx.to_amount,
+    toAmountAtoms: tx.to_amount_atoms,
+    conversionFeeAsset: tx.conversion_fee_asset,
+    conversionFeeAmount: tx.conversion_fee_amount,
+    txFeeAsset: tx.tx_fee_asset,
+    txFeeAmount: tx.tx_fee_amount,
+    txFeeAtoms: tx.tx_fee_atoms,
+  };
+}
+
 async function ensureTotalsBaseline() {
+  if (usePostgres()) {
+    const totals = await getTotalsRow();
+    if (!totals) {
+      await setTotals({
+        ...defaultTotals,
+        minerReward: MINER_REWARD_BASELINE,
+        governanceReward: GOVERNANCE_REWARD_BASELINE,
+      });
+    } else {
+      const updates: Partial<typeof defaultTotals> = {};
+      if (totals.minerReward <= 0) {
+        updates.minerReward = MINER_REWARD_BASELINE;
+      }
+      if (totals.governanceReward <= 0) {
+        updates.governanceReward = GOVERNANCE_REWARD_BASELINE;
+      }
+      if (Object.keys(updates).length > 0) {
+        await incrementTotals(updates);
+      }
+    }
+  }
+
   const totalsExists = await redis.exists("totals");
   if (!totalsExists) {
     await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE, "governance_reward", GOVERNANCE_REWARD_BASELINE);
@@ -77,19 +126,34 @@ async function ensureTotalsBaseline() {
   }
 }
 
-async function getRedisHeight() {
-  const height = await redis.get("height_txs");
+async function getStoredTxHeight() {
+  const height = await stores.scannerState.get("height_txs");
   if (!height) {
     return 0;
   }
-  return parseInt(height);
+  const parsed = Number(height);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function setRedisHeight(height: number) {
-  await redis.set("height_txs", height);
+async function setStoredTxHeight(height: number) {
+  await stores.scannerState.set("height_txs", height.toString());
 }
 
 async function getRedisPricingRecord(height: number) {
+  const record = await stores.pricing.get(height);
+  if (record) {
+    return {
+      height: record.blockHeight,
+      timestamp: record.timestamp,
+      spot: record.spot,
+      moving_average: record.movingAverage,
+      reserve: record.reserve,
+      reserve_ma: record.reserveMa,
+      stable: record.stable,
+      stable_ma: record.stableMa,
+      yield_price: record.yieldPrice,
+    };
+  }
   const pr = await redis.hget("pricing_records", height.toString());
   if (!pr) {
     return null;
@@ -129,6 +193,22 @@ async function saveBlockRewardInfo(
 
   const block_reward_info_json = JSON.stringify(block_reward_info);
   pipeline.hset("block_rewards", height, block_reward_info_json);
+
+  if (usePostgres()) {
+    await upsertBlockReward({
+      blockHeight: height,
+      minerReward: miner_reward,
+      governanceReward: governance_reward,
+      reserveReward: reserve_reward,
+      yieldReward: yield_reward,
+      minerRewardAtoms: block_reward_info.miner_reward_atoms,
+      governanceRewardAtoms: block_reward_info.governance_reward_atoms,
+      reserveRewardAtoms: block_reward_info.reserve_reward_atoms,
+      yieldRewardAtoms: block_reward_info.yield_reward_atoms,
+      baseRewardAtoms: block_reward_info.base_reward_atoms,
+      feeAdjustmentAtoms: block_reward_info.fee_adjustment_atoms,
+    });
+  }
 
   // increment totals - doing at an upper level now to avoid multiple calls
   // pipeline.hincrbyfloat("totals", "miner_reward", miner_reward);
@@ -234,6 +314,33 @@ function blankIncrTotals(): IncrTotals {
     redeem_yield_count: 0,
     redeem_yield_volume: 0,
     fees_zephusd_yield: 0,
+  };
+}
+
+function mapTotalsDelta(delta: IncrTotals) {
+  return {
+    minerReward: delta.miner_reward,
+    governanceReward: delta.governance_reward,
+    reserveReward: delta.reserve_reward,
+    yieldReward: delta.yield_reward,
+    conversionTransactions: delta.conversion_transactions,
+    mintStableCount: delta.mint_stable_count,
+    mintStableVolume: delta.mint_stable_volume,
+    feesZephusd: delta.fees_zephusd,
+    redeemStableCount: delta.redeem_stable_count,
+    redeemStableVolume: delta.redeem_stable_volume,
+    feesZeph: delta.fees_zeph,
+    mintReserveCount: delta.mint_reserve_count,
+    mintReserveVolume: delta.mint_reserve_volume,
+    feesZephrsv: delta.fees_zephrsv,
+    redeemReserveCount: delta.redeem_reserve_count,
+    redeemReserveVolume: delta.redeem_reserve_volume,
+    mintYieldCount: delta.mint_yield_count,
+    mintYieldVolume: delta.mint_yield_volume,
+    feesZyield: delta.fees_zyield,
+    redeemYieldCount: delta.redeem_yield_count,
+    redeemYieldVolume: delta.redeem_yield_volume,
+    feesZephusdYield: delta.fees_zephusd_yield,
   };
 }
 
@@ -603,7 +710,8 @@ export async function scanTransactions(reset = false) {
   const hfHeight = 89300; // if we just want to scan from the v1.0.0 HF block
   const rpcHeight = await getCurrentBlockHeight();
   // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
-  const redisHeight = await getRedisHeight();
+  const redisHeight = await getStoredTxHeight();
+  const postgresEnabled = usePostgres();
 
   await ensureTotalsBaseline();
 
@@ -620,7 +728,16 @@ export async function scanTransactions(reset = false) {
     // clear block_rewards
     await redis.del("block_rewards");
     // reset scanner height
-    await setRedisHeight(hfHeight);
+    await setStoredTxHeight(hfHeight);
+    if (postgresEnabled) {
+      await deleteAllTransactions();
+      await deleteAllBlockRewards();
+      await setTotals({
+        ...defaultTotals,
+        minerReward: MINER_REWARD_BASELINE,
+        governanceReward: GOVERNANCE_REWARD_BASELINE,
+      });
+    }
   }
 
   console.log("Fired tx scanner...");
@@ -642,10 +759,11 @@ export async function scanTransactions(reset = false) {
 
   for (let height = startingHeight; height <= rpcHeight - 1; height++) {
     const blockHashes: string[] = [];
+    const postgresBlockTransactions: ConversionTransactionRecord[] = [];
     const block: any = await getBlock(height);
     if (!block) {
       console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
-      await setRedisHeight(height);
+      await setStoredTxHeight(height);
       return;
     }
 
@@ -672,6 +790,9 @@ export async function scanTransactions(reset = false) {
       if (tx_info) {
         blockHashes.push(hash);
         pipeline.hset("txs", hash, JSON.stringify(tx_info));
+        if (postgresEnabled) {
+          postgresBlockTransactions.push(toPostgresTransactionRecord(tx_info));
+        }
       }
       if (typeof feeAtoms === "bigint") {
         totalBlockFeeAtoms += feeAtoms;
@@ -701,6 +822,10 @@ export async function scanTransactions(reset = false) {
 
     pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
 
+    if (postgresEnabled && postgresBlockTransactions.length > 0) {
+      await insertTransactions(postgresBlockTransactions);
+    }
+
     // await setRedisHeight(height);
 
     // update scan height
@@ -714,12 +839,16 @@ export async function scanTransactions(reset = false) {
     pipeline.hincrbyfloat("totals", key, total_of_total_increments[key]);
   }
 
+  if (postgresEnabled) {
+    await incrementTotals(mapTotalsDelta(total_of_total_increments));
+  }
+
   const pipelineCommandCount = pipeline.length;
   console.log(`Pipeline command count: ${pipelineCommandCount}`);
 
   // EXECUTE ALL REDIS COMMANDS IN BATCH
   await pipeline.exec();
-  await setRedisHeight(rpcHeight - 1);
+  await setStoredTxHeight(rpcHeight - 1);
 }
 
 // (async () => {

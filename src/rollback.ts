@@ -1,13 +1,31 @@
 // This file handles rolling the scanner back and removing all data from after the supplied height.
 // This is not only for debugging purposes, but also for when the chain reorgs.
 import { Pipeline } from "ioredis";
+import * as fs from "fs";
+
 import { aggregate } from "./aggregator";
 import { processZYSPriceHistory, scanPricingRecords } from "./pr";
 import redis from "./redis";
 import { scanTransactions } from "./tx";
-import { AggregatedData, ProtocolStats, getAggregatedProtocolStatsFromRedis, getBlock, getBlockProtocolStatsFromRedis, getCurrentBlockHeight, getRedisBlockRewardInfo, getRedisHeight } from "./utils";
+import {
+  AggregatedData,
+  ProtocolStats,
+  getAggregatedProtocolStatsFromRedis,
+  getBlock,
+  getBlockProtocolStatsFromRedis,
+  getCurrentBlockHeight,
+  getRedisBlockRewardInfo,
+  getRedisHeight,
+} from "./utils";
 import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns } from "./yield";
-import * as fs from 'fs';
+import { usePostgres } from "./config";
+import { stores } from "./storage/factory";
+import { deleteTransactionsAboveHeight } from "./db/transactions";
+import { deleteBlockRewardsAboveHeight } from "./db/blockRewards";
+import { deleteBlockStatsAboveHeight, deleteAggregatesFromTimestamp } from "./db/protocolStats";
+import { getPrismaClient } from "./db";
+import { clearPostgresAggregationState, truncatePostgresData } from "./db/admin";
+import { setTotals as setSqlTotals } from "./db/totals";
 
 // Function to append log information to a file
 function writeLogToFile(logContent: string) {
@@ -19,6 +37,8 @@ const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 export async function rollbackScanner(rollBackHeight: number) {
   //set variable in redis to indicate that we are rolling back
   await redis.set("scanner_rolling_back", "true");
+  const postgresEnabled = usePostgres();
+  const prisma = postgresEnabled ? getPrismaClient() : null;
 
   const daemon_height = await getCurrentBlockHeight();
   const rollback_block_info = await getBlock(rollBackHeight);
@@ -58,6 +78,10 @@ export async function rollbackScanner(rollBackHeight: number) {
 
   // Set "height_aggregator" to the rollBackHeight
   await redis.set("height_aggregator", rollBackHeight.toString());
+  if (postgresEnabled && prisma) {
+    await deleteBlockStatsAboveHeight(rollBackHeight);
+    await stores.scannerState.set("height_aggregator", rollBackHeight.toString());
+  }
 
   // Remove data from "protocol_stats_hourly"
   const hourlyResults = await redis.zrangebyscore("protocol_stats_hourly", rollback_timestamp.toString(), "+inf");
@@ -71,6 +95,10 @@ export async function rollbackScanner(rollBackHeight: number) {
 
   // Set "timestamp_aggregator_hourly" to the rollBackTimestamp
   await redis.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
+  if (postgresEnabled) {
+    await deleteAggregatesFromTimestamp("hour", rollback_timestamp);
+    await stores.scannerState.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
+  }
 
   // Remove data from "protocol_stats_daily"
   const dailyResults = await redis.zrangebyscore("protocol_stats_daily", rollback_timestamp.toString(), "+inf");
@@ -84,6 +112,10 @@ export async function rollbackScanner(rollBackHeight: number) {
 
   // Set "timestamp_aggregator_daily" to the rollBackTimestamp
   await redis.set("timestamp_aggregator_daily", rollback_timestamp.toString());
+  if (postgresEnabled) {
+    await deleteAggregatesFromTimestamp("day", rollback_timestamp);
+    await stores.scannerState.set("timestamp_aggregator_daily", rollback_timestamp.toString());
+  }
 
   // ---------------------------------------------------------
   // -------------------- Pricing Records --------------------
@@ -98,6 +130,16 @@ export async function rollbackScanner(rollBackHeight: number) {
   await pipeline.exec();
   // Set "height_prs" to the rollBackHeight
   await redis.set("height_prs", rollBackHeight.toString());
+  if (postgresEnabled && prisma) {
+    await prisma.pricingRecord.deleteMany({
+      where: {
+        blockHeight: {
+          gt: rollBackHeight,
+        },
+      },
+    });
+    await stores.scannerState.set("height_prs", rollBackHeight.toString());
+  }
 
   console.log(`\t Rescanning Pricing Records...`);
   // Refire scanPricingRecords to repopulate the pricing records
@@ -134,6 +176,11 @@ export async function rollbackScanner(rollBackHeight: number) {
 
   // Set "height_txs" to the rollBackHeight
   await redis.set("height_txs", rollBackHeight.toString());
+  if (postgresEnabled) {
+    await deleteBlockRewardsAboveHeight(rollBackHeight);
+    await deleteTransactionsAboveHeight(rollBackHeight);
+    await stores.scannerState.set("height_txs", rollBackHeight.toString());
+  }
 
   console.log(`\t Rescanning Transactions...`);
 
@@ -172,7 +219,7 @@ export async function detectAndHandleReorg() {
   await setBlockHashesIfEmpty();
 
   // Start from the current scanner height
-  let storedHeight = Number(await redis.get("height_aggregator"));
+  let storedHeight = await getRedisHeight();
   let rollbackHeight = null;
 
   // Loop backwards through the stored block heights to compare hashes
@@ -574,6 +621,34 @@ export async function retallyTotals() {
 
   console.log(`Totals recalculated successfully.`);
   console.log(totals);
+
+  if (usePostgres()) {
+    await setSqlTotals({
+      conversionTransactions: totals.conversion_transactions,
+      yieldConversionTransactions: totals.yield_conversion_transactions,
+      mintReserveCount: totals.mint_reserve_count,
+      mintReserveVolume: totals.mint_reserve_volume,
+      feesZephrsv: totals.fees_zephrsv,
+      redeemReserveCount: totals.redeem_reserve_count,
+      redeemReserveVolume: totals.redeem_reserve_volume,
+      feesZephusd: totals.fees_zephusd,
+      mintStableCount: totals.mint_stable_count,
+      mintStableVolume: totals.mint_stable_volume,
+      redeemStableCount: totals.redeem_stable_count,
+      redeemStableVolume: totals.redeem_stable_volume,
+      feesZeph: totals.fees_zeph,
+      mintYieldCount: totals.mint_yield_count,
+      mintYieldVolume: totals.mint_yield_volume,
+      feesZyield: totals.fees_zyield,
+      redeemYieldCount: totals.redeem_yield_count,
+      redeemYieldVolume: totals.redeem_yield_volume,
+      feesZephusdYield: totals.fees_zephusd_yield,
+      minerReward: totals.miner_reward,
+      governanceReward: totals.governance_reward,
+      reserveReward: totals.reserve_reward,
+      yieldReward: totals.yield_reward,
+    });
+  }
 }
 
 
@@ -595,6 +670,7 @@ async function clearAggregationArtifacts() {
     pipeline.del(key);
   }
   await pipeline.exec();
+  await clearPostgresAggregationState();
 }
 
 type ResetScope = "full" | "aggregation";
@@ -607,6 +683,7 @@ export async function resetScanner(scope: ResetScope = "aggregation") {
     if (scope === "full") {
       console.log("[resetScanner] Flushing Redis database");
       await redis.flushdb();
+      await truncatePostgresData();
 
       console.log("[resetScanner] Rescanning pricing records");
       await scanPricingRecords();
@@ -641,9 +718,3 @@ export async function resetScanner(scope: ResetScope = "aggregation") {
     await redis.del("scanner_rolling_back");
   }
 }
-
-
-
-
-
-

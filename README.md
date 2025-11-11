@@ -21,6 +21,55 @@ The scanner reads Redis connection details from environment variables. Defaults 
 - `REDIS_SOURCE_DB` – optional source DB index (used by the background preparation script, defaults to `0`).
 - `AUTO_EXPORT_ENABLED`, `AUTO_EXPORT_INTERVAL`, `AUTO_EXPORT_DIR`, `AUTO_EXPORT_PRETTY` – control automatic milestone exports (see below).
 
+### PostgreSQL configuration
+
+All persistent scanner data can also live in PostgreSQL via Prisma. Set the following to enable it:
+
+- `DATABASE_URL` – native Postgres connection string (example: `postgresql://zephyrdscanner:zephyrdscanner@localhost:5432/zephyrdscanner?schema=public`).
+- `DATA_STORE` – `redis` (default), `postgres`, or `hybrid`. The scanner writes to the selected store(s) and the API reads from the same source.
+
+#### Store selection
+
+- `DATA_STORE=redis` – legacy behaviour; everything stays in Redis.
+- `DATA_STORE=postgres` – scanner + API read/write Postgres only.
+- `DATA_STORE=hybrid` – scanner dual-writes to Redis and Postgres so you can validate both before cutting over. The public HTTP API automatically targets whatever store the scanner instance declares via `DATA_STORE`.
+
+You can also run two scanner processes (one per store) instead of hybrid mode. For example, keep production on Redis while running a background scanner with `DATA_STORE=postgres` so each API tracks its own backing store.
+
+#### Tooling & commands
+
+| Command | Description |
+| --- | --- |
+| `npm run prisma:migrate:deploy` | Apply Prisma migrations after configuring `DATABASE_URL`. |
+| `npm run prisma:generate` | Regenerate the Prisma client if the schema changes. |
+| `npx prisma studio` | Launch the Prisma web UI to inspect/edit tables. |
+| `npm run db:reset` | Drop and recreate the Postgres database referenced by `DATABASE_URL` (useful before re-importing). |
+| `npm run db:migrate-from-redis` | Bulk-import the current Redis dataset (10 000-row batches with progress logs). |
+| `npm run compare-stores` | Randomly sample docs from both stores and emit a parity report (DATA_STORE is forced to `hybrid`). |
+| `npm run db:export-sql` | Dump each Prisma model to JSON under `exports/sql/...` for lightweight snapshots. |
+| `npm run db:backup` | Run `pg_dump` against `DATABASE_URL` and write `backups/postgres_backup_<timestamp>.sql`. |
+| `DATA_STORE=postgres npm run scanner` | Run the scanner/server against Postgres only (set `DATA_STORE=hybrid` to dual-write during validation). |
+
+#### Migrating from Redis
+
+1. Ensure `DATABASE_URL` points at your Postgres instance (export it in the shell or place it in `.env`).
+2. Start from a clean slate with `npm run db:reset`.
+3. Apply the schema via `npx prisma migrate deploy`.
+4. Run `npm run db:migrate-from-redis`. The script reads every Redis structure, writes Postgres in 10 k chunks, and logs `[migrate]` progress so you can see long-running sections.
+5. Validate parity with `npm run compare-stores`. Fix any red lines, then re-run until the report is clean.
+6. Switch the live scanner/API to Postgres by setting `DATA_STORE=postgres` (or keep Redis online and run a second Postgres-backed instance for shadow traffic).
+
+The migrator is idempotent for existing rows (upserts) and can be rerun after partial imports. Reserve snapshot migration is included, so historical reserve data survives the move.
+
+#### Exports, backups, and restores
+
+- `npm run db:export-sql` produces structured JSON per table under `exports/sql/`. Useful for sharing subsets of data or re-importing with application scripts.
+- `npm run db:backup` captures a raw SQL dump via `pg_dump` in `backups/` (the script strips Prisma’s `?schema=` suffix automatically). Restore with `psql -d <target_db> -f backups/postgres_backup_<timestamp>.sql`.
+
+#### Resetting Postgres fast
+
+`npm run db:reset` uses `dropdb`/`createdb` behind the scenes so you can wipe the database, rerun migrations, and import fresh data without manually shelling into Postgres.
+
 You can run two scanner instances side by side by pointing each one at a different Redis DB index:
 
 ```sh
@@ -131,6 +180,8 @@ npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_61
 npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --skip-existing
 ````
 
+For Postgres backups, run `npm run db:export-sql` for JSON snapshots under `exports/sql/...` or `npm run db:backup` to capture a raw `pg_dump` file in `backups/`.
+
 ````
 
 Configuration knobs:
@@ -144,6 +195,8 @@ Configuration knobs:
 ### Walkthrough mode
 
 Run `npm run walkthrough` to flush Redis, force `ONLINE=true`, enable walkthrough logging (`WALKTHROUGH_MODE=true`, default diff threshold `1`), and boot the scanner. Pair with a daemon started using `--block-sync-size=1` to find the first block where cached stats diverge from on-chain reserve info. During a walkthrough run the scanner mirrors the latest reserve snapshots saved in Redis (or falls back to the historical JSON files) so you can reconcile cached protocol stats against daemon truth block by block. You can point `WALKTHROUGH_SNAPSHOT_SOURCE` at `file` to replay the historical JSON dumps, or stay on the default `redis` source to inspect the live snapshots written during synced operation. Divergences detected by the walkthrough are emitted to the console and the same reports are persisted in `walkthrough_reports/` for later review.
+
+When `DATA_STORE=postgres`, the walkthrough reset now truncates the Postgres tables as well so both stores remain in sync before replaying the chain.
 
 Walkthrough runs capture:
 

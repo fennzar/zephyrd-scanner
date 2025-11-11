@@ -19,6 +19,17 @@ import {
   logProjectedBaseStats,
   logProjectedReturns,
 } from "./logger";
+import { usePostgres } from "./config";
+import {
+  upsertHistoricalReturns,
+  fetchHistoricalReturns,
+  upsertProjectedReturns,
+  fetchProjectedReturns as fetchProjectedReturnsSql,
+  replaceApyHistory,
+  fetchApyHistory as fetchApyHistorySql,
+  appendZysPriceHistory,
+  fetchZysPriceHistory as fetchZysPriceHistorySql,
+} from "./db/yieldAnalytics";
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
@@ -282,6 +293,9 @@ export async function determineHistoricalReturns() {
 
     // save to redis
     await redis.set("historical_returns", JSON.stringify(historicalStats));
+    if (usePostgres()) {
+      await upsertHistoricalReturns(historicalStats);
+    }
 
     logHistoricalReturns([
       {
@@ -812,6 +826,9 @@ export async function determineProjectedReturns(test = false) {
   // save to redis
   if (!test) {
     await redis.set("projected_returns", JSON.stringify(projectedStats));
+    if (usePostgres()) {
+      await upsertProjectedReturns(projectedStats);
+    }
   }
 
 }
@@ -943,6 +960,12 @@ export async function getHistoricalReturnsFromRedis(test = false): Promise<Histo
     return dummyHistoricalStats;
 
   }
+  if (usePostgres()) {
+    const stored = await fetchHistoricalReturns();
+    if (stored) {
+      return stored;
+    }
+  }
   const historicalStats = await redis.get("historical_returns");
   if (!historicalStats) {
     return null;
@@ -966,6 +989,12 @@ export async function getProjectedReturnsFromRedis(test = false): Promise<Projec
     return dummyProjectedStats;
   }
 
+  if (usePostgres()) {
+    const stored = await fetchProjectedReturnsSql();
+    if (stored) {
+      return stored;
+    }
+  }
   const projectedStats = await redis.get("projected_returns");
   if (!projectedStats) {
     return null;
@@ -1097,6 +1126,9 @@ export async function determineAPYHistory(reset = false) {
 
     // Store APY history to Redis
     await redis.set("apy_history", JSON.stringify(apyHistory));
+    if (usePostgres()) {
+      await replaceApyHistory(apyHistory);
+    }
 
     console.log(`determineAPYHistory | APY history successfully stored in Redis`);
     console.log(`determineAPYHistory | Total data points processed: ${historicalData.length}`);
@@ -1110,6 +1142,12 @@ export async function determineAPYHistory(reset = false) {
 
 
 export async function getAPYHistoryFromRedis(): Promise<ApyHistoryEntry[] | null> {
+  if (usePostgres()) {
+    const rows = await fetchApyHistorySql();
+    if (rows.length > 0) {
+      return rows;
+    }
+  }
   const apyHistory = await redis.get("apy_history");
   if (!apyHistory) {
     return null;

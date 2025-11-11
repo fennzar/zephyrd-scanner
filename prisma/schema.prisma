@@ -1,0 +1,484 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum HistoricalReturnRange {
+  LAST_BLOCK
+  ONE_DAY
+  ONE_WEEK
+  ONE_MONTH
+  THREE_MONTHS
+  ONE_YEAR
+  ALL_TIME
+}
+
+enum ProjectionTimeframe {
+  ONE_WEEK
+  ONE_MONTH
+  THREE_MONTHS
+  SIX_MONTHS
+  ONE_YEAR
+}
+
+enum ProjectionScenario {
+  LOW
+  SIMPLE
+  HIGH
+}
+
+model PricingRecord {
+  blockHeight   Int      @id @map("block_height")
+  timestamp     Int
+  spot          Float
+  movingAverage Float    @map("moving_average")
+  reserve       Float
+  reserveMa     Float    @map("reserve_ma")
+  stable        Float
+  stableMa      Float    @map("stable_ma")
+  yieldPrice    Float    @map("yield_price")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("pricing_records")
+}
+
+model BlockReward {
+  blockHeight           Int      @id @map("block_height")
+  minerReward           Float    @map("miner_reward")
+  governanceReward      Float    @map("governance_reward")
+  reserveReward         Float    @map("reserve_reward")
+  yieldReward           Float    @map("yield_reward")
+  minerRewardAtoms      String?  @map("miner_reward_atoms")
+  governanceRewardAtoms String?  @map("governance_reward_atoms")
+  reserveRewardAtoms    String?  @map("reserve_reward_atoms")
+  yieldRewardAtoms      String?  @map("yield_reward_atoms")
+  baseRewardAtoms       String?  @map("base_reward_atoms")
+  feeAdjustmentAtoms    String?  @map("fee_adjustment_atoms")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@map("block_rewards")
+}
+
+model ConversionTransaction {
+  hash                String   @id
+  blockHeight         Int      @map("block_height")
+  blockTimestamp      Int      @map("block_timestamp")
+  conversionType      String   @map("conversion_type")
+  conversionRate      Float    @map("conversion_rate")
+  fromAsset           String   @map("from_asset")
+  fromAmount          Float    @map("from_amount")
+  fromAmountAtoms     String?  @map("from_amount_atoms")
+  toAsset             String   @map("to_asset")
+  toAmount            Float    @map("to_amount")
+  toAmountAtoms       String?  @map("to_amount_atoms")
+  conversionFeeAsset  String   @map("conversion_fee_asset")
+  conversionFeeAmount Float    @map("conversion_fee_amount")
+  txFeeAsset          String   @map("tx_fee_asset")
+  txFeeAmount         Float    @map("tx_fee_amount")
+  txFeeAtoms          String?  @map("tx_fee_atoms")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([blockHeight], map: "idx_ct_block_height")
+  @@index([blockTimestamp], map: "idx_ct_block_timestamp")
+  @@map("transactions")
+}
+
+model ProtocolStatsBlock {
+  blockHeight                      Int      @id @map("block_height")
+  blockTimestamp                   Int      @map("block_timestamp")
+  spot                             Float
+  movingAverage                    Float    @map("moving_average")
+  reserve                          Float
+  reserveMa                        Float    @map("reserve_ma")
+  stable                           Float
+  stableMa                         Float    @map("stable_ma")
+  yieldPrice                       Float    @map("yield_price")
+  zephInReserve                    Float    @map("zeph_in_reserve")
+  zephInReserveAtoms               String?  @map("zeph_in_reserve_atoms")
+  zsdInYieldReserve                Float    @map("zsd_in_yield_reserve")
+  zephCirc                         Float    @map("zeph_circ")
+  zephusdCirc                      Float    @map("zephusd_circ")
+  zephrsvCirc                      Float    @map("zephrsv_circ")
+  zyieldCirc                       Float    @map("zyield_circ")
+  assets                           Float
+  assetsMa                         Float    @map("assets_ma")
+  liabilities                      Float
+  equity                           Float
+  equityMa                         Float    @map("equity_ma")
+  reserveRatio                     Float?   @map("reserve_ratio")
+  reserveRatioMa                   Float?   @map("reserve_ratio_ma")
+  zsdAccruedInYieldReserve         Float    @map("zsd_accrued_in_yield_reserve_from_yield_reward")
+  zsdMintedForYield                Float    @map("zsd_minted_for_yield")
+  conversionTransactionsCount      Int      @map("conversion_transactions_count")
+  yieldConversionTransactionsCount Int      @map("yield_conversion_transactions_count")
+  mintReserveCount                 Int      @map("mint_reserve_count")
+  mintReserveVolume                Float    @map("mint_reserve_volume")
+  feesZephrsv                      Float    @map("fees_zephrsv")
+  redeemReserveCount               Int      @map("redeem_reserve_count")
+  redeemReserveVolume              Float    @map("redeem_reserve_volume")
+  feesZephusd                      Float    @map("fees_zephusd")
+  mintStableCount                  Int      @map("mint_stable_count")
+  mintStableVolume                 Float    @map("mint_stable_volume")
+  redeemStableCount                Int      @map("redeem_stable_count")
+  redeemStableVolume               Float    @map("redeem_stable_volume")
+  feesZeph                         Float    @map("fees_zeph")
+  mintYieldCount                   Int      @map("mint_yield_count")
+  mintYieldVolume                  Float    @map("mint_yield_volume")
+  redeemYieldCount                 Int      @map("redeem_yield_count")
+  redeemYieldVolume                Float    @map("redeem_yield_volume")
+  feesZephusdYield                 Float    @map("fees_zephusd_yield")
+  feesZyield                       Float    @map("fees_zyield")
+  createdAt                        DateTime @default(now()) @map("created_at")
+
+  @@map("protocol_stats")
+}
+
+model ProtocolStatsHourly {
+  windowStart                      Int      @id @map("window_start")
+  windowEnd                        Int?     @map("window_end")
+  pending                          Boolean  @default(false)
+  spotOpen                         Float    @map("spot_open")
+  spotClose                        Float    @map("spot_close")
+  spotHigh                         Float    @map("spot_high")
+  spotLow                          Float    @map("spot_low")
+  movingAverageOpen                Float    @map("moving_average_open")
+  movingAverageClose               Float    @map("moving_average_close")
+  movingAverageHigh                Float    @map("moving_average_high")
+  movingAverageLow                 Float    @map("moving_average_low")
+  reserveOpen                      Float    @map("reserve_open")
+  reserveClose                     Float    @map("reserve_close")
+  reserveHigh                      Float    @map("reserve_high")
+  reserveLow                       Float    @map("reserve_low")
+  reserveMaOpen                    Float    @map("reserve_ma_open")
+  reserveMaClose                   Float    @map("reserve_ma_close")
+  reserveMaHigh                    Float    @map("reserve_ma_high")
+  reserveMaLow                     Float    @map("reserve_ma_low")
+  stableOpen                       Float    @map("stable_open")
+  stableClose                      Float    @map("stable_close")
+  stableHigh                       Float    @map("stable_high")
+  stableLow                        Float    @map("stable_low")
+  stableMaOpen                     Float    @map("stable_ma_open")
+  stableMaClose                    Float    @map("stable_ma_close")
+  stableMaHigh                     Float    @map("stable_ma_high")
+  stableMaLow                      Float    @map("stable_ma_low")
+  zyieldPriceOpen                  Float    @map("zyield_price_open")
+  zyieldPriceClose                 Float    @map("zyield_price_close")
+  zyieldPriceHigh                  Float    @map("zyield_price_high")
+  zyieldPriceLow                   Float    @map("zyield_price_low")
+  zephInReserveOpen                Float    @map("zeph_in_reserve_open")
+  zephInReserveClose               Float    @map("zeph_in_reserve_close")
+  zephInReserveHigh                Float    @map("zeph_in_reserve_high")
+  zephInReserveLow                 Float    @map("zeph_in_reserve_low")
+  zsdInYieldReserveOpen            Float    @map("zsd_in_yield_reserve_open")
+  zsdInYieldReserveClose           Float    @map("zsd_in_yield_reserve_close")
+  zsdInYieldReserveHigh            Float    @map("zsd_in_yield_reserve_high")
+  zsdInYieldReserveLow             Float    @map("zsd_in_yield_reserve_low")
+  zephCircOpen                     Float    @map("zeph_circ_open")
+  zephCircClose                    Float    @map("zeph_circ_close")
+  zephCircHigh                     Float    @map("zeph_circ_high")
+  zephCircLow                      Float    @map("zeph_circ_low")
+  zephusdCircOpen                  Float    @map("zephusd_circ_open")
+  zephusdCircClose                 Float    @map("zephusd_circ_close")
+  zephusdCircHigh                  Float    @map("zephusd_circ_high")
+  zephusdCircLow                   Float    @map("zephusd_circ_low")
+  zephrsvCircOpen                  Float    @map("zephrsv_circ_open")
+  zephrsvCircClose                 Float    @map("zephrsv_circ_close")
+  zephrsvCircHigh                  Float    @map("zephrsv_circ_high")
+  zephrsvCircLow                   Float    @map("zephrsv_circ_low")
+  zyieldCircOpen                   Float    @map("zyield_circ_open")
+  zyieldCircClose                  Float    @map("zyield_circ_close")
+  zyieldCircHigh                   Float    @map("zyield_circ_high")
+  zyieldCircLow                    Float    @map("zyield_circ_low")
+  assetsOpen                       Float    @map("assets_open")
+  assetsClose                      Float    @map("assets_close")
+  assetsHigh                       Float    @map("assets_high")
+  assetsLow                        Float    @map("assets_low")
+  assetsMaOpen                     Float    @map("assets_ma_open")
+  assetsMaClose                    Float    @map("assets_ma_close")
+  assetsMaHigh                     Float    @map("assets_ma_high")
+  assetsMaLow                      Float    @map("assets_ma_low")
+  liabilitiesOpen                  Float    @map("liabilities_open")
+  liabilitiesClose                 Float    @map("liabilities_close")
+  liabilitiesHigh                  Float    @map("liabilities_high")
+  liabilitiesLow                   Float    @map("liabilities_low")
+  equityOpen                       Float    @map("equity_open")
+  equityClose                      Float    @map("equity_close")
+  equityHigh                       Float    @map("equity_high")
+  equityLow                        Float    @map("equity_low")
+  equityMaOpen                     Float    @map("equity_ma_open")
+  equityMaClose                    Float    @map("equity_ma_close")
+  equityMaHigh                     Float    @map("equity_ma_high")
+  equityMaLow                      Float    @map("equity_ma_low")
+  reserveRatioOpen                 Float    @map("reserve_ratio_open")
+  reserveRatioClose                Float    @map("reserve_ratio_close")
+  reserveRatioHigh                 Float    @map("reserve_ratio_high")
+  reserveRatioLow                  Float    @map("reserve_ratio_low")
+  reserveRatioMaOpen               Float    @map("reserve_ratio_ma_open")
+  reserveRatioMaClose              Float    @map("reserve_ratio_ma_close")
+  reserveRatioMaHigh               Float    @map("reserve_ratio_ma_high")
+  reserveRatioMaLow                Float    @map("reserve_ratio_ma_low")
+  conversionTransactionsCount      Int      @map("conversion_transactions_count")
+  yieldConversionTransactionsCount Int      @map("yield_conversion_transactions_count")
+  mintReserveCount                 Int      @map("mint_reserve_count")
+  mintReserveVolume                Float    @map("mint_reserve_volume")
+  feesZephrsv                      Float    @map("fees_zephrsv")
+  redeemReserveCount               Int      @map("redeem_reserve_count")
+  redeemReserveVolume              Float    @map("redeem_reserve_volume")
+  feesZephusd                      Float    @map("fees_zephusd")
+  mintStableCount                  Int      @map("mint_stable_count")
+  mintStableVolume                 Float    @map("mint_stable_volume")
+  redeemStableCount                Int      @map("redeem_stable_count")
+  redeemStableVolume               Float    @map("redeem_stable_volume")
+  feesZeph                         Float    @map("fees_zeph")
+  mintYieldCount                   Int      @map("mint_yield_count")
+  mintYieldVolume                  Float    @map("mint_yield_volume")
+  feesZyield                       Float    @map("fees_zyield")
+  redeemYieldCount                 Int      @map("redeem_yield_count")
+  redeemYieldVolume                Float    @map("redeem_yield_volume")
+  feesZephusdYield                 Float    @map("fees_zephusd_yield")
+  createdAt                        DateTime @default(now()) @map("created_at")
+
+  @@map("protocol_stats_hourly")
+}
+
+model ProtocolStatsDaily {
+  windowStart                      Int      @id @map("window_start")
+  windowEnd                        Int?     @map("window_end")
+  pending                          Boolean  @default(false)
+  spotOpen                         Float    @map("spot_open")
+  spotClose                        Float    @map("spot_close")
+  spotHigh                         Float    @map("spot_high")
+  spotLow                          Float    @map("spot_low")
+  movingAverageOpen                Float    @map("moving_average_open")
+  movingAverageClose               Float    @map("moving_average_close")
+  movingAverageHigh                Float    @map("moving_average_high")
+  movingAverageLow                 Float    @map("moving_average_low")
+  reserveOpen                      Float    @map("reserve_open")
+  reserveClose                     Float    @map("reserve_close")
+  reserveHigh                      Float    @map("reserve_high")
+  reserveLow                       Float    @map("reserve_low")
+  reserveMaOpen                    Float    @map("reserve_ma_open")
+  reserveMaClose                   Float    @map("reserve_ma_close")
+  reserveMaHigh                    Float    @map("reserve_ma_high")
+  reserveMaLow                     Float    @map("reserve_ma_low")
+  stableOpen                       Float    @map("stable_open")
+  stableClose                      Float    @map("stable_close")
+  stableHigh                       Float    @map("stable_high")
+  stableLow                        Float    @map("stable_low")
+  stableMaOpen                     Float    @map("stable_ma_open")
+  stableMaClose                    Float    @map("stable_ma_close")
+  stableMaHigh                     Float    @map("stable_ma_high")
+  stableMaLow                      Float    @map("stable_ma_low")
+  zyieldPriceOpen                  Float    @map("zyield_price_open")
+  zyieldPriceClose                 Float    @map("zyield_price_close")
+  zyieldPriceHigh                  Float    @map("zyield_price_high")
+  zyieldPriceLow                   Float    @map("zyield_price_low")
+  zephInReserveOpen                Float    @map("zeph_in_reserve_open")
+  zephInReserveClose               Float    @map("zeph_in_reserve_close")
+  zephInReserveHigh                Float    @map("zeph_in_reserve_high")
+  zephInReserveLow                 Float    @map("zeph_in_reserve_low")
+  zsdInYieldReserveOpen            Float    @map("zsd_in_yield_reserve_open")
+  zsdInYieldReserveClose           Float    @map("zsd_in_yield_reserve_close")
+  zsdInYieldReserveHigh            Float    @map("zsd_in_yield_reserve_high")
+  zsdInYieldReserveLow             Float    @map("zsd_in_yield_reserve_low")
+  zephCircOpen                     Float    @map("zeph_circ_open")
+  zephCircClose                    Float    @map("zeph_circ_close")
+  zephCircHigh                     Float    @map("zeph_circ_high")
+  zephCircLow                      Float    @map("zeph_circ_low")
+  zephusdCircOpen                  Float    @map("zephusd_circ_open")
+  zephusdCircClose                 Float    @map("zephusd_circ_close")
+  zephusdCircHigh                  Float    @map("zephusd_circ_high")
+  zephusdCircLow                   Float    @map("zephusd_circ_low")
+  zephrsvCircOpen                  Float    @map("zephrsv_circ_open")
+  zephrsvCircClose                 Float    @map("zephrsv_circ_close")
+  zephrsvCircHigh                  Float    @map("zephrsv_circ_high")
+  zephrsvCircLow                   Float    @map("zephrsv_circ_low")
+  zyieldCircOpen                   Float    @map("zyield_circ_open")
+  zyieldCircClose                  Float    @map("zyield_circ_close")
+  zyieldCircHigh                   Float    @map("zyield_circ_high")
+  zyieldCircLow                    Float    @map("zyield_circ_low")
+  assetsOpen                       Float    @map("assets_open")
+  assetsClose                      Float    @map("assets_close")
+  assetsHigh                       Float    @map("assets_high")
+  assetsLow                        Float    @map("assets_low")
+  assetsMaOpen                     Float    @map("assets_ma_open")
+  assetsMaClose                    Float    @map("assets_ma_close")
+  assetsMaHigh                     Float    @map("assets_ma_high")
+  assetsMaLow                      Float    @map("assets_ma_low")
+  liabilitiesOpen                  Float    @map("liabilities_open")
+  liabilitiesClose                 Float    @map("liabilities_close")
+  liabilitiesHigh                  Float    @map("liabilities_high")
+  liabilitiesLow                   Float    @map("liabilities_low")
+  equityOpen                       Float    @map("equity_open")
+  equityClose                      Float    @map("equity_close")
+  equityHigh                       Float    @map("equity_high")
+  equityLow                        Float    @map("equity_low")
+  equityMaOpen                     Float    @map("equity_ma_open")
+  equityMaClose                    Float    @map("equity_ma_close")
+  equityMaHigh                     Float    @map("equity_ma_high")
+  equityMaLow                      Float    @map("equity_ma_low")
+  reserveRatioOpen                 Float    @map("reserve_ratio_open")
+  reserveRatioClose                Float    @map("reserve_ratio_close")
+  reserveRatioHigh                 Float    @map("reserve_ratio_high")
+  reserveRatioLow                  Float    @map("reserve_ratio_low")
+  reserveRatioMaOpen               Float    @map("reserve_ratio_ma_open")
+  reserveRatioMaClose              Float    @map("reserve_ratio_ma_close")
+  reserveRatioMaHigh               Float    @map("reserve_ratio_ma_high")
+  reserveRatioMaLow                Float    @map("reserve_ratio_ma_low")
+  conversionTransactionsCount      Int      @map("conversion_transactions_count")
+  yieldConversionTransactionsCount Int      @map("yield_conversion_transactions_count")
+  mintReserveCount                 Int      @map("mint_reserve_count")
+  mintReserveVolume                Float    @map("mint_reserve_volume")
+  feesZephrsv                      Float    @map("fees_zephrsv")
+  redeemReserveCount               Int      @map("redeem_reserve_count")
+  redeemReserveVolume              Float    @map("redeem_reserve_volume")
+  feesZephusd                      Float    @map("fees_zephusd")
+  mintStableCount                  Int      @map("mint_stable_count")
+  mintStableVolume                 Float    @map("mint_stable_volume")
+  redeemStableCount                Int      @map("redeem_stable_count")
+  redeemStableVolume               Float    @map("redeem_stable_volume")
+  feesZeph                         Float    @map("fees_zeph")
+  mintYieldCount                   Int      @map("mint_yield_count")
+  mintYieldVolume                  Float    @map("mint_yield_volume")
+  feesZyield                       Float    @map("fees_zyield")
+  redeemYieldCount                 Int      @map("redeem_yield_count")
+  redeemYieldVolume                Float    @map("redeem_yield_volume")
+  feesZephusdYield                 Float    @map("fees_zephusd_yield")
+  createdAt                        DateTime @default(now()) @map("created_at")
+
+  @@map("protocol_stats_daily")
+}
+
+model ReserveSnapshot {
+  previousHeight       Int      @id @map("previous_height")
+  reserveHeight        Int      @map("reserve_height")
+  capturedAt           DateTime @map("captured_at")
+  hfVersion            Int      @map("hf_version")
+  zephReserveAtoms     String   @map("zeph_reserve_atoms")
+  zephReserve          Float    @map("zeph_reserve")
+  zsdCircAtoms         String   @map("zsd_circ_atoms")
+  zsdCirc              Float    @map("zsd_circ")
+  zrsCircAtoms         String   @map("zrs_circ_atoms")
+  zrsCirc              Float    @map("zrs_circ")
+  zyieldCircAtoms      String   @map("zyield_circ_atoms")
+  zyieldCirc           Float    @map("zyield_circ")
+  zsdYieldReserveAtoms String   @map("zsd_yield_reserve_atoms")
+  zsdYieldReserve      Float    @map("zsd_yield_reserve")
+  reserveRatioAtoms    String   @map("reserve_ratio_atoms")
+  reserveRatio         Float?   @map("reserve_ratio")
+  reserveRatioMaAtoms  String?  @map("reserve_ratio_ma_atoms")
+  reserveRatioMa       Float?   @map("reserve_ratio_ma")
+  pricingRecord        Json?
+  rawPayload           Json?    @map("raw")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@map("reserve_snapshots")
+}
+
+model ReserveMismatchReport {
+  blockHeight   Int      @id @map("block_height")
+  reserveHeight Int      @map("reserve_height")
+  mismatch      Boolean
+  source        String
+  sourceHeight  Int?     @map("source_height")
+  snapshotPath  String?  @map("snapshot_path")
+  diffs         Json
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("reserve_mismatch_reports")
+}
+
+model Totals {
+  id                          Int      @id @default(1)
+  conversionTransactions      Float    @map("conversion_transactions")
+  yieldConversionTransactions Float    @map("yield_conversion_transactions")
+  mintReserveCount            Float    @map("mint_reserve_count")
+  mintReserveVolume           Float    @map("mint_reserve_volume")
+  feesZephrsv                 Float    @map("fees_zephrsv")
+  redeemReserveCount          Float    @map("redeem_reserve_count")
+  redeemReserveVolume         Float    @map("redeem_reserve_volume")
+  feesZephusd                 Float    @map("fees_zephusd")
+  mintStableCount             Float    @map("mint_stable_count")
+  mintStableVolume            Float    @map("mint_stable_volume")
+  redeemStableCount           Float    @map("redeem_stable_count")
+  redeemStableVolume          Float    @map("redeem_stable_volume")
+  feesZeph                    Float    @map("fees_zeph")
+  mintYieldCount              Float    @map("mint_yield_count")
+  mintYieldVolume             Float    @map("mint_yield_volume")
+  feesZyield                  Float    @map("fees_zyield")
+  redeemYieldCount            Float    @map("redeem_yield_count")
+  redeemYieldVolume           Float    @map("redeem_yield_volume")
+  feesZephusdYield            Float    @map("fees_zephusd_yield")
+  minerReward                 Float    @map("miner_reward")
+  governanceReward            Float    @map("governance_reward")
+  reserveReward               Float    @map("reserve_reward")
+  yieldReward                 Float    @map("yield_reward")
+  updatedAt                   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("totals")
+}
+
+model ScannerState {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("scanner_state")
+}
+
+model LiveStatsCache {
+  id        Int      @id @default(1)
+  payload   Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("live_stats_cache")
+}
+
+model HistoricalReturn {
+  range        HistoricalReturnRange @id
+  returnPct    Float                 @map("return_pct")
+  zsdAccrued   Float                 @map("zsd_accrued")
+  effectiveApy Float?                @map("effective_apy")
+  updatedAt    DateTime              @default(now()) @updatedAt @map("updated_at")
+
+  @@map("historical_returns")
+}
+
+model ProjectedReturn {
+  timeframe ProjectionTimeframe
+  scenario  ProjectionScenario
+  zysPrice  Float               @map("zys_price")
+  returnPct Float               @map("return_pct")
+  updatedAt DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  @@id([timeframe, scenario])
+  @@map("projected_returns")
+}
+
+model ApyHistoryEntry {
+  id          BigInt   @id @default(autoincrement())
+  timestamp   Int
+  blockHeight Int      @map("block_height")
+  returnPct   Float    @map("return_pct")
+  zysPrice    Float    @map("zys_price")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([timestamp], map: "idx_apy_timestamp")
+  @@map("apy_history")
+}
+
+model ZysPriceHistoryEntry {
+  id          BigInt   @id @default(autoincrement())
+  timestamp   Int
+  blockHeight Int      @unique @map("block_height")
+  zysPrice    Float    @map("zys_price")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([timestamp], map: "idx_zys_timestamp")
+  @@map("zys_price_history")
+}

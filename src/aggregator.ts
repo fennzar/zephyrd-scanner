@@ -30,6 +30,9 @@ import {
 } from "./utils";
 import { UNAUDITABLE_ZEPH_MINT } from "./constants";
 import { logAggregatedSummary, logReserveDiffReport, logReserveHeights, logReserveSnapshotStatus } from "./logger";
+import { usePostgres } from "./config";
+import { saveBlockProtocolStats, saveAggregatedProtocolStats } from "./db/protocolStats";
+import { stores } from "./storage/factory";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -639,11 +642,18 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     }
   }
 
+  if (usePostgres()) {
+    await saveBlockProtocolStats(blockData as ProtocolStats);
+  }
+
   await redis
     .pipeline()
     .hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData))
     .set("height_aggregator", height_to_process.toString())
     .exec();
+  if (usePostgres()) {
+    await stores.scannerState.set("height_aggregator", height_to_process.toString());
+  }
 
   if (WALKTHROUGH_MODE) {
     await verifyReserveDiffs(height_to_process, {
@@ -1428,6 +1438,16 @@ async function aggregateByTimestamp(
       const zsetKey = windowType === "hourly" ? "protocol_stats_hourly" : "protocol_stats_daily";
       const pendingKey = windowType === "hourly" ? HOURLY_PENDING_KEY : DAILY_PENDING_KEY;
 
+      if (usePostgres()) {
+        await saveAggregatedProtocolStats(
+          windowType === "hourly" ? "hour" : "day",
+          windowStart,
+          windowEnd,
+          aggregatedData,
+          !windowComplete
+        );
+      }
+
       if (windowComplete) {
         const pipeline = redis.pipeline();
         pipeline.zremrangebyscore(zsetKey, windowStart, windowStart);
@@ -1441,6 +1461,11 @@ async function aggregateByTimestamp(
           console.log(`Daily stats aggregated for window starting at ${windowStart}`);
         }
         await pipeline.exec();
+        if (usePostgres() && windowEnd) {
+          const timestampKey =
+            windowType === "hourly" ? "timestamp_aggregator_hourly" : "timestamp_aggregator_daily";
+          await stores.scannerState.set(timestampKey, windowEnd.toString());
+        }
       } else {
         await redis.set(pendingKey, JSON.stringify(aggregatedData));
         console.log(`[aggregation-${windowType}] pending window updated at ${windowStart}`);
