@@ -21,6 +21,16 @@ const HISTORICAL_KEY_MAP: Record<keyof HistoricalReturns, HistoricalReturnRange>
   allTime: "ALL_TIME",
 };
 
+const HISTORICAL_KEY_REVERSE_MAP: Record<HistoricalReturnRange, keyof HistoricalReturns> = {
+  LAST_BLOCK: "lastBlock",
+  ONE_DAY: "oneDay",
+  ONE_WEEK: "oneWeek",
+  ONE_MONTH: "oneMonth",
+  THREE_MONTHS: "threeMonths",
+  ONE_YEAR: "oneYear",
+  ALL_TIME: "allTime",
+};
+
 const PROJECTION_TIMEFRAME_MAP: Record<keyof ProjectedReturns, ProjectionTimeframe> = {
   oneWeek: "ONE_WEEK",
   oneMonth: "ONE_MONTH",
@@ -85,10 +95,21 @@ export async function fetchHistoricalReturns(): Promise<HistoricalReturns | null
   if (rows.length === 0) {
     return null;
   }
-  const result = {} as HistoricalReturns;
+  const result: HistoricalReturns = {
+    lastBlock: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    oneDay: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    oneWeek: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    oneMonth: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    threeMonths: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    oneYear: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    allTime: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+  };
   for (const row of rows) {
-    const key = row.range.toString().charAt(0) + row.range.toString().slice(1).toLowerCase();
-    result[key as keyof HistoricalReturns] = {
+    const key = HISTORICAL_KEY_REVERSE_MAP[row.range];
+    if (!key) {
+      continue;
+    }
+    result[key] = {
       return: row.returnPct,
       ZSDAccrued: row.zsdAccrued,
       effectiveApy: row.effectiveApy,
