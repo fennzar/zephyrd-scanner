@@ -30,6 +30,7 @@
     "@types/node": "^20.8.0",
     "@types/redis": "^4.0.11",
     "express": "^4.18.2",
+    "prisma": "^6.19.0",
     "ts-json-schema-generator": "^2.4.0",
     "tsx": "^4.7.0",
     "typescript": "^5.2.2"
