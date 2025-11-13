@@ -1,4 +1,11 @@
-import { AggregatedData, ProtocolStats, ReserveDiffReport, ReserveSnapshot } from "./utils";
+import {
+  AggregatedData,
+  ProtocolStats,
+  ReserveDiffReport,
+  ReserveSnapshot,
+  getCirculatingSupplyFromDaemon,
+  getReserveInfo,
+} from "./utils";
 import { UNAUDITABLE_ZEPH_MINT, INITIAL_TREASURY_ZEPH } from "./constants";
 
 type WindowType = "hourly" | "daily";
@@ -18,6 +25,43 @@ function formatNumber(value: number | undefined, decimals: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: decimals,
   });
+}
+
+const ATOMS_TO_UNITS = 10 ** -12;
+
+function parseAtomValue(value?: string | number | null): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed * ATOMS_TO_UNITS;
+    }
+  }
+  return undefined;
+}
+
+function parseRatioValue(value?: string | number | null): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function pickDefined<T>(...values: Array<T | null | undefined>): T | undefined {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function metricValue(data: AggregatedData, prefix: string, suffix: MetricSuffix): number | undefined {
@@ -459,136 +503,110 @@ function computeDiff(aggregator: number | undefined, onChain: number | undefined
   return (aggregator as number) - (onChain as number);
 }
 
-export function logScannerHealth(
+export async function logScannerHealth(
   totalsSummary: TotalsSummary | null,
   stats: ProtocolStats | null,
   snapshot: ReserveSnapshot | null
 ) {
   console.log("[health] scanner vs reserve_info");
 
-  if (!snapshot) {
-    console.log("[health] no reserve snapshot available");
-    return;
+  const [reserveInfoResponse, circulatingSupplyEntries] = await Promise.all([
+    getReserveInfo(),
+    getCirculatingSupplyFromDaemon(),
+  ]);
+  const reserveResult = reserveInfoResponse?.result;
+  if (!reserveResult && !snapshot) {
+    console.warn("[health] Unable to fetch reserve info and no cached snapshot available");
   }
 
-  const rows: Array<{ metric: string; scanner: string; on_chain: string; diff: string }> = [];
+  if (!circulatingSupplyEntries) {
+    console.warn("[health] Unable to fetch circulating supply from daemon – comparisons may rely on cached data");
+  }
+
+  const supplyMap = new Map<string, number>();
+  if (circulatingSupplyEntries) {
+    for (const entry of circulatingSupplyEntries) {
+      supplyMap.set(entry.currency.toUpperCase(), entry.amount);
+    }
+  }
+
+  const snapshotOnChain = snapshot?.on_chain;
   const numericTotals = totalsSummary?.numeric ?? {};
 
-  const zepTotal = numericTotals.total_all;
-  const zsdTotal = (numericTotals.mint_stable_volume ?? 0) - (numericTotals.redeem_stable_volume ?? 0);
-  const zrsTotal = (numericTotals.mint_reserve_volume ?? 0) - (numericTotals.redeem_reserve_volume ?? 0);
-  const zysTotal = (numericTotals.mint_yield_volume ?? 0) - (numericTotals.redeem_yield_volume ?? 0);
+  const resolveSupply = (symbol: "ZPH" | "ZSD" | "ZRS" | "ZYS"): number | undefined => {
+    const upper = symbol.toUpperCase();
+    const fromSupply = supplyMap.get(upper);
+    if (fromSupply !== undefined) {
+      return fromSupply;
+    }
+    switch (upper) {
+      case "ZSD":
+        return pickDefined(parseAtomValue(reserveResult?.num_stables), snapshotOnChain?.zsd_circ);
+      case "ZRS":
+        return pickDefined(parseAtomValue(reserveResult?.num_reserves), snapshotOnChain?.zrs_circ);
+      case "ZYS":
+        return pickDefined(parseAtomValue(reserveResult?.num_zyield), snapshotOnChain?.zyield_circ);
+      case "ZPH":
+        return numericTotals.total_all;
+      default:
+        return undefined;
+    }
+  };
+
+  const zephCircOnChain = resolveSupply("ZPH");
+  const zsdCircOnChain = resolveSupply("ZSD");
+  const zrsCircOnChain = resolveSupply("ZRS");
+  const zysCircOnChain = resolveSupply("ZYS");
+
+  const zephReserveOnChain = pickDefined(parseAtomValue(reserveResult?.zeph_reserve), snapshotOnChain?.zeph_reserve);
+  const zsdYieldReserveOnChain = pickDefined(
+    parseAtomValue(reserveResult?.zyield_reserve),
+    snapshotOnChain?.zsd_yield_reserve
+  );
+  const reserveRatioOnChain = pickDefined(
+    parseRatioValue(reserveResult?.reserve_ratio),
+    snapshotOnChain?.reserve_ratio ?? undefined
+  );
+
+  const rows: Array<{ metric: string; scanner: string; on_chain: string; diff: string }> = [];
+  const pushRow = (metric: string, aggregatorValue: number | undefined, onChainValue: number | undefined, decimals: number) => {
+    const diff = computeDiff(aggregatorValue, onChainValue);
+    rows.push({
+      metric,
+      scanner: formatNumber(aggregatorValue, decimals),
+      on_chain: formatNumber(onChainValue, decimals),
+      diff: formatNumber(diff, decimals),
+    });
+  };
 
   if (totalsSummary) {
-    const totalsRows = [
-      {
-        metric: "ZEPH circ (totals)",
-        aggregatorValue: zepTotal,
-        onChainValue: snapshot.on_chain.zeph_reserve + snapshot.on_chain.zsd_circ + snapshot.on_chain.zrs_circ,
-        decimals: 2,
-      },
-      {
-        metric: "ZSD circ (totals)",
-        aggregatorValue: zsdTotal,
-        onChainValue: snapshot.on_chain.zsd_circ,
-        decimals: 2,
-      },
-      {
-        metric: "ZRS circ (totals)",
-        aggregatorValue: zrsTotal,
-        onChainValue: snapshot.on_chain.zrs_circ,
-        decimals: 2,
-      },
-      {
-        metric: "ZYS circ (totals)",
-        aggregatorValue: zysTotal,
-        onChainValue: snapshot.on_chain.zyield_circ,
-        decimals: 2,
-      },
-      {
-        metric: "ZEPH reserve (totals)",
-        aggregatorValue: snapshot.on_chain.zeph_reserve,
-        onChainValue: snapshot.on_chain.zeph_reserve,
-        decimals: 2,
-      },
-      {
-        metric: "ZSD yield reserve (totals)",
-        aggregatorValue: snapshot.on_chain.zsd_yield_reserve,
-        onChainValue: snapshot.on_chain.zsd_yield_reserve,
-        decimals: 2,
-      },
-    ];
+    const zepTotal = numericTotals.total_all;
+    const zsdTotal = (numericTotals.mint_stable_volume ?? 0) - (numericTotals.redeem_stable_volume ?? 0);
+    const zrsTotal = (numericTotals.mint_reserve_volume ?? 0) - (numericTotals.redeem_reserve_volume ?? 0);
+    const zysTotal = (numericTotals.mint_yield_volume ?? 0) - (numericTotals.redeem_yield_volume ?? 0);
 
-    for (const { metric, aggregatorValue, onChainValue, decimals } of totalsRows) {
-      const diff = computeDiff(aggregatorValue, onChainValue);
-      rows.push({
-        metric,
-        scanner: formatNumber(aggregatorValue, decimals),
-        on_chain: formatNumber(onChainValue, decimals),
-        diff: formatNumber(diff, decimals),
-      });
-    }
+    pushRow("ZEPH circ (totals)", zepTotal, zephCircOnChain, 2);
+    pushRow("ZSD circ (totals)", zsdTotal, zsdCircOnChain, 2);
+    pushRow("ZRS circ (totals)", zrsTotal, zrsCircOnChain, 2);
+    pushRow("ZYS circ (totals)", zysTotal, zysCircOnChain, 2);
     rows.push({ metric: "----", scanner: "-", on_chain: "-", diff: "-" });
   }
 
   if (stats) {
-    const statFields = [
-      {
-        metric: "Zeph circ (stats)",
-        aggregatorValue: stats.zeph_circ,
-        onChainValue: numericTotals.total_all,
-        decimals: 2,
-      },
-      {
-        metric: "Zeph reserve (stats)",
-        aggregatorValue: stats.zeph_in_reserve,
-        onChainValue: snapshot.on_chain.zeph_reserve,
-        decimals: 2,
-      },
-      {
-        metric: "ZSD yield reserve (stats)",
-        aggregatorValue: stats.zsd_in_yield_reserve,
-        onChainValue: snapshot.on_chain.zsd_yield_reserve,
-        decimals: 2,
-      },
-      {
-        metric: "ZSD circ (stats)",
-        aggregatorValue: stats.zephusd_circ,
-        onChainValue: snapshot.on_chain.zsd_circ,
-        decimals: 2,
-      },
-      {
-        metric: "ZRS circ (stats)",
-        aggregatorValue: stats.zephrsv_circ,
-        onChainValue: snapshot.on_chain.zrs_circ,
-        decimals: 2,
-      },
-      {
-        metric: "ZYS circ (stats)",
-        aggregatorValue: stats.zyield_circ,
-        onChainValue: snapshot.on_chain.zyield_circ,
-        decimals: 2,
-      },
-      {
-        metric: "Reserve ratio",
-        aggregatorValue: stats.reserve_ratio ?? undefined,
-        onChainValue: snapshot.on_chain.reserve_ratio ?? undefined,
-        decimals: 4,
-      },
-    ];
-
-    for (const { metric, aggregatorValue, onChainValue, decimals } of statFields) {
-      const diff = computeDiff(aggregatorValue, onChainValue);
-      rows.push({
-        metric,
-        scanner: formatNumber(aggregatorValue, decimals),
-        on_chain: formatNumber(onChainValue, decimals),
-        diff: formatNumber(diff, decimals),
-      });
-    }
+    pushRow("Zeph circ (stats)", stats.zeph_circ, zephCircOnChain, 2);
+    pushRow("Zeph reserve (stats)", stats.zeph_in_reserve, zephReserveOnChain, 2);
+    pushRow("ZSD yield reserve (stats)", stats.zsd_in_yield_reserve, zsdYieldReserveOnChain, 2);
+    pushRow("ZSD circ (stats)", stats.zephusd_circ, zsdCircOnChain, 2);
+    pushRow("ZRS circ (stats)", stats.zephrsv_circ, zrsCircOnChain, 2);
+    pushRow("ZYS circ (stats)", stats.zyield_circ, zysCircOnChain, 2);
+    pushRow("Reserve ratio", stats.reserve_ratio ?? undefined, reserveRatioOnChain, 4);
   }
 
-  console.table(rows);
+  if (rows.length > 0) {
+    console.table(rows);
+  } else {
+    console.log("[health] no data available to display");
+  }
 
   if (!totalsSummary) {
     console.log("[health] totals unavailable for net calculation");

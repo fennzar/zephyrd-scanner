@@ -10,10 +10,10 @@ import {
   getBlockProtocolStatsFromRedis,
   getLiveStats,
   getReserveDiffs,
-  getTransactionsFromRedis,
-  getBlockRewardsFromRedis,
-  getPricingRecordsFromRedis,
-  getReserveSnapshotsFromRedis,
+  getTransactions,
+  getBlockRewards,
+  getPricingRecords,
+  getReserveSnapshots,
 } from "./utils";
 import {
   determineAPYHistory,
@@ -313,7 +313,7 @@ export function createApp() {
         effectiveOffset = 0;
       }
 
-      const result = await getTransactionsFromRedis({
+      const result = await getTransactions({
         fromTimestamp,
         toTimestamp,
         types,
@@ -408,7 +408,7 @@ export function createApp() {
       const limitParsed = parseLimitParam(limitParam);
       const order = parseOrderParam(orderParam, "asc");
 
-      const result = await getBlockRewardsFromRedis({
+      const result = await getBlockRewards({
         fromHeight,
         toHeight,
         limit: limitParsed === null ? undefined : limitParsed,
@@ -453,7 +453,7 @@ export function createApp() {
       const limitParsed = parseLimitParam(limitParam);
       const order = parseOrderParam(orderParam, "asc");
 
-      const result = await getPricingRecordsFromRedis({
+      const result = await getPricingRecords({
         fromHeight,
         toHeight,
         limit: limitParsed === null ? undefined : limitParsed,
@@ -500,7 +500,7 @@ export function createApp() {
       const limitParsed = parseLimitParam(limitParam);
       const order = parseOrderParam(orderParam, "asc");
 
-      const result = await getReserveSnapshotsFromRedis({
+      const result = await getReserveSnapshots({
         previousHeight,
         fromPreviousHeight,
         toPreviousHeight,

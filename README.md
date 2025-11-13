@@ -106,6 +106,8 @@ During a scan the runner writes a Redis snapshot to disk whenever the aggregated
 - `AUTO_EXPORT_DIR` – optional export root (passed to `--dir`).
 - `AUTO_EXPORT_PRETTY` – set to `true` to pretty-print JSON output.
 
+When `DATA_STORE` includes Postgres, the same milestone hook also runs the `db:backup` script so each checkpoint has a fresh `pg_dump` alongside the Redis JSON dump (if Redis is enabled).
+
 After the background run finishes you can atomically swap the databases and clear the old one:
 
 ```sh

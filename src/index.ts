@@ -5,8 +5,10 @@ import type { Server } from "node:http";
 import { createRequire } from "node:module";
 
 import { startServer } from "./server";
+import { logRuntimeConfig } from "./config";
 
 dotenv.config();
+logRuntimeConfig("server");
 
 interface BootstrapResult {
   server: Server | null;

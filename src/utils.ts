@@ -10,13 +10,30 @@ dotenv.config();
 const agent = new Agent({ keepAlive: true });
 import redis from "./redis";
 import { stores } from "./storage/factory";
-import { usePostgres } from "./config";
+import { usePostgres, useRedis } from "./config";
+import {
+  getAggregatorHeight,
+  getDailyTimestamp,
+  getHourlyTimestamp,
+  getPricingHeight,
+  getTransactionHeight as getScannerTxHeight,
+  setAggregatorHeight,
+  setDailyTimestamp,
+  setHourlyTimestamp,
+} from "./scannerState";
 import { getTotals as getTotalsRow } from "./db/totals";
-import { upsertReserveSnapshot, getLatestReserveSnapshotRow, getReserveSnapshotByPreviousHeight } from "./db/reserveSnapshots";
+import {
+  upsertReserveSnapshot,
+  getLatestReserveSnapshotRow,
+  getReserveSnapshotByPreviousHeight,
+  queryReserveSnapshots,
+} from "./db/reserveSnapshots";
 import { upsertReserveMismatch, deleteReserveMismatch } from "./db/reserveMismatches";
 import { upsertLiveStats, getLiveStats as getLiveStatsRow } from "./db/liveStats";
 import { queryTransactions, type ConversionTransactionRecord } from "./db/transactions";
-import { fetchBlockProtocolStats, fetchAggregatedProtocolStats } from "./db/protocolStats";
+import { fetchBlockProtocolStats, fetchAggregatedProtocolStats, fetchLatestProtocolStats } from "./db/protocolStats";
+import { getBlockReward, queryBlockRewardsRange } from "./db/blockRewards";
+import { queryPricingRecords } from "./db/pricingRecords";
 const RPC_URL = "http://127.0.0.1:17767";
 const HEADERS = {
   "Content-Type": "application/json",
@@ -375,6 +392,10 @@ export async function getReserveInfo() {
 }
 
 export async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
+  if (usePostgres()) {
+    return fetchLatestProtocolStats();
+  }
+
   const allStats = await redis.hgetall("protocol_stats");
   if (!allStats) {
     return null;
@@ -402,11 +423,14 @@ export async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
 }
 
 export async function setProtocolStats(height: number, stats: ProtocolStats): Promise<void> {
-  await redis
-    .pipeline()
-    .hset("protocol_stats", height.toString(), JSON.stringify(stats))
-    .set("height_aggregator", height.toString())
-    .exec();
+  if (useRedis()) {
+    await redis
+      .pipeline()
+      .hset("protocol_stats", height.toString(), JSON.stringify(stats))
+      .set("height_aggregator", height.toString())
+      .exec();
+  }
+  await setAggregatorHeight(height);
 }
 
 function quantizeToAtoms(value: number) {
@@ -772,7 +796,7 @@ export async function getBlockProtocolStatsFromRedis<T extends keyof ProtocolSta
   }
   let redisKey = "protocol_stats";
   let start = from ? parseInt(from) : 0;
-  let end = to ? parseInt(to) : Number(await redis.get("height_aggregator"));
+  let end = to ? parseInt(to) : await getAggregatorHeight();
   let blockData: BlockProtocolStatsResponse<T>[] = [];
 
   for (let i = start; i <= end; i++) {
@@ -1023,60 +1047,31 @@ export interface AggregatedData {
   window_end?: number;
 }
 
-export async function getRedisHeight() {
-  if (usePostgres()) {
-    const stored = await stores.scannerState.get("height_aggregator");
-    if (stored) {
-      const parsed = Number(stored);
-      if (Number.isFinite(parsed)) {
-        return parsed;
-      }
-    }
-  }
-  const height = await redis.get("height_aggregator");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
+export async function getScannerHeight() {
+  return getAggregatorHeight();
 }
 
 export async function getPricingRecordHeight() {
-  const height = await redis.get("height_prs");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
+  return getPricingHeight();
 }
 
 export async function getTransactionHeight() {
-  const height = await redis.get("height_txs");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
+  return getScannerTxHeight();
 }
 
-export async function getRedisTimestampHourly() {
-  const height = await redis.get("timestamp_aggregator_hourly");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
+export async function getScannerTimestampHourly() {
+  return getHourlyTimestamp();
 }
 
-export async function getRedisTimestampDaily() {
-  const height = await redis.get("timestamp_aggregator_daily");
-  if (!height) {
-    return 0;
-  }
-  return parseInt(height);
+export async function getScannerTimestampDaily() {
+  return getDailyTimestamp();
 }
 
-export async function setRedisHeight(height: number) {
-  await redis.set("height_aggregator", height);
+export async function setScannerHeight(height: number) {
+  await setAggregatorHeight(height);
 }
 
-export async function getRedisPricingRecord(height: number) {
+export async function getPricingRecordFromStore(height: number) {
   const storeRecord = await stores.pricing.get(height);
   if (storeRecord) {
     return {
@@ -1099,6 +1094,24 @@ export async function getRedisPricingRecord(height: number) {
 }
 
 export async function getRedisBlockRewardInfo(height: number) {
+  if (usePostgres()) {
+    const record = await getBlockReward(height);
+    if (record) {
+      return {
+        height: record.blockHeight,
+        miner_reward: record.minerReward,
+        governance_reward: record.governanceReward,
+        reserve_reward: record.reserveReward,
+        yield_reward: record.yieldReward,
+        miner_reward_atoms: record.minerRewardAtoms ?? undefined,
+        governance_reward_atoms: record.governanceRewardAtoms ?? undefined,
+        reserve_reward_atoms: record.reserveRewardAtoms ?? undefined,
+        yield_reward_atoms: record.yieldRewardAtoms ?? undefined,
+        base_reward_atoms: record.baseRewardAtoms ?? undefined,
+        fee_adjustment_atoms: record.feeAdjustmentAtoms ?? undefined,
+      };
+    }
+  }
   const bri = await redis.hget("block_rewards", height.toString());
   if (!bri) {
     return null;
@@ -1167,10 +1180,37 @@ export interface PricingRecordQueryResult {
   order: "asc" | "desc";
 }
 
-export async function getPricingRecordsFromRedis(
+export async function getPricingRecords(
   options: PricingRecordQueryOptions = {}
 ): Promise<PricingRecordQueryResult> {
   const { fromHeight, toHeight, limit, order = "asc" } = options;
+
+  if (usePostgres()) {
+    const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+    const sortOrder = order === "desc" ? "desc" : "asc";
+    const result = await queryPricingRecords({
+      fromHeight,
+      toHeight,
+      limit: resolvedLimit,
+      order: sortOrder,
+    });
+    return {
+      total: result.total,
+      results: result.rows.map((row) => ({
+        height: row.blockHeight,
+        timestamp: row.timestamp,
+        spot: row.spot,
+        moving_average: row.movingAverage,
+        reserve: row.reserve,
+        reserve_ma: row.reserveMa,
+        stable: row.stable,
+        stable_ma: row.stableMa,
+        yield_price: row.yieldPrice,
+      })),
+      limit: resolvedLimit ?? null,
+      order,
+    };
+  }
 
   const entries = await redis.hgetall("pricing_records");
   const records: PricingRecord[] = [];
@@ -1187,7 +1227,7 @@ export async function getPricingRecordsFromRedis(
         records.push(record);
       }
     } catch (error) {
-      console.warn("getPricingRecordsFromRedis: Unable to parse pricing record", error);
+      console.warn("getPricingRecords: Unable to parse pricing record", error);
     }
   }
 
@@ -1288,7 +1328,7 @@ export interface BlockRewardQueryResult {
   order: "asc" | "desc";
 }
 
-export async function getBlockRewardsFromRedis(
+export async function getBlockRewards(
   options: BlockRewardQueryOptions = {}
 ): Promise<BlockRewardQueryResult> {
   const {
@@ -1297,6 +1337,35 @@ export async function getBlockRewardsFromRedis(
     limit,
     order = "asc",
   } = options;
+
+  if (usePostgres()) {
+    const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+    const sortOrder = order === "desc" ? "desc" : "asc";
+    const result = await queryBlockRewardsRange({
+      fromHeight,
+      toHeight,
+      limit: resolvedLimit,
+      order: sortOrder,
+    });
+    return {
+      total: result.total,
+      results: result.rows.map((row) => ({
+        height: row.blockHeight,
+        miner_reward: row.minerReward,
+        governance_reward: row.governanceReward,
+        reserve_reward: row.reserveReward,
+        yield_reward: row.yieldReward,
+        miner_reward_atoms: row.minerRewardAtoms,
+        governance_reward_atoms: row.governanceRewardAtoms,
+        reserve_reward_atoms: row.reserveRewardAtoms,
+        yield_reward_atoms: row.yieldRewardAtoms,
+        base_reward_atoms: row.baseRewardAtoms,
+        fee_adjustment_atoms: row.feeAdjustmentAtoms,
+      })),
+      limit: resolvedLimit ?? null,
+      order,
+    };
+  }
 
   const entries = await redis.hgetall("block_rewards");
   const records: BlockRewardRecord[] = [];
@@ -1313,7 +1382,7 @@ export async function getBlockRewardsFromRedis(
         records.push(record);
       }
     } catch (error) {
-      console.warn("getBlockRewardsFromRedis: Unable to parse block reward record", error);
+      console.warn("getBlockRewards: Unable to parse block reward record", error);
     }
   }
 
@@ -1364,7 +1433,7 @@ export interface ReserveSnapshotQueryResult {
   order: "asc" | "desc";
 }
 
-export async function getReserveSnapshotsFromRedis(
+export async function getReserveSnapshots(
   options: ReserveSnapshotQueryOptions = {}
 ): Promise<ReserveSnapshotQueryResult> {
   const {
@@ -1374,6 +1443,24 @@ export async function getReserveSnapshotsFromRedis(
     limit,
     order = "asc",
   } = options;
+
+  if (usePostgres()) {
+    const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+    const sortOrder = order === "desc" ? "desc" : "asc";
+    const result = await queryReserveSnapshots({
+      previousHeight,
+      fromPreviousHeight,
+      toPreviousHeight,
+      limit: resolvedLimit,
+      order: sortOrder,
+    });
+    return {
+      total: result.total,
+      results: result.rows,
+      limit: resolvedLimit ?? null,
+      order,
+    };
+  }
 
   const entries = await redis.hgetall(RESERVE_SNAPSHOT_REDIS_KEY);
   const records: ReserveSnapshot[] = [];
@@ -1390,7 +1477,7 @@ export async function getReserveSnapshotsFromRedis(
       }
       records.push(parsed);
     } catch (error) {
-      console.warn("getReserveSnapshotsFromRedis: Unable to parse snapshot", error);
+      console.warn("getReserveSnapshots: Unable to parse snapshot", error);
     }
   }
 
@@ -1589,7 +1676,7 @@ export interface TransactionQueryResult {
   order: "asc" | "desc";
 }
 
-function sanitizeTransactionRecord(raw: unknown): TransactionRecord | null {
+export function sanitizeTransactionRecord(raw: unknown): TransactionRecord | null {
   if (!raw || typeof raw !== "object") {
     return null;
   }
@@ -1638,7 +1725,7 @@ function sanitizeTransactionRecord(raw: unknown): TransactionRecord | null {
   };
 }
 
-function mapDbTransaction(record: ConversionTransactionRecord): TransactionRecord {
+export function mapDbTransaction(record: ConversionTransactionRecord): TransactionRecord {
   return {
     hash: record.hash,
     block_height: record.blockHeight,
@@ -1659,7 +1746,7 @@ function mapDbTransaction(record: ConversionTransactionRecord): TransactionRecor
   };
 }
 
-export async function getTransactionsFromRedis(options: TransactionQueryOptions = {}): Promise<TransactionQueryResult> {
+export async function getTransactions(options: TransactionQueryOptions = {}): Promise<TransactionQueryResult> {
   const {
     fromTimestamp,
     toTimestamp,
@@ -1703,7 +1790,7 @@ export async function getTransactionsFromRedis(options: TransactionQueryOptions 
         records.push(record);
       }
     } catch (error) {
-      console.warn("getTransactionsFromRedis: Unable to parse transaction record", error);
+      console.warn("getTransactions: Unable to parse transaction record", error);
     }
   }
 
@@ -1790,7 +1877,7 @@ export interface LiveStats {
 
 async function calculateLiveStats(): Promise<LiveStats | null> {
   try {
-    const currentBlockHeight = await getRedisHeight();
+    const currentBlockHeight = await getScannerHeight();
     console.log(`calculateLiveStats: Current Block Height: ${currentBlockHeight}`);
 
     const reserveInfo = await getReserveInfo();

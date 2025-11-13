@@ -9,7 +9,7 @@ import {
   getCurrentBlockHeight,
   getLatestProtocolStats,
   getPricingRecordFromBlock,
-  getRedisHeight,
+  getScannerHeight,
   getReserveInfo,
 } from "./utils";
 import {
@@ -128,7 +128,7 @@ export async function determineHistoricalReturns() {
   // -----------------------------------------------------------
 
   try {
-    const currentBlockHeight = await getRedisHeight();
+    const currentBlockHeight = await getScannerHeight();
 
     if (currentBlockHeight < VERSION_2_HF_V6_BLOCK_HEIGHT) {
       console.log("BEFORE 2.0.0 FORK HEIGHT");
@@ -371,7 +371,7 @@ export async function determineProjectedReturns(test = false) {
       return dummyProtocolStats;
     }
 
-    const currentBlockHeight = await getRedisHeight();
+    const currentBlockHeight = await getScannerHeight();
     // OLD: Using Protocol Stats from Redis
 
     // const currentProtocolStats = await redis.hget("protocol_stats", currentBlockHeight.toString());
@@ -1119,10 +1119,18 @@ export async function determineAPYHistory(reset = false) {
     }
 
     const currentTimestamp = Math.floor(Date.now() / 1000);
-    const currentAPY = projectedReturns.oneYear.simple.return;
-    const predictedZysPrice = projectedReturns.oneYear.simple.zys_price;
-    const redisHieght = await getCurrentBlockHeight();
-    apyHistory.push({ timestamp: currentTimestamp, block_height: redisHieght, return: currentAPY, zys_price: predictedZysPrice });
+    const currentSimpleTier = projectedReturns.oneYear?.simple;
+    if (!currentSimpleTier) {
+      console.warn("determineAPYHistory: projected returns missing oneYear.simple tier – skipping latest point append");
+    } else {
+      const redisHieght = await getCurrentBlockHeight();
+      apyHistory.push({
+        timestamp: currentTimestamp,
+        block_height: redisHieght,
+        return: currentSimpleTier.return,
+        zys_price: currentSimpleTier.zys_price,
+      });
+    }
 
     // Store APY history to Redis
     await redis.set("apy_history", JSON.stringify(apyHistory));

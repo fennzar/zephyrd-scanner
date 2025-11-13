@@ -8,7 +8,7 @@ import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords
 import { scanTransactions } from "./tx";
 import {
   getPricingRecordHeight,
-  getRedisHeight,
+  getScannerHeight,
   getLatestProtocolStats,
   getLatestReserveSnapshot,
   getTotalsFromRedis,
@@ -23,8 +23,11 @@ import {
 import { detectAndHandleReorg } from "./rollback";
 import redis from "./redis";
 import { logScannerHealth, logTotals, TotalsSummary } from "./logger";
+import { logRuntimeConfig, usePostgres, useRedis } from "./config";
+import { stores } from "./storage/factory";
 
 dotenv.config();
+logRuntimeConfig("scanner");
 
 const AUTO_EXPORT_ENABLED = process.env.AUTO_EXPORT_ENABLED !== "false";
 const AUTO_EXPORT_INTERVAL = (() => {
@@ -39,6 +42,7 @@ const AUTO_EXPORT_LOG_PREFIX = "[auto-export]";
 const requireForCli = createRequire(__filename);
 const TSX_CLI_PATH = requireForCli.resolve("tsx/cli");
 const EXPORT_SCRIPT_PATH = path.join(__dirname, "scripts", "exportRedisData.ts");
+const BACKUP_SCRIPT_PATH = path.join(__dirname, "scripts", "backupPostgres.ts");
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
@@ -92,7 +96,7 @@ export async function runScannerCycle(): Promise<void> {
     await aggregate();
     console.log("---------| MAIN |-----------");
 
-    const scannerHeight = await getRedisHeight();
+    const scannerHeight = await getScannerHeight();
 
     if (scannerHeight >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
       await determineHistoricalReturns();
@@ -113,7 +117,7 @@ export async function runScannerCycle(): Promise<void> {
     if (totals) {
       totalsSummary = logTotals(totals);
     }
-    const latestScannerHeight = await getRedisHeight();
+    const latestScannerHeight = await getScannerHeight();
     const latestPricingHeight = await getPricingRecordHeight();
     const latestTxHeight = await getTransactionHeight();
     console.log(
@@ -125,7 +129,7 @@ export async function runScannerCycle(): Promise<void> {
       getLatestProtocolStats(),
       getLatestReserveSnapshot(),
     ]);
-    logScannerHealth(totalsSummary, latestStats, latestSnapshot);
+    await logScannerHealth(totalsSummary, latestStats, latestSnapshot);
     const refreshedLiveStats = await refreshLiveStatsCache();
     if (!refreshedLiveStats) {
       console.warn("runScannerCycle: Unable to refresh live stats cache");
@@ -155,7 +159,7 @@ async function maybeAutoExport(currentHeight: number): Promise<void> {
     return;
   }
 
-  const lastHeightRaw = await redis.get(AUTO_EXPORT_KEY);
+  const lastHeightRaw = await stores.scannerState.get(AUTO_EXPORT_KEY);
   let lastHeight = lastHeightRaw ? Number(lastHeightRaw) : 0;
   if (!Number.isFinite(lastHeight) || lastHeight < 0) {
     lastHeight = 0;
@@ -170,7 +174,7 @@ async function maybeAutoExport(currentHeight: number): Promise<void> {
   try {
     console.log(`${AUTO_EXPORT_LOG_PREFIX} Triggering export for block ${milestone}`);
     await runAutoExport(milestone);
-    await redis.set(AUTO_EXPORT_KEY, milestone.toString());
+    await stores.scannerState.set(AUTO_EXPORT_KEY, milestone.toString());
     console.log(`${AUTO_EXPORT_LOG_PREFIX} Completed export for block ${milestone}`);
   } catch (error) {
     console.error(`${AUTO_EXPORT_LOG_PREFIX} Failed to export at block ${milestone}`, error);
@@ -178,6 +182,23 @@ async function maybeAutoExport(currentHeight: number): Promise<void> {
 }
 
 async function runAutoExport(milestone: number): Promise<void> {
+  const tasks: Array<Promise<void>> = [];
+  if (usePostgres()) {
+    tasks.push(runPostgresBackup(milestone));
+  }
+  if (useRedis()) {
+    tasks.push(runRedisExport(milestone));
+  }
+
+  if (tasks.length === 0) {
+    console.log(`${AUTO_EXPORT_LOG_PREFIX} No storage targets enabled, skipping export`);
+    return;
+  }
+
+  await Promise.all(tasks);
+}
+
+async function runRedisExport(milestone: number): Promise<void> {
   const cliArgs = [TSX_CLI_PATH, EXPORT_SCRIPT_PATH];
   if (AUTO_EXPORT_DIR) {
     cliArgs.push("--dir", AUTO_EXPORT_DIR);
@@ -199,7 +220,30 @@ async function runAutoExport(milestone: number): Promise<void> {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Export process exited with ${signal ?? `code ${code}`}`));
+        reject(new Error(`Redis export exited with ${signal ?? `code ${code}`}`));
+      }
+    });
+    child.on("error", reject);
+  });
+}
+
+async function runPostgresBackup(milestone: number): Promise<void> {
+  const cliArgs = [TSX_CLI_PATH, BACKUP_SCRIPT_PATH];
+  if (Number.isFinite(milestone) && milestone > 0) {
+    cliArgs.push("--tag", `milestone-${milestone}`);
+  }
+
+  const child = spawn(process.execPath, cliArgs, {
+    stdio: "inherit",
+    env: { ...process.env },
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Postgres backup exited with ${signal ?? `code ${code}`}`));
       }
     });
     child.on("error", reject);

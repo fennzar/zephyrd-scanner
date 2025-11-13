@@ -7,10 +7,10 @@ import redis from "./redis";
 import {
   AggregatedData,
   ProtocolStats,
-  getRedisHeight,
-  getRedisPricingRecord,
-  getRedisTimestampDaily,
-  getRedisTimestampHourly,
+  getScannerHeight,
+  getPricingRecordFromStore,
+  getScannerTimestampDaily,
+  getScannerTimestampHourly,
   getReserveDiffs,
   getReserveInfo,
   getLastReserveSnapshotPreviousHeight,
@@ -19,6 +19,8 @@ import {
   saveReserveSnapshotToRedis,
   getCurrentBlockHeight,
   getLatestProtocolStats,
+  getPricingRecordHeight,
+  getRedisBlockRewardInfo,
   setProtocolStats,
   ReserveDiffReport,
   RESERVE_SNAPSHOT_INTERVAL_BLOCKS,
@@ -30,9 +32,19 @@ import {
 } from "./utils";
 import { UNAUDITABLE_ZEPH_MINT } from "./constants";
 import { logAggregatedSummary, logReserveDiffReport, logReserveHeights, logReserveSnapshotStatus } from "./logger";
-import { usePostgres } from "./config";
-import { saveBlockProtocolStats, saveAggregatedProtocolStats } from "./db/protocolStats";
-import { stores } from "./storage/factory";
+import { usePostgres, useRedis } from "./config";
+import {
+  saveBlockProtocolStats,
+  saveAggregatedProtocolStats,
+  fetchBlockProtocolStatsByTimestampRange,
+  getProtocolStatsBlock,
+} from "./db/protocolStats";
+import {
+  getTransactionsByBlock,
+  getTransactionsByHashes,
+  type ConversionTransactionRecord,
+} from "./db/transactions";
+import { setAggregatorHeight, setDailyTimestamp, setHourlyTimestamp } from "./scannerState";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -137,12 +149,128 @@ interface Transaction {
   conversion_rate: number;
   from_asset: string;
   from_amount: number;
+  from_amount_atoms?: string;
   to_asset: string;
   to_amount: number;
+  to_amount_atoms?: string;
   conversion_fee_asset: string;
   conversion_fee_amount: number;
+  conversion_fee_atoms?: string;
   tx_fee_asset: string;
   tx_fee_amount: number;
+  tx_fee_atoms?: string;
+}
+
+const transactionCache = new Map<number, Transaction[]>();
+
+function mapDbTransaction(record: ConversionTransactionRecord): Transaction {
+  return {
+    hash: record.hash,
+    block_height: record.blockHeight,
+    block_timestamp: record.blockTimestamp,
+    conversion_type: record.conversionType,
+    conversion_rate: record.conversionRate,
+    from_asset: record.fromAsset,
+    from_amount: record.fromAmount,
+    from_amount_atoms: record.fromAmountAtoms,
+    to_asset: record.toAsset,
+    to_amount: record.toAmount,
+    to_amount_atoms: record.toAmountAtoms,
+    conversion_fee_asset: record.conversionFeeAsset,
+    conversion_fee_amount: record.conversionFeeAmount,
+    conversion_fee_atoms: undefined,
+    tx_fee_asset: record.txFeeAsset,
+    tx_fee_amount: record.txFeeAmount,
+    tx_fee_atoms: record.txFeeAtoms,
+  };
+}
+
+async function getProtocolStatsRecord(height: number): Promise<ProtocolStats | null> {
+  if (height < 0) {
+    return null;
+  }
+  if (usePostgres()) {
+    return getProtocolStatsBlock(height);
+  }
+  const json = await redis.hget("protocol_stats", height.toString());
+  if (!json) {
+    return null;
+  }
+  try {
+    return JSON.parse(json) as ProtocolStats;
+  } catch (error) {
+    console.error(`Error parsing protocol stats for height ${height}:`, error);
+    return null;
+  }
+}
+
+async function getTransactionHashesForBlock(height: number): Promise<string[]> {
+  if (usePostgres()) {
+    const rows = await getTransactionsByBlock(height);
+    const mapped = rows.map(mapDbTransaction);
+    transactionCache.set(height, mapped);
+    return mapped.map((tx) => tx.hash);
+  }
+  const json = await redis.hget("txs_by_block", height.toString());
+  if (!json) {
+    return [];
+  }
+  try {
+    return JSON.parse(json) as string[];
+  } catch (error) {
+    console.error(`Error parsing txs_by_block entry for height ${height}:`, error);
+    return [];
+  }
+}
+
+async function loadProtocolStatsForRange(startTimestamp: number, endTimestamp: number): Promise<ProtocolStats[]> {
+  if (usePostgres()) {
+    return fetchBlockProtocolStatsByTimestampRange(startTimestamp, endTimestamp);
+  }
+  const raw = await redis.hgetall("protocol_stats");
+  if (!raw) {
+    return [];
+  }
+  const records: ProtocolStats[] = [];
+  for (const blockDataJson of Object.values(raw)) {
+    try {
+      const parsed = JSON.parse(blockDataJson) as ProtocolStats;
+      if (
+        parsed.block_timestamp >= startTimestamp &&
+        parsed.block_timestamp < endTimestamp
+      ) {
+        records.push(parsed);
+      }
+    } catch (error) {
+      console.error("Failed to parse protocol stats entry:", error);
+    }
+  }
+  records.sort((a, b) => a.block_timestamp - b.block_timestamp);
+  return records;
+}
+
+function bucketProtocolStatsByWindow(
+  stats: ProtocolStats[],
+  startTimestamp: number,
+  windowSize: number
+): Map<number, ProtocolStats[]> {
+  const buckets = new Map<number, ProtocolStats[]>();
+  for (const record of stats) {
+    if (record.block_timestamp < startTimestamp) {
+      continue;
+    }
+    const index = Math.floor((record.block_timestamp - startTimestamp) / windowSize);
+    const bucketStart = startTimestamp + index * windowSize;
+    if (bucketStart >= startTimestamp) {
+      const bucket = buckets.get(bucketStart);
+      if (bucket) {
+        bucket.push(record);
+      } else {
+        buckets.set(bucketStart, [record]);
+      }
+    }
+  }
+  return buckets;
 }
 
 // once off function to process all conversion txs and populate the txs by block key
@@ -183,16 +311,19 @@ async function populateTxsByBlock(): Promise<void> {
 }
 
 export async function aggregate() {
-  // hangover fix from old implementation
-  const txsByBlockExists = await redis.exists("txs_by_block");
-  if (!txsByBlockExists) {
-    console.log("No txs by block found, populating...");
-    await populateTxsByBlock();
+  const redisEnabled = useRedis();
+  if (redisEnabled) {
+    // hangover fix from old implementation
+    const txsByBlockExists = await redis.exists("txs_by_block");
+    if (!txsByBlockExists) {
+      console.log("No txs by block found, populating...");
+      await populateTxsByBlock();
+    }
   }
 
   console.log(`Starting aggregation...`);
 
-  const current_height_prs = Number(await redis.get("height_prs"));
+  const current_height_prs = await getPricingRecordHeight();
 
   if (!current_height_prs) {
     console.log("No current height found for pricing records");
@@ -200,7 +331,7 @@ export async function aggregate() {
   }
 
   // by block
-  const height_by_block = await getRedisHeight(); // where we are at in the data aggregation
+  const height_by_block = await getScannerHeight(); // where we are at in the data aggregation
   const height_to_process = Math.max(height_by_block + 1, HF_VERSION_1_HEIGHT); // only process from HF_VERSION_1_HEIGHT
 
   console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs}`);
@@ -224,11 +355,11 @@ export async function aggregate() {
   }
 
   // get pr for current_height_prs
-  const current_pr = await getRedisPricingRecord(current_height_prs);
-  const timestamp_hourly = await getRedisTimestampHourly();
-  const timestamp_daily = await getRedisTimestampDaily();
+  const current_pr = await getPricingRecordFromStore(current_height_prs);
+  const timestamp_hourly = await getScannerTimestampHourly();
+  const timestamp_daily = await getScannerTimestampDaily();
 
-  const priorAggregatedHeight = await getRedisHeight();
+  const priorAggregatedHeight = await getScannerHeight();
   let allowHourlyAggregation = true;
   let allowDailyAggregation = true;
 
@@ -262,69 +393,40 @@ export async function aggregate() {
     await outputWalkthroughDiffReport();
   }
 
-  const latestAggregatedHeight = await getRedisHeight();
+  const latestAggregatedHeight = await getScannerHeight();
   await handleReserveIntegrity(latestAggregatedHeight);
 
   console.log(`Finished aggregation`);
 }
 
 async function loadBlockInputs(height: number) {
-  const pipelineResults = await redis
-    .pipeline()
-    .hget("pricing_records", height.toString())
-    .hget("block_rewards", height.toString())
-    .hget("protocol_stats", (height - 1).toString())
-    .hget("txs_by_block", height.toString())
-    .exec();
+  const [pr, bri, prevBlockData, txHashes] = await Promise.all([
+    getPricingRecordFromStore(height),
+    getRedisBlockRewardInfo(height),
+    getProtocolStatsRecord(height - 1),
+    getTransactionHashesForBlock(height),
+  ]);
 
-  if (!pipelineResults) {
-    throw new Error(`Failed to load Redis inputs for block ${height}`);
-  }
-
-  const [pricingRecordResult, blockRewardResult, prevStatsResult, txHashesResult] = pipelineResults;
-
-  const prJson = pricingRecordResult?.[1] as string | null;
-  const briJson = blockRewardResult?.[1] as string | null;
-  const prevBlockDataJson = prevStatsResult?.[1] as string | null;
-  const txHashesJson = txHashesResult?.[1] as string | null;
-
-  let pr: PricingRecord | null = null;
-  let bri: BlockRewardInfo | null = null;
-  let prevBlockData: Partial<ProtocolStats> = {};
-  let txHashes: string[] = [];
-
-  try {
-    pr = prJson ? (JSON.parse(prJson) as PricingRecord) : null;
-  } catch (error) {
-    console.error(`Error parsing pricing record for block ${height}:`, error);
-  }
-
-  try {
-    bri = briJson ? (JSON.parse(briJson) as BlockRewardInfo) : null;
-  } catch (error) {
-    console.error(`Error parsing block reward info for block ${height}:`, error);
-  }
-
-  try {
-    prevBlockData = prevBlockDataJson ? JSON.parse(prevBlockDataJson) : {};
-  } catch (error) {
-    console.error(`Error parsing previous block stats for block ${height}:`, error);
-    prevBlockData = {};
-  }
-
-  try {
-    txHashes = txHashesJson ? JSON.parse(txHashesJson) : [];
-  } catch (error) {
-    console.error(`Error parsing transaction hashes for block ${height}:`, error);
-    txHashes = [];
-  }
-
-  return { pr, bri, prevBlockData, txHashes };
+  const previousStats: Partial<ProtocolStats> = prevBlockData ?? {};
+  return { pr, bri, prevBlockData: previousStats, txHashes };
 }
 
-async function fetchTransactions(hashes: string[]): Promise<Map<string, Transaction>> {
+async function fetchTransactions(blockHeight: number, hashes: string[]): Promise<Map<string, Transaction>> {
   const txMap = new Map<string, Transaction>();
   if (hashes.length === 0) {
+    return txMap;
+  }
+
+  if (usePostgres()) {
+    let cached = transactionCache.get(blockHeight);
+    if (!cached) {
+      const rows = await getTransactionsByBlock(blockHeight);
+      cached = rows.map(mapDbTransaction);
+    }
+    transactionCache.delete(blockHeight);
+    cached.forEach((tx) => {
+      txMap.set(tx.hash, tx);
+    });
     return txMap;
   }
 
@@ -378,7 +480,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     return;
   }
 
-  const transactionsByHash = await fetchTransactions(txHashes);
+  const transactionsByHash = await fetchTransactions(height_to_process, txHashes);
 
   // initialize the block data
   let blockData: ProtocolStats = {
@@ -646,14 +748,14 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     await saveBlockProtocolStats(blockData as ProtocolStats);
   }
 
-  await redis
-    .pipeline()
-    .hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData))
-    .set("height_aggregator", height_to_process.toString())
-    .exec();
-  if (usePostgres()) {
-    await stores.scannerState.set("height_aggregator", height_to_process.toString());
+  if (useRedis()) {
+    await redis
+      .pipeline()
+      .hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData))
+      .set("height_aggregator", height_to_process.toString())
+      .exec();
   }
+  await setAggregatorHeight(height_to_process);
 
   if (WALKTHROUGH_MODE) {
     await verifyReserveDiffs(height_to_process, {
@@ -1047,12 +1149,14 @@ async function aggregateByTimestamp(
   // aggregate into a single key "protocol_stats_hourly" as a sorted set
   // store in redis
 
-  const protocolStats = await redis.hgetall("protocol_stats");
+  const protocolStats = await loadProtocolStatsForRange(startTimestamp, endingTimestamp);
 
-  if (!protocolStats) {
+  if (protocolStats.length === 0) {
     console.log("No protocol stats available");
     return;
   }
+
+  const groupedStats = bucketProtocolStatsByWindow(protocolStats, startTimestamp, timestampWindow);
 
   let windowIndex = 0; // Track the current window index
 
@@ -1175,29 +1279,7 @@ async function aggregateByTimestamp(
       window_end: windowEnd,
     };
 
-    let protocolStatsWindow = [];
-
-    // Loop through each block's data
-    for (const [height, blockDataJson] of Object.entries(protocolStats)) {
-      const blockData = JSON.parse(blockDataJson);
-      const blockTimestamp = blockData.block_timestamp;
-
-      // Check if the block's timestamp is within the specified time window
-      if (blockTimestamp >= windowStart && blockTimestamp < windowEnd) {
-        protocolStatsWindow.push(blockData);
-
-        // console.log(`blockData`);
-        // console.log(blockData);
-
-        // console.log(`\n\n`);
-        // console.log(`we are adding this in`);
-        // console.log(`startTimestamp: ${windowStart}`);
-        // console.log(`!!blockTimestamp: ${blockTimestamp}`);
-        // console.log(`endingTimestamp: ${windowEnd}`);
-
-        // await new Promise((resolve) => setTimeout(resolve, 10000));
-      }
-    }
+    const protocolStatsWindow = groupedStats.get(windowStart) ?? [];
 
     console.log(
       `window: ${windowStart} => ${windowEnd} protocolStatsWindow length (relevant blocks) ${protocolStatsWindow.length} \n`
@@ -1403,14 +1485,13 @@ async function aggregateByTimestamp(
         aggregatedData.equity_ma_high = Math.max(aggregatedData.equity_ma_high, blockData.equity_ma);
         aggregatedData.equity_ma_low = Math.min(aggregatedData.equity_ma_low, blockData.equity_ma);
 
-        aggregatedData.reserve_ratio_high = Math.max(aggregatedData.reserve_ratio_high, blockData.reserve_ratio);
-        aggregatedData.reserve_ratio_low = Math.min(aggregatedData.reserve_ratio_low, blockData.reserve_ratio);
+        const reserveRatio = blockData.reserve_ratio ?? 0;
+        aggregatedData.reserve_ratio_high = Math.max(aggregatedData.reserve_ratio_high, reserveRatio);
+        aggregatedData.reserve_ratio_low = Math.min(aggregatedData.reserve_ratio_low, reserveRatio);
 
-        aggregatedData.reserve_ratio_ma_high = Math.max(
-          aggregatedData.reserve_ratio_ma_high,
-          blockData.reserve_ratio_ma
-        );
-        aggregatedData.reserve_ratio_ma_low = Math.min(aggregatedData.reserve_ratio_ma_low, blockData.reserve_ratio_ma);
+        const reserveRatioMa = blockData.reserve_ratio_ma ?? 0;
+        aggregatedData.reserve_ratio_ma_high = Math.max(aggregatedData.reserve_ratio_ma_high, reserveRatioMa);
+        aggregatedData.reserve_ratio_ma_low = Math.min(aggregatedData.reserve_ratio_ma_low, reserveRatioMa);
 
         // counters
         aggregatedData.conversion_transactions_count += blockData.conversion_transactions_count;
@@ -1449,24 +1530,29 @@ async function aggregateByTimestamp(
       }
 
       if (windowComplete) {
-        const pipeline = redis.pipeline();
-        pipeline.zremrangebyscore(zsetKey, windowStart, windowStart);
-        pipeline.zadd(zsetKey, windowStart, JSON.stringify(aggregatedData));
-        pipeline.del(pendingKey);
-        if (windowType === "hourly") {
-          pipeline.set("timestamp_aggregator_hourly", windowEnd);
-          console.log(`Hourly stats aggregated for window starting at ${windowStart}`);
-        } else {
-          pipeline.set("timestamp_aggregator_daily", windowEnd);
-          console.log(`Daily stats aggregated for window starting at ${windowStart}`);
+        if (useRedis()) {
+          const pipeline = redis.pipeline();
+          pipeline.zremrangebyscore(zsetKey, windowStart, windowStart);
+          pipeline.zadd(zsetKey, windowStart, JSON.stringify(aggregatedData));
+          pipeline.del(pendingKey);
+          if (windowType === "hourly") {
+            pipeline.set("timestamp_aggregator_hourly", windowEnd);
+          } else {
+            pipeline.set("timestamp_aggregator_daily", windowEnd);
+          }
+          await pipeline.exec();
         }
-        await pipeline.exec();
-        if (usePostgres() && windowEnd) {
-          const timestampKey =
-            windowType === "hourly" ? "timestamp_aggregator_hourly" : "timestamp_aggregator_daily";
-          await stores.scannerState.set(timestampKey, windowEnd.toString());
+
+        if (windowEnd) {
+          if (windowType === "hourly") {
+            await setHourlyTimestamp(windowEnd);
+            console.log(`Hourly stats aggregated for window starting at ${windowStart}`);
+          } else {
+            await setDailyTimestamp(windowEnd);
+            console.log(`Daily stats aggregated for window starting at ${windowStart}`);
+          }
         }
-      } else {
+      } else if (useRedis()) {
         await redis.set(pendingKey, JSON.stringify(aggregatedData));
         console.log(`[aggregation-${windowType}] pending window updated at ${windowStart}`);
       }

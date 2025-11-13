@@ -2,8 +2,6 @@ import { usePostgres } from "../config";
 import { stores } from "../storage/factory";
 import { getPrismaClient } from "./index";
 
-const prisma = getPrismaClient();
-
 async function resetScannerStateValues() {
   await Promise.all([
     stores.scannerState.set("height_aggregator", "0"),
@@ -18,6 +16,7 @@ export async function clearPostgresAggregationState(): Promise<void> {
   if (!usePostgres()) {
     return;
   }
+  const prisma = getPrismaClient();
   await prisma.$transaction([
     prisma.protocolStatsBlock.deleteMany(),
     prisma.protocolStatsHourly.deleteMany(),
@@ -36,6 +35,7 @@ export async function truncatePostgresData(): Promise<void> {
     return;
   }
 
+  const prisma = getPrismaClient();
   await prisma.$transaction([
     prisma.conversionTransaction.deleteMany(),
     prisma.blockReward.deleteMany(),

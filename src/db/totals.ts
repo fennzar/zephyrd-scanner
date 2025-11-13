@@ -175,3 +175,79 @@ export async function getTotals(): Promise<TotalsRecord | null> {
     yieldReward: row.yieldReward,
   };
 }
+
+export const LEGACY_MINER_REWARD_BASELINE = 1391857.1317692809;
+export const LEGACY_GOVERNANCE_REWARD_BASELINE = 73255.6385141733;
+
+function toNumber(value: Prisma.Decimal | number | null | undefined): number {
+  if (value == null) {
+    return 0;
+  }
+  return typeof value === "number" ? value : Number(value);
+}
+
+export async function calculateTotalsFromPostgres(): Promise<TotalsRecord> {
+  const prisma = getPrismaClient();
+  const [protocolSums, rewardSums] = await Promise.all([
+    prisma.protocolStatsBlock.aggregate({
+      _sum: {
+        conversionTransactionsCount: true,
+        yieldConversionTransactionsCount: true,
+        mintReserveCount: true,
+        mintReserveVolume: true,
+        feesZephrsv: true,
+        redeemReserveCount: true,
+        redeemReserveVolume: true,
+        feesZephusd: true,
+        mintStableCount: true,
+        mintStableVolume: true,
+        redeemStableCount: true,
+        redeemStableVolume: true,
+        feesZeph: true,
+        mintYieldCount: true,
+        mintYieldVolume: true,
+        feesZyield: true,
+        redeemYieldCount: true,
+        redeemYieldVolume: true,
+        feesZephusdYield: true,
+      },
+    }),
+    prisma.blockReward.aggregate({
+      _sum: {
+        minerReward: true,
+        governanceReward: true,
+        reserveReward: true,
+        yieldReward: true,
+      },
+    }),
+  ]);
+
+  const stats = protocolSums._sum ?? {};
+  const rewards = rewardSums._sum ?? {};
+
+  return {
+    conversionTransactions: toNumber(stats.conversionTransactionsCount),
+    yieldConversionTransactions: toNumber(stats.yieldConversionTransactionsCount),
+    mintReserveCount: toNumber(stats.mintReserveCount),
+    mintReserveVolume: toNumber(stats.mintReserveVolume),
+    feesZephrsv: toNumber(stats.feesZephrsv),
+    redeemReserveCount: toNumber(stats.redeemReserveCount),
+    redeemReserveVolume: toNumber(stats.redeemReserveVolume),
+    feesZephusd: toNumber(stats.feesZephusd),
+    mintStableCount: toNumber(stats.mintStableCount),
+    mintStableVolume: toNumber(stats.mintStableVolume),
+    redeemStableCount: toNumber(stats.redeemStableCount),
+    redeemStableVolume: toNumber(stats.redeemStableVolume),
+    feesZeph: toNumber(stats.feesZeph),
+    mintYieldCount: toNumber(stats.mintYieldCount),
+    mintYieldVolume: toNumber(stats.mintYieldVolume),
+    feesZyield: toNumber(stats.feesZyield),
+    redeemYieldCount: toNumber(stats.redeemYieldCount),
+    redeemYieldVolume: toNumber(stats.redeemYieldVolume),
+    feesZephusdYield: toNumber(stats.feesZephusdYield),
+    minerReward: LEGACY_MINER_REWARD_BASELINE + toNumber(rewards.minerReward),
+    governanceReward: LEGACY_GOVERNANCE_REWARD_BASELINE + toNumber(rewards.governanceReward),
+    reserveReward: toNumber(rewards.reserveReward),
+    yieldReward: toNumber(rewards.yieldReward),
+  };
+}

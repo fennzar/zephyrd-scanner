@@ -53,6 +53,59 @@ export async function getReserveSnapshotByPreviousHeight(previousHeight: number)
   return row ? fromPrisma(row) : null;
 }
 
+export interface ReserveSnapshotRangeQuery {
+  previousHeight?: number;
+  fromPreviousHeight?: number;
+  toPreviousHeight?: number;
+  limit?: number;
+  order?: "asc" | "desc";
+}
+
+export interface ReserveSnapshotRangeResult {
+  total: number;
+  rows: ReserveSnapshot[];
+}
+
+export async function queryReserveSnapshots(
+  options: ReserveSnapshotRangeQuery = {}
+): Promise<ReserveSnapshotRangeResult> {
+  const prisma = getPrismaClient();
+  const { previousHeight, fromPreviousHeight, toPreviousHeight, limit, order = "asc" } = options;
+
+  const where: Prisma.ReserveSnapshotWhereInput = {};
+  if (previousHeight != null) {
+    where.previousHeight = previousHeight;
+  } else {
+    const heightFilter: Prisma.IntFilter = {};
+    if (fromPreviousHeight != null) {
+      heightFilter.gte = fromPreviousHeight;
+    }
+    if (toPreviousHeight != null) {
+      heightFilter.lte = toPreviousHeight;
+    }
+    if (Object.keys(heightFilter).length > 0) {
+      where.previousHeight = heightFilter;
+    }
+  }
+
+  const resolvedLimit = limit && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+  const sortOrder = order === "desc" ? "desc" : "asc";
+
+  const [total, rows] = await Promise.all([
+    prisma.reserveSnapshot.count({ where }),
+    prisma.reserveSnapshot.findMany({
+      where,
+      orderBy: { previousHeight: sortOrder },
+      take: resolvedLimit,
+    }),
+  ]);
+
+  return {
+    total,
+    rows: rows.map(fromPrisma),
+  };
+}
+
 function fromPrisma(row: {
   previousHeight: number;
   reserveHeight: number;

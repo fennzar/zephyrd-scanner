@@ -1,6 +1,5 @@
 // This file handles rolling the scanner back and removing all data from after the supplied height.
 // This is not only for debugging purposes, but also for when the chain reorgs.
-import { Pipeline } from "ioredis";
 import * as fs from "fs";
 
 import { aggregate } from "./aggregator";
@@ -15,17 +14,23 @@ import {
   getBlockProtocolStatsFromRedis,
   getCurrentBlockHeight,
   getRedisBlockRewardInfo,
-  getRedisHeight,
+  getScannerHeight,
 } from "./utils";
 import { determineAPYHistory, determineHistoricalReturns, determineProjectedReturns } from "./yield";
-import { usePostgres } from "./config";
+import { usePostgres, useRedis } from "./config";
 import { stores } from "./storage/factory";
 import { deleteTransactionsAboveHeight } from "./db/transactions";
 import { deleteBlockRewardsAboveHeight } from "./db/blockRewards";
 import { deleteBlockStatsAboveHeight, deleteAggregatesFromTimestamp } from "./db/protocolStats";
 import { getPrismaClient } from "./db";
 import { clearPostgresAggregationState, truncatePostgresData } from "./db/admin";
-import { setTotals as setSqlTotals } from "./db/totals";
+import {
+  LEGACY_GOVERNANCE_REWARD_BASELINE,
+  LEGACY_MINER_REWARD_BASELINE,
+  calculateTotalsFromPostgres,
+  setTotals as setSqlTotals,
+  TotalsRecord,
+} from "./db/totals";
 
 // Function to append log information to a file
 function writeLogToFile(logContent: string) {
@@ -33,6 +38,115 @@ function writeLogToFile(logContent: string) {
 }
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
+
+interface RedisTotals {
+  conversion_transactions: number;
+  yield_conversion_transactions: number;
+  mint_reserve_count: number;
+  mint_reserve_volume: number;
+  fees_zephrsv: number;
+  redeem_reserve_count: number;
+  redeem_reserve_volume: number;
+  fees_zephusd: number;
+  mint_stable_count: number;
+  mint_stable_volume: number;
+  redeem_stable_count: number;
+  redeem_stable_volume: number;
+  fees_zeph: number;
+  mint_yield_count: number;
+  mint_yield_volume: number;
+  fees_zyield: number;
+  redeem_yield_count: number;
+  redeem_yield_volume: number;
+  fees_zephusd_yield: number;
+  miner_reward: number;
+  governance_reward: number;
+  reserve_reward: number;
+  yield_reward: number;
+}
+
+function redisTotalsFromRecord(record: TotalsRecord): RedisTotals {
+  return {
+    conversion_transactions: record.conversionTransactions,
+    yield_conversion_transactions: record.yieldConversionTransactions,
+    mint_reserve_count: record.mintReserveCount,
+    mint_reserve_volume: record.mintReserveVolume,
+    fees_zephrsv: record.feesZephrsv,
+    redeem_reserve_count: record.redeemReserveCount,
+    redeem_reserve_volume: record.redeemReserveVolume,
+    fees_zephusd: record.feesZephusd,
+    mint_stable_count: record.mintStableCount,
+    mint_stable_volume: record.mintStableVolume,
+    redeem_stable_count: record.redeemStableCount,
+    redeem_stable_volume: record.redeemStableVolume,
+    fees_zeph: record.feesZeph,
+    mint_yield_count: record.mintYieldCount,
+    mint_yield_volume: record.mintYieldVolume,
+    fees_zyield: record.feesZyield,
+    redeem_yield_count: record.redeemYieldCount,
+    redeem_yield_volume: record.redeemYieldVolume,
+    fees_zephusd_yield: record.feesZephusdYield,
+    miner_reward: record.minerReward,
+    governance_reward: record.governanceReward,
+    reserve_reward: record.reserveReward,
+    yield_reward: record.yieldReward,
+  };
+}
+
+function totalsRecordFromRedis(totals: RedisTotals): TotalsRecord {
+  return {
+    conversionTransactions: totals.conversion_transactions,
+    yieldConversionTransactions: totals.yield_conversion_transactions,
+    mintReserveCount: totals.mint_reserve_count,
+    mintReserveVolume: totals.mint_reserve_volume,
+    feesZephrsv: totals.fees_zephrsv,
+    redeemReserveCount: totals.redeem_reserve_count,
+    redeemReserveVolume: totals.redeem_reserve_volume,
+    feesZephusd: totals.fees_zephusd,
+    mintStableCount: totals.mint_stable_count,
+    mintStableVolume: totals.mint_stable_volume,
+    redeemStableCount: totals.redeem_stable_count,
+    redeemStableVolume: totals.redeem_stable_volume,
+    feesZeph: totals.fees_zeph,
+    mintYieldCount: totals.mint_yield_count,
+    mintYieldVolume: totals.mint_yield_volume,
+    feesZyield: totals.fees_zyield,
+    redeemYieldCount: totals.redeem_yield_count,
+    redeemYieldVolume: totals.redeem_yield_volume,
+    feesZephusdYield: totals.fees_zephusd_yield,
+    minerReward: totals.miner_reward,
+    governanceReward: totals.governance_reward,
+    reserveReward: totals.reserve_reward,
+    yieldReward: totals.yield_reward,
+  };
+}
+
+async function writeRedisTotals(totals: RedisTotals): Promise<void> {
+  await redis.del("totals");
+  const pipeline = redis.pipeline();
+  for (const [key, value] of Object.entries(totals)) {
+    if (!Number.isFinite(value)) {
+      console.log(`Value for ${key} is NaN, skipping...`);
+      continue;
+    }
+    pipeline.hincrbyfloat("totals", key, value);
+  }
+  await pipeline.exec();
+}
+
+async function retallyTotalsViaPostgres({ redisEnabled, postgresEnabled }: { redisEnabled: boolean; postgresEnabled: boolean }): Promise<void> {
+  console.log("[retallyTotals] Rebuilding totals from Postgres aggregates...");
+  const totalsRecord = await calculateTotalsFromPostgres();
+  if (redisEnabled) {
+    await writeRedisTotals(redisTotalsFromRecord(totalsRecord));
+  } else {
+    console.log("[retallyTotals] Redis disabled – skipping totals hash update");
+  }
+  if (postgresEnabled) {
+    await setSqlTotals(totalsRecord);
+  }
+  console.log("[retallyTotals] Totals recalculated successfully.");
+}
 
 export async function rollbackScanner(rollBackHeight: number) {
   //set variable in redis to indicate that we are rolling back
@@ -219,7 +333,7 @@ export async function detectAndHandleReorg() {
   await setBlockHashesIfEmpty();
 
   // Start from the current scanner height
-  let storedHeight = await getRedisHeight();
+  let storedHeight = await getScannerHeight();
   let rollbackHeight = null;
 
   // Loop backwards through the stored block heights to compare hashes
@@ -287,6 +401,14 @@ async function setBlockHashesIfEmpty() {
 }
 
 export async function retallyTotals() {
+  const postgresEnabled = usePostgres();
+  const redisEnabled = useRedis();
+  const forceRedisRetally = process.env.RETALLY_FORCE_REDIS === "1";
+
+  if (postgresEnabled && !forceRedisRetally) {
+    await retallyTotalsViaPostgres({ redisEnabled, postgresEnabled });
+    return;
+  }
 
   // delete the previous log file
   try {
@@ -324,7 +446,7 @@ export async function retallyTotals() {
   const aggregatedData = await getAggregatedProtocolStatsFromRedis("day", undefined, undefined, relevantAggregatedFields);
 
   // Calculate the totals
-  const totals = {
+  const totals: RedisTotals = {
     conversion_transactions: 0,
     yield_conversion_transactions: 0,
     mint_reserve_count: 0,
@@ -344,8 +466,8 @@ export async function retallyTotals() {
     redeem_yield_count: 0,
     redeem_yield_volume: 0,
     fees_zephusd_yield: 0,
-    miner_reward: 0,
-    governance_reward: 0,
+    miner_reward: LEGACY_MINER_REWARD_BASELINE,
+    governance_reward: LEGACY_GOVERNANCE_REWARD_BASELINE,
     reserve_reward: 0,
     yield_reward: 0,
   };
@@ -436,7 +558,7 @@ export async function retallyTotals() {
 
 
   // Get the current block height from aggregator
-  const currentBlockHeight = await getRedisHeight();
+  const currentBlockHeight = await getScannerHeight();
 
   // Define relevant fields for block-level data
   const relevantBlockFields: (keyof ProtocolStats)[] = [
@@ -568,10 +690,6 @@ export async function retallyTotals() {
     Recalculating totals for block reward info...
     _______________________________________________________`)
 
-  // As this scanner only processes from v1, we can add in the accm rewards before then
-  totals.miner_reward = 1391857.1317692809
-  totals.governance_reward = 73255.6385141733
-
   // Populate the totals with the rewards from block reward info
   const starting_height = 89300;
   for (let height = starting_height; height <= currentBlockHeight; height++) {
@@ -607,47 +725,17 @@ export async function retallyTotals() {
     }
   }
 
-  // Delete the previous totals key in Redis
-  await redis.del("totals");
-
-  // Set all the recalculated totals back in Redis
-  for (const [key, value] of Object.entries(totals)) {
-    if (isNaN(value)) {
-      console.log(`Value for ${key} is NaN, skipping...`);
-      continue;
-    }
-    await redis.hincrbyfloat("totals", key, value);
+  if (redisEnabled) {
+    await writeRedisTotals(totals);
+  } else {
+    console.log("[retallyTotals] Redis disabled – skipping totals hash update");
   }
 
   console.log(`Totals recalculated successfully.`);
   console.log(totals);
 
-  if (usePostgres()) {
-    await setSqlTotals({
-      conversionTransactions: totals.conversion_transactions,
-      yieldConversionTransactions: totals.yield_conversion_transactions,
-      mintReserveCount: totals.mint_reserve_count,
-      mintReserveVolume: totals.mint_reserve_volume,
-      feesZephrsv: totals.fees_zephrsv,
-      redeemReserveCount: totals.redeem_reserve_count,
-      redeemReserveVolume: totals.redeem_reserve_volume,
-      feesZephusd: totals.fees_zephusd,
-      mintStableCount: totals.mint_stable_count,
-      mintStableVolume: totals.mint_stable_volume,
-      redeemStableCount: totals.redeem_stable_count,
-      redeemStableVolume: totals.redeem_stable_volume,
-      feesZeph: totals.fees_zeph,
-      mintYieldCount: totals.mint_yield_count,
-      mintYieldVolume: totals.mint_yield_volume,
-      feesZyield: totals.fees_zyield,
-      redeemYieldCount: totals.redeem_yield_count,
-      redeemYieldVolume: totals.redeem_yield_volume,
-      feesZephusdYield: totals.fees_zephusd_yield,
-      minerReward: totals.miner_reward,
-      governanceReward: totals.governance_reward,
-      reserveReward: totals.reserve_reward,
-      yieldReward: totals.yield_reward,
-    });
+  if (postgresEnabled) {
+    await setSqlTotals(totalsRecordFromRedis(totals));
   }
 }
 

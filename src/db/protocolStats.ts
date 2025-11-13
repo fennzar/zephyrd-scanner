@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, ProtocolStatsBlock as ProtocolStatsBlockModel } from "@prisma/client";
 
 import { getPrismaClient } from "./index";
 import { AggregatedData, ProtocolStats } from "../utils";
@@ -55,6 +55,55 @@ function toBlockStatsInput(stats: ProtocolStats): Prisma.ProtocolStatsBlockUpser
     redeemYieldVolume: stats.redeem_yield_volume,
     feesZephusdYield: stats.fees_zephusd_yield,
     feesZyield: stats.fees_zyield,
+  };
+}
+
+function mapBlockRow(row: ProtocolStatsBlockModel): ProtocolStats {
+  return {
+    block_height: row.blockHeight,
+    block_timestamp: row.blockTimestamp,
+    spot: row.spot,
+    moving_average: row.movingAverage,
+    reserve: row.reserve,
+    reserve_ma: row.reserveMa,
+    stable: row.stable,
+    stable_ma: row.stableMa,
+    yield_price: row.yieldPrice,
+    zeph_in_reserve: row.zephInReserve,
+    zeph_in_reserve_atoms: row.zephInReserveAtoms ?? undefined,
+    zsd_in_yield_reserve: row.zsdInYieldReserve,
+    zeph_circ: row.zephCirc,
+    zephusd_circ: row.zephusdCirc,
+    zephrsv_circ: row.zephrsvCirc,
+    zyield_circ: row.zyieldCirc,
+    assets: row.assets,
+    assets_ma: row.assetsMa,
+    liabilities: row.liabilities,
+    equity: row.equity,
+    equity_ma: row.equityMa,
+    reserve_ratio: row.reserveRatio ?? null,
+    reserve_ratio_ma: row.reserveRatioMa ?? null,
+    zsd_accrued_in_yield_reserve_from_yield_reward: row.zsdAccruedInYieldReserve,
+    zsd_minted_for_yield: row.zsdMintedForYield,
+    conversion_transactions_count: row.conversionTransactionsCount,
+    yield_conversion_transactions_count: row.yieldConversionTransactionsCount,
+    mint_reserve_count: row.mintReserveCount,
+    mint_reserve_volume: row.mintReserveVolume,
+    fees_zephrsv: row.feesZephrsv,
+    redeem_reserve_count: row.redeemReserveCount,
+    redeem_reserve_volume: row.redeemReserveVolume,
+    fees_zephusd: row.feesZephusd,
+    mint_stable_count: row.mintStableCount,
+    mint_stable_volume: row.mintStableVolume,
+    redeem_stable_count: row.redeemStableCount,
+    redeem_stable_volume: row.redeemStableVolume,
+    fees_zeph: row.feesZeph,
+    mint_yield_count: row.mintYieldCount,
+    mint_yield_volume: row.mintYieldVolume,
+    redeem_yield_count: row.redeemYieldCount,
+    redeem_yield_volume: row.redeemYieldVolume,
+    fees_zephusd_yield: row.feesZephusdYield,
+    fees_zyield: row.feesZyield,
   };
 }
 
@@ -227,52 +276,46 @@ export async function fetchBlockProtocolStats(
     orderBy: { blockHeight: "asc" },
   });
 
-  return rows.map((row) => ({
-    block_height: row.blockHeight,
-    block_timestamp: row.blockTimestamp,
-    spot: row.spot,
-    moving_average: row.movingAverage,
-    reserve: row.reserve,
-    reserve_ma: row.reserveMa,
-    stable: row.stable,
-    stable_ma: row.stableMa,
-    yield_price: row.yieldPrice,
-    zeph_in_reserve: row.zephInReserve,
-    zeph_in_reserve_atoms: row.zephInReserveAtoms ?? undefined,
-    zsd_in_yield_reserve: row.zsdInYieldReserve,
-    zeph_circ: row.zephCirc,
-    zephusd_circ: row.zephusdCirc,
-    zephrsv_circ: row.zephrsvCirc,
-    zyield_circ: row.zyieldCirc,
-    assets: row.assets,
-    assets_ma: row.assetsMa,
-    liabilities: row.liabilities,
-    equity: row.equity,
-    equity_ma: row.equityMa,
-    reserve_ratio: row.reserveRatio,
-    reserve_ratio_ma: row.reserveRatioMa,
-    zsd_accrued_in_yield_reserve_from_yield_reward: row.zsdAccruedInYieldReserve,
-    zsd_minted_for_yield: row.zsdMintedForYield,
-    conversion_transactions_count: row.conversionTransactionsCount,
-    yield_conversion_transactions_count: row.yieldConversionTransactionsCount,
-    mint_reserve_count: row.mintReserveCount,
-    mint_reserve_volume: row.mintReserveVolume,
-    fees_zephrsv: row.feesZephrsv,
-    redeem_reserve_count: row.redeemReserveCount,
-    redeem_reserve_volume: row.redeemReserveVolume,
-    fees_zephusd: row.feesZephusd,
-    mint_stable_count: row.mintStableCount,
-    mint_stable_volume: row.mintStableVolume,
-    redeem_stable_count: row.redeemStableCount,
-    redeem_stable_volume: row.redeemStableVolume,
-    fees_zeph: row.feesZeph,
-    mint_yield_count: row.mintYieldCount,
-    mint_yield_volume: row.mintYieldVolume,
-    redeem_yield_count: row.redeemYieldCount,
-    redeem_yield_volume: row.redeemYieldVolume,
-    fees_zephusd_yield: row.feesZephusdYield,
-    fees_zyield: row.feesZyield,
-  }));
+  return rows.map(mapBlockRow);
+}
+
+export async function fetchBlockProtocolStatsByTimestampRange(
+  startTimestamp?: number,
+  endTimestamp?: number
+): Promise<ProtocolStats[]> {
+  const prisma = getPrismaClient();
+  const where: Prisma.ProtocolStatsBlockWhereInput = {};
+  const timestampFilter: Prisma.IntFilter = {};
+  if (startTimestamp != null) {
+    timestampFilter.gte = startTimestamp;
+  }
+  if (endTimestamp != null) {
+    timestampFilter.lt = endTimestamp;
+  }
+  if (Object.keys(timestampFilter).length > 0) {
+    where.blockTimestamp = timestampFilter;
+  }
+  const rows = await prisma.protocolStatsBlock.findMany({
+    where,
+    orderBy: { blockTimestamp: "asc" },
+  });
+  return rows.map(mapBlockRow);
+}
+
+export async function getProtocolStatsBlock(blockHeight: number): Promise<ProtocolStats | null> {
+  const prisma = getPrismaClient();
+  const row = await prisma.protocolStatsBlock.findUnique({
+    where: { blockHeight },
+  });
+  return row ? mapBlockRow(row) : null;
+}
+
+export async function fetchLatestProtocolStats(): Promise<ProtocolStats | null> {
+  const prisma = getPrismaClient();
+  const row = await prisma.protocolStatsBlock.findFirst({
+    orderBy: { blockHeight: "desc" },
+  });
+  return row ? mapBlockRow(row) : null;
 }
 
 function mapAggregatedRow(row: any): AggregatedData {

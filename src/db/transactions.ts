@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, ConversionTransaction as ConversionTransactionModel } from "@prisma/client";
 
 import { getPrismaClient } from "./index";
 
@@ -39,6 +39,27 @@ function toPrisma(record: ConversionTransactionRecord): Prisma.ConversionTransac
     txFeeAsset: record.txFeeAsset,
     txFeeAmount: record.txFeeAmount,
     txFeeAtoms: record.txFeeAtoms,
+  };
+}
+
+function fromPrismaRow(row: ConversionTransactionModel): ConversionTransactionRecord {
+  return {
+    hash: row.hash,
+    blockHeight: row.blockHeight,
+    blockTimestamp: row.blockTimestamp,
+    conversionType: row.conversionType,
+    conversionRate: row.conversionRate,
+    fromAsset: row.fromAsset,
+    fromAmount: row.fromAmount,
+    fromAmountAtoms: row.fromAmountAtoms ?? undefined,
+    toAsset: row.toAsset,
+    toAmount: row.toAmount,
+    toAmountAtoms: row.toAmountAtoms ?? undefined,
+    conversionFeeAsset: row.conversionFeeAsset,
+    conversionFeeAmount: row.conversionFeeAmount,
+    txFeeAsset: row.txFeeAsset,
+    txFeeAmount: row.txFeeAmount,
+    txFeeAtoms: row.txFeeAtoms ?? undefined,
   };
 }
 
@@ -128,24 +149,7 @@ export async function queryTransactions(options: TransactionQueryOptionsDb): Pro
     }),
   ]);
 
-  let mapped = rows.map((row) => ({
-    hash: row.hash,
-    blockHeight: row.blockHeight,
-    blockTimestamp: row.blockTimestamp,
-    conversionType: row.conversionType,
-    conversionRate: row.conversionRate,
-    fromAsset: row.fromAsset,
-    fromAmount: row.fromAmount,
-    fromAmountAtoms: row.fromAmountAtoms ?? undefined,
-    toAsset: row.toAsset,
-    toAmount: row.toAmount,
-    toAmountAtoms: row.toAmountAtoms ?? undefined,
-    conversionFeeAsset: row.conversionFeeAsset,
-    conversionFeeAmount: row.conversionFeeAmount,
-    txFeeAsset: row.txFeeAsset,
-    txFeeAmount: row.txFeeAmount,
-    txFeeAtoms: row.txFeeAtoms ?? undefined,
-  }));
+  let mapped = rows.map(fromPrismaRow);
 
   if (options.fromIndex != null && options.fromIndex > 0 && order === "desc") {
     mapped = mapped.reverse();
@@ -156,4 +160,27 @@ export async function queryTransactions(options: TransactionQueryOptionsDb): Pro
     offset: skip,
     results: mapped,
   };
+}
+
+export async function getTransactionsByBlock(blockHeight: number): Promise<ConversionTransactionRecord[]> {
+  const prisma = getPrismaClient();
+  const rows = await prisma.conversionTransaction.findMany({
+    where: { blockHeight },
+    orderBy: [
+      { blockTimestamp: "asc" },
+      { hash: "asc" },
+    ],
+  });
+  return rows.map(fromPrismaRow);
+}
+
+export async function getTransactionsByHashes(hashes: string[]): Promise<ConversionTransactionRecord[]> {
+  if (hashes.length === 0) {
+    return [];
+  }
+  const prisma = getPrismaClient();
+  const rows = await prisma.conversionTransaction.findMany({
+    where: { hash: { in: hashes } },
+  });
+  return rows.map(fromPrismaRow);
 }

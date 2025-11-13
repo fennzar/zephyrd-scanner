@@ -17,7 +17,25 @@ function formatTimestamp() {
   return new Date().toISOString().replace(/:/g, "-");
 }
 
+function parseArgs(): { tag?: string } {
+  const args = process.argv.slice(2);
+  const options: { tag?: string } = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--tag" && args[i + 1]) {
+      options.tag = args[i + 1];
+      i++;
+    }
+  }
+  return options;
+}
+
+function sanitizeTag(tag: string): string {
+  return tag.replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
 async function main() {
+  const { tag } = parseArgs();
   const databaseUrl = ensureEnv("DATABASE_URL");
   const url = new URL(databaseUrl);
 
@@ -37,9 +55,10 @@ async function main() {
 
   const backupDir = path.resolve(process.cwd(), "backups");
   fs.mkdirSync(backupDir, { recursive: true });
+  const tagSuffix = tag ? `_${sanitizeTag(tag)}` : "";
   const outputPath = path.join(
     backupDir,
-    `postgres_backup_${formatTimestamp()}.sql`
+    `postgres_backup_${formatTimestamp()}${tagSuffix}.sql`
   );
 
   const args = ["-h", host, "-p", port, "-U", user];

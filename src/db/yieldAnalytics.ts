@@ -29,6 +29,14 @@ const PROJECTION_TIMEFRAME_MAP: Record<keyof ProjectedReturns, ProjectionTimefra
   oneYear: "ONE_YEAR",
 };
 
+const PROJECTION_TIMEFRAME_REVERSE_MAP: Record<ProjectionTimeframe, keyof ProjectedReturns> = {
+  ONE_WEEK: "oneWeek",
+  ONE_MONTH: "oneMonth",
+  THREE_MONTHS: "threeMonths",
+  SIX_MONTHS: "sixMonths",
+  ONE_YEAR: "oneYear",
+};
+
 const scenarioToEnum = (name: keyof ProjectedReturnTier): ProjectionScenario => {
   switch (name) {
     case "low":
@@ -148,20 +156,34 @@ export async function fetchProjectedReturns(): Promise<ProjectedReturns | null> 
   if (rows.length === 0) {
     return null;
   }
-  const result = {} as ProjectedReturns;
+  const emptyTier = (): ProjectedReturnTier => ({
+    low: { zys_price: 0, return: 0 },
+    simple: { zys_price: 0, return: 0 },
+    high: { zys_price: 0, return: 0 },
+  });
+  const result: ProjectedReturns = {
+    oneWeek: emptyTier(),
+    oneMonth: emptyTier(),
+    threeMonths: emptyTier(),
+    sixMonths: emptyTier(),
+    oneYear: emptyTier(),
+  };
   for (const row of rows) {
-    const timeframe = row.timeframe.toLowerCase();
-    const tier = (result[timeframe as keyof ProjectedReturns] ||= {
-      low: { zys_price: 0, return: 0 },
-      simple: { zys_price: 0, return: 0 },
-      high: { zys_price: 0, return: 0 },
-    } as ProjectedReturnTier);
+    const timeframeKey = PROJECTION_TIMEFRAME_REVERSE_MAP[row.timeframe];
+    if (!timeframeKey) {
+      console.warn(`[yield] Skipping projected return with unsupported timeframe '${row.timeframe}'`);
+      continue;
+    }
+    const tier = result[timeframeKey];
     const scenario = row.scenario.toLowerCase() as keyof ProjectedReturnTier;
-    const target: ProjectedReturnScenario = {
+    if (!tier[scenario]) {
+      console.warn(`[yield] Skipping projected return with unsupported scenario '${row.scenario}'`);
+      continue;
+    }
+    tier[scenario] = {
       zys_price: row.zysPrice,
       return: row.returnPct,
     };
-    tier[scenario] = target;
   }
   return result;
 }

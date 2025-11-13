@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import redis from "../redis";
-import { getRedisHeight } from "../utils";
+import { getScannerHeight } from "../utils";
 
 dotenv.config();
 
@@ -200,7 +200,7 @@ async function exportRedis(options: CliOptions) {
 
   const pkg = JSON.parse(await fs.readFile(path.resolve(process.cwd(), "package.json"), "utf8"));
   const version = pkg?.version ?? "unknown";
-  const height = await getRedisHeight();
+  const height = await getScannerHeight();
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const tagPart = options.tag ? `_${sanitizeKey(options.tag)}` : "";
   const baseName = `redis_export_${version}_h${height}${tagPart}_${timestamp}`;
