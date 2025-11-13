@@ -29,7 +29,7 @@ dotenv.config();
 
 const prisma = getPrismaClient();
 
-const BATCH_SIZE = 10_000;
+const BATCH_SIZE = 50_000;
 
 async function chunked<T>(items: T[], size: number, worker: (chunk: T[]) => Promise<void>, label: string) {
   const total = items.length;
