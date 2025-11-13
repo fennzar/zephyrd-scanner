@@ -1970,17 +1970,19 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
       return null;
     }
 
-    const currentBlockProtocolStatsData = await redis.hget("protocol_stats", currentBlockHeight.toString());
-    const currentBlockProtocolStats: ProtocolStats | null = currentBlockProtocolStatsData
-      ? JSON.parse(currentBlockProtocolStatsData)
-      : null;
+    const fetchBlockStats = async (height: number): Promise<ProtocolStats | null> => {
+      if (usePostgres()) {
+        const rows = await fetchBlockProtocolStats(height, height);
+        return rows[0] ?? null;
+      }
+      const raw = await redis.hget("protocol_stats", height.toString());
+      return raw ? (JSON.parse(raw) as ProtocolStats) : null;
+    };
+
+    const currentBlockProtocolStats = await fetchBlockStats(currentBlockHeight);
 
     const oneDayHeight = currentBlockHeight - 720;
-    const onedayagoBlockProtocolStatsData =
-      oneDayHeight > 0 ? await redis.hget("protocol_stats", oneDayHeight.toString()) : null;
-    const onedayagoBlockProtocolStats: ProtocolStats | null = onedayagoBlockProtocolStatsData
-      ? JSON.parse(onedayagoBlockProtocolStatsData)
-      : null;
+    const onedayagoBlockProtocolStats = oneDayHeight > 0 ? await fetchBlockStats(oneDayHeight) : null;
 
     if (!onedayagoBlockProtocolStats || !currentBlockProtocolStats) {
       console.log(
