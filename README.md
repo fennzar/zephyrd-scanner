@@ -46,7 +46,7 @@ You can also run two scanner processes (one per store) instead of hybrid mode. F
 | `npm run db:reset` | Drop and recreate the Postgres database referenced by `DATABASE_URL` (useful before re-importing). |
 | `npm run db:migrate-from-redis` | Bulk-import the current Redis dataset (10 000-row batches with progress logs). |
 | `npm run compare-stores` | Randomly sample docs from both stores and emit a parity report (DATA_STORE is forced to `hybrid`). |
-| `npm run db:export-sql` | Dump each Prisma model to JSON under `exports/sql/...` for lightweight snapshots. |
+| `npm run db:restore-sql -- --file backups/postgres_backup_<timestamp>.sql` | Replay a pg_dump file back into Postgres. |
 | `npm run db:backup` | Run `pg_dump` against `DATABASE_URL` and write `backups/postgres_backup_<timestamp>.sql`. |
 | `DATA_STORE=postgres npm run scanner` | Run the scanner/server against Postgres only (set `DATA_STORE=hybrid` to dual-write during validation). |
 
@@ -63,7 +63,6 @@ The migrator is idempotent for existing rows (upserts) and can be rerun after pa
 
 #### Exports, backups, and restores
 
-- `npm run db:export-sql` produces structured JSON per table under `exports/sql/`. Useful for sharing subsets of data or re-importing with application scripts.
 - `npm run db:backup` captures a raw SQL dump via `pg_dump` in `backups/` (the script strips Prisma’s `?schema=` suffix automatically). Restore with `psql -d <target_db> -f backups/postgres_backup_<timestamp>.sql`.
 
 #### Resetting Postgres fast
@@ -182,7 +181,7 @@ npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_61
 npx tsx src/scripts/importRedisData.ts --dir exports/1.0.0/redis_export_1.0.0_613410_2025-10-01T05-13-49-436Z --skip-existing
 ````
 
-For Postgres backups, run `npm run db:export-sql` for JSON snapshots under `exports/sql/...` or `npm run db:backup` to capture a raw `pg_dump` file in `backups/`.
+For Postgres backups, run `npm run db:backup` to capture a raw `pg_dump` file in `backups/`, and `npm run db:restore-sql -- --file <path>` to replay one.
 
 ````
 

@@ -19,7 +19,7 @@
     "db:reset": "ts-node src/scripts/resetPostgres.ts",
     "compare-stores": "DATA_STORE=hybrid npx tsx src/scripts/compareStores.ts",
     "db:migrate-from-redis": "DATA_STORE=postgres npx tsx src/scripts/migrateRedisToPostgres.ts",
-    "db:export-sql": "DATA_STORE=postgres npx tsx src/scripts/exportPostgresData.ts",
+    "db:restore-sql": "npx tsx src/scripts/restorePostgresData.ts",
     "db:backup": "npx tsx src/scripts/backupPostgres.ts"
   },
   "keywords": [],
@@ -36,6 +36,7 @@
     "typescript": "^5.2.2"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.0",
     "dotenv": "^16.4.5",
     "express-rate-limit": "^7.4.1",
     "ioredis": "^5.3.2",
