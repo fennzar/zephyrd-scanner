@@ -5,6 +5,9 @@ import childProcess from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 function ensureEnv(name: string): string {
   const value = process.env[name];

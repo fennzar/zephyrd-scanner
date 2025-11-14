@@ -1,6 +1,9 @@
 /* eslint-disable no-console */
 import childProcess from "node:child_process";
 import process from "node:process";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 function ensureEnv(name: string): string {
   const value = process.env[name];
