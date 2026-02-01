@@ -407,6 +407,11 @@ async function loadBlockInputs(height: number) {
     getTransactionHashesForBlock(height),
   ]);
 
+  // Warn when previous block data is missing - this can lead to calculation errors
+  if (!prevBlockData && height > HF_VERSION_1_HEIGHT + 1) {
+    console.warn(`[loadBlockInputs] WARNING: Missing prevBlockData for height ${height - 1}. Values will fallback to defaults.`);
+  }
+
   const previousStats: Partial<ProtocolStats> = prevBlockData ?? {};
   return { pr, bri, prevBlockData: previousStats, txHashes };
 }
@@ -646,7 +651,12 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
               }
               applyReserveDeltaAtoms(-deltaAtoms, true);
             }
-            blockData.zephusd_circ -= tx.from_amount;
+            // Floor guard: prevent negative circulation from redemption
+            const prevZephusdCirc = blockData.zephusd_circ;
+            blockData.zephusd_circ = Math.max(0, blockData.zephusd_circ - tx.from_amount);
+            if (prevZephusdCirc - tx.from_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zephusd_circ would go negative at height ${height_to_process}: ${prevZephusdCirc} - ${tx.from_amount} = ${prevZephusdCirc - tx.from_amount}`);
+            }
             break;
           case "mint_reserve":
             blockData.conversion_transactions_count += 1;
@@ -677,7 +687,12 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
               }
               applyReserveDeltaAtoms(-deltaAtoms, true);
             }
-            blockData.zephrsv_circ -= tx.from_amount;
+            // Floor guard: prevent negative circulation from redemption
+            const prevZephrsvCirc = blockData.zephrsv_circ;
+            blockData.zephrsv_circ = Math.max(0, blockData.zephrsv_circ - tx.from_amount);
+            if (prevZephrsvCirc - tx.from_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zephrsv_circ would go negative at height ${height_to_process}: ${prevZephrsvCirc} - ${tx.from_amount} = ${prevZephrsvCirc - tx.from_amount}`);
+            }
             blockData.fees_zeph += tx.conversion_fee_amount;
             break;
           case "mint_yield":
@@ -697,8 +712,17 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             blockData.redeem_yield_count += 1;
             blockData.redeem_yield_volume += tx.from_amount;
             blockData.fees_zephusd_yield += tx.conversion_fee_amount;
-            blockData.zyield_circ -= tx.from_amount;
-            blockData.zsd_in_yield_reserve -= tx.to_amount;
+            // Floor guards: prevent negative values from yield redemption
+            const prevZyieldCirc = blockData.zyield_circ;
+            const prevZsdInYieldReserve = blockData.zsd_in_yield_reserve;
+            blockData.zyield_circ = Math.max(0, blockData.zyield_circ - tx.from_amount);
+            blockData.zsd_in_yield_reserve = Math.max(0, blockData.zsd_in_yield_reserve - tx.to_amount);
+            if (prevZyieldCirc - tx.from_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zyield_circ would go negative at height ${height_to_process}: ${prevZyieldCirc} - ${tx.from_amount}`);
+            }
+            if (prevZsdInYieldReserve - tx.to_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zsd_in_yield_reserve would go negative at height ${height_to_process}: ${prevZsdInYieldReserve} - ${tx.to_amount}`);
+            }
             break;
           default:
             console.log(`Unknown conversion type: ${tx.conversion_type}`);
@@ -741,6 +765,25 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
       blockData.zsd_in_yield_reserve += zsd_auto_minted;
       //add to circ
       blockData.zephusd_circ += zsd_auto_minted;
+    }
+  }
+
+  // Pre-save validation: detect and warn about invalid values
+  const criticalFields = [
+    { name: 'zephusd_circ', value: blockData.zephusd_circ },
+    { name: 'zephrsv_circ', value: blockData.zephrsv_circ },
+    { name: 'zyield_circ', value: blockData.zyield_circ },
+    { name: 'zeph_in_reserve', value: blockData.zeph_in_reserve },
+    { name: 'assets', value: blockData.assets },
+    { name: 'zsd_in_yield_reserve', value: blockData.zsd_in_yield_reserve },
+  ];
+
+  for (const { name, value } of criticalFields) {
+    if (!Number.isFinite(value)) {
+      console.error(`[aggregate] CRITICAL: ${name} is not finite (${value}) at height ${height_to_process}. Attempting reconciliation.`);
+    }
+    if (value < 0) {
+      console.error(`[aggregate] CRITICAL: ${name} is negative (${value}) at height ${height_to_process}. This may indicate data corruption.`);
     }
   }
 
@@ -800,11 +843,11 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
         conversion_transactions: context?.conversionTransactions ?? 0,
         reserve_debug: context?.reserveDebug
           ? {
-              prev_atoms: context.reserveDebug.prevAtoms.toString(),
-              reward_atoms: context.reserveDebug.rewardAtoms.toString(),
-              conversion_atoms: context.reserveDebug.conversionAtoms.toString(),
-              final_atoms: context.reserveDebug.finalAtoms.toString(),
-            }
+            prev_atoms: context.reserveDebug.prevAtoms.toString(),
+            reward_atoms: context.reserveDebug.rewardAtoms.toString(),
+            conversion_atoms: context.reserveDebug.conversionAtoms.toString(),
+            final_atoms: context.reserveDebug.finalAtoms.toString(),
+          }
           : undefined,
       };
       const reserveDiff = diffReport.diffs.find((entry) => entry.field === "zeph_in_reserve");
@@ -823,8 +866,7 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
         });
       } else {
         console.warn(
-          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${
-            diffReport.source_height ?? "unknown"
+          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${diffReport.source_height ?? "unknown"
           })`
         );
       }
