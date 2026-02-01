@@ -3,7 +3,7 @@ import { Pipeline } from "ioredis";
 
 import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
-import { usePostgres } from "./config";
+import { usePostgres, getStartBlock } from "./config";
 import { stores } from "./storage/factory";
 import { deleteAllBlockRewards, upsertBlockReward } from "./db/blockRewards";
 import { insertTransactions, ConversionTransactionRecord, deleteAllTransactions } from "./db/transactions";
@@ -715,9 +715,12 @@ export async function scanTransactions(reset = false) {
 
   await ensureTotalsBaseline();
 
-  let startingHeight = Math.max(redisHeight + 1, hfHeight);
+  const configStartBlock = getStartBlock();
+  const effectiveHfHeight = configStartBlock > 0 ? configStartBlock : hfHeight;
+
+  let startingHeight = Math.max(redisHeight + 1, effectiveHfHeight);
   if (reset) {
-    startingHeight = hfHeight;
+    startingHeight = effectiveHfHeight;
     // clear totals
     await redis.del("totals");
     await ensureTotalsBaseline();

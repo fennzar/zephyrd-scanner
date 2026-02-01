@@ -1,7 +1,7 @@
 import { getCurrentBlockHeight, getBlock } from "./utils";
 import redis from "./redis";
 import { stores } from "./storage/factory";
-import { usePostgres } from "./config";
+import { usePostgres, getStartBlock } from "./config";
 import { appendZysPriceHistory, fetchZysPriceHistory as fetchZysPriceHistorySql } from "./db/yieldAnalytics";
 
 const DEATOMIZE = 10 ** -12;
@@ -32,7 +32,11 @@ export async function scanPricingRecords() {
   const rpcHeight = await getCurrentBlockHeight();
   // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
   const redisHeight = await getStoredHeight();
-  const startingHeight = Math.max(redisHeight + 1, hfHeight);
+
+  const configStartBlock = getStartBlock();
+  const effectiveHfHeight = configStartBlock > 0 ? configStartBlock : hfHeight;
+
+  const startingHeight = Math.max(redisHeight + 1, effectiveHfHeight);
 
   console.log("Fired pricing record scanner...");
   console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);

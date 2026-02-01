@@ -101,6 +101,13 @@ export function getRuntimeConfigSummary(): RuntimeConfigSummary {
   };
 }
 
+export function getStartBlock(): number {
+  const envValue = process.env.START_BLOCK;
+  if (!envValue) return 0;
+  const parsed = parseInt(envValue, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 export function logRuntimeConfig(context = "runtime"): void {
   const summary = getRuntimeConfigSummary();
   console.log(
@@ -109,8 +116,7 @@ export function logRuntimeConfig(context = "runtime"): void {
 
   if (summary.redisEnabled) {
     console.log(
-      `[config][${context}] Redis host=${summary.redis.host}:${summary.redis.port} db=${summary.redis.db} url=${
-        summary.redis.url ? "custom" : "derived"
+      `[config][${context}] Redis host=${summary.redis.host}:${summary.redis.port} db=${summary.redis.db} url=${summary.redis.url ? "custom" : "derived"
       }`
     );
   } else {
@@ -120,8 +126,7 @@ export function logRuntimeConfig(context = "runtime"): void {
   if (summary.postgres.configured) {
     const pg = summary.postgres;
     console.log(
-      `[config][${context}] Postgres host=${pg.host ?? "?"}:${pg.port ?? "5432"} db=${pg.database ?? "?"} schema=${
-        pg.schema ?? "public"
+      `[config][${context}] Postgres host=${pg.host ?? "?"}:${pg.port ?? "5432"} db=${pg.database ?? "?"} schema=${pg.schema ?? "public"
       } user=${pg.user ?? "?"}`
     );
   } else if (summary.postgres.error) {
