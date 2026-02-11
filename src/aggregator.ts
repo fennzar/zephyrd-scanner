@@ -407,13 +407,32 @@ async function loadBlockInputs(height: number) {
     getTransactionHashesForBlock(height),
   ]);
 
-  // Warn when previous block data is missing - this can lead to calculation errors
-  if (!prevBlockData && height > HF_VERSION_1_HEIGHT + 1) {
-    console.warn(`[loadBlockInputs] WARNING: Missing prevBlockData for height ${height - 1}. Values will fallback to defaults.`);
+  // For HFv1 (first block after hardfork), missing prevBlockData is expected — use empty defaults
+  if (!prevBlockData && height <= HF_VERSION_1_HEIGHT + 1) {
+    const previousStats: Partial<ProtocolStats> = prevBlockData ?? {};
+    return { pr, bri, prevBlockData: previousStats, txHashes };
   }
 
-  const previousStats: Partial<ProtocolStats> = prevBlockData ?? {};
-  return { pr, bri, prevBlockData: previousStats, txHashes };
+  // For later heights, missing prevBlockData is a real problem — attempt recovery
+  if (!prevBlockData) {
+    console.warn(`[loadBlockInputs] Missing prevBlockData for height ${height - 1}. Attempting re-aggregation...`);
+
+    // Try to regenerate the missing block
+    await aggregateBlock(height - 1);
+
+    // Re-fetch after re-aggregation
+    const retryData = await getProtocolStatsRecord(height - 1);
+
+    if (!retryData) {
+      console.error(`[loadBlockInputs] FATAL: Re-aggregation failed for height ${height - 1}. Cannot proceed.`);
+      return { pr, bri, prevBlockData: null as unknown as Partial<ProtocolStats>, txHashes };
+    }
+
+    console.log(`[loadBlockInputs] Successfully recovered prevBlockData for height ${height - 1}`);
+    return { pr, bri, prevBlockData: retryData, txHashes };
+  }
+
+  return { pr, bri, prevBlockData, txHashes };
 }
 
 async function fetchTransactions(blockHeight: number, hashes: string[]): Promise<Map<string, Transaction>> {
@@ -485,9 +504,16 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     return;
   }
 
+  // Abort if prevBlockData is missing and recovery failed (post-HFv1)
+  if (!prevBlockData && height_to_process > HF_VERSION_1_HEIGHT + 1) {
+    console.error(`[aggregate] ABORT: Cannot aggregate block ${height_to_process} — missing prevBlockData and recovery failed. Height will NOT advance.`);
+    return;
+  }
+
   const transactionsByHash = await fetchTransactions(height_to_process, txHashes);
 
   // initialize the block data
+  const isGenesisBlock = height_to_process <= HF_VERSION_1_HEIGHT + 1;
   let blockData: ProtocolStats = {
     block_height: height_to_process,
     block_timestamp: pr.timestamp, // Get timestamp from pricing record
@@ -498,21 +524,22 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     stable: pr.stable, // Get stable from pricing record
     stable_ma: pr.stable_ma, // Get stable moving average from pricing record
     yield_price: pr.yield_price, // Get yield price from pricing record
-    zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
-    zeph_in_reserve_atoms: prevBlockData.zeph_in_reserve_atoms,
-    zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
-    zeph_circ: prevBlockData.zeph_circ || 1965112.77028345, // Initialize from previous block or circulating supply at HF_VERSION_1_HEIGHT - 1
-    zephusd_circ: prevBlockData.zephusd_circ || 0, // Initialize from previous block or 0
-    zephrsv_circ: prevBlockData.zephrsv_circ || 0, // Initialize from previous block or 0
-    zyield_circ: prevBlockData.zyield_circ || 0, // Initialize from previous block or 0
-    assets: prevBlockData.assets || 0, // Initialize from previous block or 0
-    assets_ma: prevBlockData.assets_ma || 0, // Initialize from previous block or 0
-    liabilities: prevBlockData.liabilities || 0, // Initialize from previous block or 0
-    equity: prevBlockData.equity || 0, // Initialize from previous block or 0
-    equity_ma: prevBlockData.equity_ma || 0, // Initialize from previous block or 0
-    reserve_ratio: prevBlockData.reserve_ratio || 0, // Initialize from previous block or 0
-    reserve_ratio_ma: prevBlockData.reserve_ratio_ma || 0, // Initialize from previous block or 0
-    zsd_accrued_in_yield_reserve_from_yield_reward: prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward || 0, // Initialize from previous block or 0
+    // Seed defaults only at HFv1 genesis; for later heights prevBlockData is guaranteed present
+    zeph_in_reserve: isGenesisBlock ? (prevBlockData.zeph_in_reserve ?? 0) : prevBlockData.zeph_in_reserve!,
+    zeph_in_reserve_atoms: isGenesisBlock ? (prevBlockData.zeph_in_reserve_atoms ?? undefined) : prevBlockData.zeph_in_reserve_atoms,
+    zsd_in_yield_reserve: isGenesisBlock ? (prevBlockData.zsd_in_yield_reserve ?? 0) : prevBlockData.zsd_in_yield_reserve!,
+    zeph_circ: isGenesisBlock ? (prevBlockData.zeph_circ ?? 1965112.77028345) : prevBlockData.zeph_circ!,
+    zephusd_circ: isGenesisBlock ? (prevBlockData.zephusd_circ ?? 0) : prevBlockData.zephusd_circ!,
+    zephrsv_circ: isGenesisBlock ? (prevBlockData.zephrsv_circ ?? 0) : prevBlockData.zephrsv_circ!,
+    zyield_circ: isGenesisBlock ? (prevBlockData.zyield_circ ?? 0) : prevBlockData.zyield_circ!,
+    assets: isGenesisBlock ? (prevBlockData.assets ?? 0) : prevBlockData.assets!,
+    assets_ma: isGenesisBlock ? (prevBlockData.assets_ma ?? 0) : prevBlockData.assets_ma!,
+    liabilities: isGenesisBlock ? (prevBlockData.liabilities ?? 0) : prevBlockData.liabilities!,
+    equity: isGenesisBlock ? (prevBlockData.equity ?? 0) : prevBlockData.equity!,
+    equity_ma: isGenesisBlock ? (prevBlockData.equity_ma ?? 0) : prevBlockData.equity_ma!,
+    reserve_ratio: isGenesisBlock ? (prevBlockData.reserve_ratio ?? 0) : prevBlockData.reserve_ratio!,
+    reserve_ratio_ma: isGenesisBlock ? (prevBlockData.reserve_ratio_ma ?? 0) : prevBlockData.reserve_ratio_ma!,
+    zsd_accrued_in_yield_reserve_from_yield_reward: isGenesisBlock ? (prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward ?? 0) : prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward!,
     zsd_minted_for_yield: 0,
     conversion_transactions_count: 0,
     yield_conversion_transactions_count: 0,
