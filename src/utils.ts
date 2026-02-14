@@ -96,8 +96,7 @@ export async function getCurrentBlockHeight(): Promise<number> {
     } else {
       return 0;
     }
-  } catch (e) {
-    console.log(e);
+  } catch {
     return 0;
   }
 }
@@ -152,6 +151,9 @@ interface GetBlockResponse {
   };
 }
 
+const DAEMON_DOWN_LOG_INTERVAL_MS = 120_000; // 2 minutes
+let lastDaemonDownLog = 0;
+
 export async function getBlock(height: number): Promise<GetBlockResponse | null> {
   try {
     const response = await fetchWithTimeout(`${RPC_URL}/json_rpc`, {
@@ -184,10 +186,12 @@ export async function getBlock(height: number): Promise<GetBlockResponse | null>
     }
 
     return data;
-  } catch (e) {
-    console.log(e);
-    console.log(`getBlock rpc no response - Daemon could be down - waiting 1 second...`);
-    await new Promise((r) => setTimeout(r, 1000));
+  } catch {
+    const now = Date.now();
+    if (now - lastDaemonDownLog >= DAEMON_DOWN_LOG_INTERVAL_MS) {
+      console.warn(`[getBlock] Daemon unreachable (height ${height}) — suppressing further warnings for ${DAEMON_DOWN_LOG_INTERVAL_MS / 1000}s`);
+      lastDaemonDownLog = now;
+    }
     return null;
   }
 }

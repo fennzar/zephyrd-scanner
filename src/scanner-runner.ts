@@ -7,6 +7,7 @@ import { aggregate } from "./aggregator";
 import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
 import {
+  getCurrentBlockHeight,
   getPricingRecordHeight,
   getScannerHeight,
   getLatestProtocolStats,
@@ -82,6 +83,13 @@ export async function runScannerCycle(): Promise<void> {
     const isRollingBack = (await redis.get("scanner_rolling_back")) === "true";
     if (isRollingBack) {
       console.log("Scanner is rolling back, skipping this cycle");
+      return;
+    }
+
+    // Check daemon is reachable before doing any work
+    const daemonHeight = await getCurrentBlockHeight();
+    if (!daemonHeight || daemonHeight === 0) {
+      console.warn(`[scanner] Daemon unreachable — skipping cycle. Will retry in ${MAIN_SLEEP_MS / 1000}s.`);
       return;
     }
 
