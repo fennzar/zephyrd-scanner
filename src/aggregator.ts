@@ -422,7 +422,9 @@ export async function aggregate() {
   console.log(`Finished aggregation`);
 }
 
-async function loadBlockInputs(height: number) {
+const MAX_RECOVERY_DEPTH = 10;
+
+async function loadBlockInputs(height: number, recoveryDepth = 0) {
   const [pr, bri, prevBlockData, txHashes] = await Promise.all([
     getPricingRecordFromStore(height),
     getRedisBlockRewardInfo(height),
@@ -437,9 +439,14 @@ async function loadBlockInputs(height: number) {
 
   // For later heights, missing prevBlockData is a real problem — attempt recovery
   if (!prevBlockData) {
-    console.warn(`[loadBlockInputs] Missing prevBlockData for height ${height - 1}. Attempting re-aggregation...`);
+    if (recoveryDepth >= MAX_RECOVERY_DEPTH) {
+      console.error(`[loadBlockInputs] FATAL: Recovery depth limit (${MAX_RECOVERY_DEPTH}) reached at height ${height - 1}. Too many consecutive missing blocks.`);
+      return { pr, bri, prevBlockData: null, txHashes };
+    }
 
-    await aggregateBlock(height - 1);
+    console.warn(`[loadBlockInputs] Missing prevBlockData for height ${height - 1}. Attempting re-aggregation (depth ${recoveryDepth + 1}/${MAX_RECOVERY_DEPTH})...`);
+
+    await aggregateBlock(height - 1, false, recoveryDepth + 1);
 
     const retryData = await getProtocolStatsRecord(height - 1);
 
@@ -508,12 +515,12 @@ async function fetchTransactions(blockHeight: number, hashes: string[]): Promise
   return txMap;
 }
 
-async function aggregateBlock(height_to_process: number, logProgress = false) {
+async function aggregateBlock(height_to_process: number, logProgress = false, recoveryDepth = 0) {
   if (logProgress) {
     console.log(`\tAggregating block: ${height_to_process}`);
   }
 
-  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process);
+  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process, recoveryDepth);
 
   if (!pr) {
     console.log("No pricing record found for height: ", height_to_process);
