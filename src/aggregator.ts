@@ -371,9 +371,20 @@ export async function aggregate() {
     const totalBlocks = lastBlockToProcess - height_to_process + 1;
     const progressInterval = Math.max(1, Math.floor(totalBlocks / 20));
 
+    let aggregationAborted = false;
     for (let i = height_to_process; i <= lastBlockToProcess; i++) {
       const shouldLog = i === lastBlockToProcess || (i - height_to_process) % progressInterval === 0;
-      await aggregateBlock(i, shouldLog);
+      const ok = await aggregateBlock(i, shouldLog);
+      if (!ok) {
+        console.error(`[aggregate] Block aggregation halted at height ${i}. Skipping remaining blocks.`);
+        aggregationAborted = true;
+        break;
+      }
+    }
+
+    if (aggregationAborted) {
+      console.log(`Finished aggregation (aborted early)`);
+      return;
     }
   }
 
@@ -515,7 +526,7 @@ async function fetchTransactions(blockHeight: number, hashes: string[]): Promise
   return txMap;
 }
 
-async function aggregateBlock(height_to_process: number, logProgress = false, recoveryDepth = 0) {
+async function aggregateBlock(height_to_process: number, logProgress = false, recoveryDepth = 0): Promise<boolean> {
   if (logProgress) {
     console.log(`\tAggregating block: ${height_to_process}`);
   }
@@ -524,17 +535,17 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
 
   if (!pr) {
     console.log("No pricing record found for height: ", height_to_process);
-    return;
+    return false;
   }
   if (!bri) {
     console.log("No block reward info found for height: ", height_to_process);
-    return;
+    return false;
   }
 
   // Abort if prevBlockData is missing and recovery failed (post-HFv1)
   if (!prevBlockData && height_to_process > HF_VERSION_1_HEIGHT + 1) {
     console.error(`[aggregate] ABORT: Cannot aggregate block ${height_to_process} — missing prevBlockData and recovery failed. Height will NOT advance.`);
-    return;
+    return false;
   }
 
   const transactionsByHash = await fetchTransactions(height_to_process, txHashes);
@@ -828,7 +839,8 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
     }
   }
 
-  // Pre-save validation: detect and warn about invalid values
+  // Pre-save validation: abort on clearly invalid state to prevent corrupt data from persisting.
+  // reserve_ratio/reserve_ratio_ma are excluded — NaN is legitimate when liabilities === 0.
   const criticalFields = [
     { name: 'zephusd_circ', value: blockData.zephusd_circ },
     { name: 'zephrsv_circ', value: blockData.zephrsv_circ },
@@ -838,13 +850,22 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
     { name: 'zsd_in_yield_reserve', value: blockData.zsd_in_yield_reserve },
   ];
 
+  const validationErrors: string[] = [];
   for (const { name, value } of criticalFields) {
     if (!Number.isFinite(value)) {
-      console.error(`[aggregate] CRITICAL: ${name} is not finite (${value}) at height ${height_to_process}. Attempting reconciliation.`);
+      validationErrors.push(`${name} is not finite (${value})`);
     }
     if (value < 0) {
-      console.error(`[aggregate] CRITICAL: ${name} is negative (${value}) at height ${height_to_process}. This may indicate data corruption.`);
+      validationErrors.push(`${name} is negative (${value})`);
     }
+  }
+
+  if (validationErrors.length > 0) {
+    console.error(`[aggregate] ABORT: Invalid block data at height ${height_to_process}. Height will NOT advance.`);
+    for (const err of validationErrors) {
+      console.error(`  - ${err}`);
+    }
+    return false;
   }
 
   if (usePostgres()) {
@@ -871,6 +892,8 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
       },
     });
   }
+
+  return true;
 }
 
 interface WalkthroughBlockContext {
