@@ -278,10 +278,43 @@ export async function startScanner(): Promise<void> {
   setInterval(invoke, MAIN_SLEEP_MS);
 }
 
-process.on("SIGTERM", () => {
-  console.log("Scanner process received SIGTERM, shutting down...");
-  process.exit(0);
+process.on("SIGTERM", async () => {
+  console.log("Scanner process received SIGTERM, shutting down gracefully...");
+  await gracefulShutdown();
 });
+
+process.on("SIGINT", async () => {
+  console.log("Scanner process received SIGINT, shutting down gracefully...");
+  await gracefulShutdown();
+});
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(): Promise<void> {
+  if (isShuttingDown) {
+    console.log("Shutdown already in progress...");
+    return;
+  }
+  isShuttingDown = true;
+
+  try {
+    // Close Prisma connection to prevent zombie PostgreSQL sessions
+    console.log("Closing Prisma connection...");
+    const { disconnectPrisma } = await import("./db");
+    await disconnectPrisma();
+    console.log("Prisma connection closed.");
+
+    // Close Redis connection
+    console.log("Closing Redis connection...");
+    await redis.quit();
+    console.log("Redis connection closed.");
+  } catch (error) {
+    console.error("Error during graceful shutdown:", error);
+  }
+
+  console.log("Graceful shutdown complete.");
+  process.exit(0);
+}
 
 if (require.main === module) {
   startScanner().catch((error) => {
@@ -289,3 +322,4 @@ if (require.main === module) {
     process.exit(1);
   });
 }
+

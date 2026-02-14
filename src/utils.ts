@@ -38,6 +38,27 @@ const RPC_URL = "http://127.0.0.1:17767";
 const HEADERS = {
   "Content-Type": "application/json",
 };
+const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS) || 30000; // 30 second default timeout
+
+// Helper function to fetch with timeout to prevent hanging when daemon is unresponsive
+async function fetchWithTimeout(
+  url: string,
+  options: Parameters<typeof fetch>[1] & { agent?: Agent } = {},
+  timeoutMs: number = RPC_TIMEOUT_MS
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal as any,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 const DEATOMIZE = 10 ** -12;
 const RESERVE_SNAPSHOT_DIR = process.env.RESERVE_SNAPSHOT_DIR ?? "reserve_snapshots";
 export const RESERVE_SNAPSHOT_INTERVAL_BLOCKS = Number(process.env.RESERVE_SNAPSHOT_INTERVAL_BLOCKS ?? "100");
@@ -58,7 +79,7 @@ const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
 export async function getCurrentBlockHeight(): Promise<number> {
   try {
-    const response = await fetch(`${RPC_URL}/get_height`, {
+    const response = await fetchWithTimeout(`${RPC_URL}/get_height`, {
       method: "POST",
       headers: HEADERS,
     });
@@ -133,7 +154,7 @@ interface GetBlockResponse {
 
 export async function getBlock(height: number): Promise<GetBlockResponse | null> {
   try {
-    const response = await fetch(`${RPC_URL}/json_rpc`, {
+    const response = await fetchWithTimeout(`${RPC_URL}/json_rpc`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -340,7 +361,7 @@ async function loadReserveSnapshotByPreviousHeightFromRedis(
   }
   try {
     const snapshot = JSON.parse(json) as ReserveSnapshot;
-  return { snapshot, filePath: `redis:${previousHeight}` };
+    return { snapshot, filePath: `redis:${previousHeight}` };
   } catch (error) {
     console.error(`Failed to parse reserve snapshot from redis for height ${previousHeight}:`, error);
     return null;
@@ -374,7 +395,7 @@ export async function getLatestReserveSnapshot(): Promise<ReserveSnapshot | null
 
 export async function getReserveInfo() {
   try {
-    const response = await fetch(`${RPC_URL}/json_rpc`, {
+    const response = await fetchWithTimeout(`${RPC_URL}/json_rpc`, {
       method: "POST",
       headers: HEADERS,
       body: JSON.stringify({
@@ -2050,8 +2071,8 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
       typeof reserve_ratio_ma_value_raw === "number"
         ? reserve_ratio_ma_value_raw
         : reserve_ratio_ma_value_raw == null
-        ? null
-        : Number(reserve_ratio_ma_value_raw);
+          ? null
+          : Number(reserve_ratio_ma_value_raw);
     const reserve_ratio_ma = reserve_ratio_ma_value != null && Number.isFinite(reserve_ratio_ma_value)
       ? reserve_ratio_ma_value
       : null;

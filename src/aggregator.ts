@@ -62,6 +62,29 @@ const TEMP_DAILY_MAX_LAG = 720;
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
+const BLOCK_COUNTER_DEFAULTS = {
+  zsd_minted_for_yield: 0,
+  conversion_transactions_count: 0,
+  yield_conversion_transactions_count: 0,
+  mint_reserve_count: 0,
+  mint_reserve_volume: 0,
+  fees_zephrsv: 0,
+  redeem_reserve_count: 0,
+  redeem_reserve_volume: 0,
+  fees_zephusd: 0,
+  mint_stable_count: 0,
+  mint_stable_volume: 0,
+  redeem_stable_count: 0,
+  redeem_stable_volume: 0,
+  fees_zeph: 0,
+  mint_yield_count: 0,
+  mint_yield_volume: 0,
+  redeem_yield_count: 0,
+  redeem_yield_volume: 0,
+  fees_zephusd_yield: 0,
+  fees_zyield: 0,
+};
+
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
 const WALKTHROUGH_DIFF_THRESHOLD = Number(process.env.WALKTHROUGH_DIFF_THRESHOLD ?? "1");
 const WALKTHROUGH_REPORT_PATH = process.env.WALKTHROUGH_REPORT_PATH;
@@ -348,9 +371,20 @@ export async function aggregate() {
     const totalBlocks = lastBlockToProcess - height_to_process + 1;
     const progressInterval = Math.max(1, Math.floor(totalBlocks / 20));
 
+    let aggregationAborted = false;
     for (let i = height_to_process; i <= lastBlockToProcess; i++) {
       const shouldLog = i === lastBlockToProcess || (i - height_to_process) % progressInterval === 0;
-      await aggregateBlock(i, shouldLog);
+      const ok = await aggregateBlock(i, shouldLog);
+      if (!ok) {
+        console.error(`[aggregate] Block aggregation halted at height ${i}. Skipping remaining blocks.`);
+        aggregationAborted = true;
+        break;
+      }
+    }
+
+    if (aggregationAborted) {
+      console.log(`Finished aggregation (aborted early)`);
+      return;
     }
   }
 
@@ -399,7 +433,9 @@ export async function aggregate() {
   console.log(`Finished aggregation`);
 }
 
-async function loadBlockInputs(height: number) {
+const MAX_RECOVERY_DEPTH = 100;
+
+async function loadBlockInputs(height: number, recoveryDepth = 0) {
   const [pr, bri, prevBlockData, txHashes] = await Promise.all([
     getPricingRecordFromStore(height),
     getRedisBlockRewardInfo(height),
@@ -407,8 +443,34 @@ async function loadBlockInputs(height: number) {
     getTransactionHashesForBlock(height),
   ]);
 
-  const previousStats: Partial<ProtocolStats> = prevBlockData ?? {};
-  return { pr, bri, prevBlockData: previousStats, txHashes };
+  // At HFv1 start, missing prevBlockData is expected — there's no predecessor
+  if (height <= HF_VERSION_1_HEIGHT + 1) {
+    return { pr, bri, prevBlockData: prevBlockData ?? null, txHashes };
+  }
+
+  // For later heights, missing prevBlockData is a real problem — attempt recovery
+  if (!prevBlockData) {
+    if (recoveryDepth >= MAX_RECOVERY_DEPTH) {
+      console.error(`[loadBlockInputs] FATAL: Recovery depth limit (${MAX_RECOVERY_DEPTH}) reached at height ${height - 1}. Too many consecutive missing blocks.`);
+      return { pr, bri, prevBlockData: null, txHashes };
+    }
+
+    console.warn(`[loadBlockInputs] Missing prevBlockData for height ${height - 1}. Attempting re-aggregation (depth ${recoveryDepth + 1}/${MAX_RECOVERY_DEPTH})...`);
+
+    await aggregateBlock(height - 1, false, recoveryDepth + 1);
+
+    const retryData = await getProtocolStatsRecord(height - 1);
+
+    if (!retryData) {
+      console.error(`[loadBlockInputs] FATAL: Re-aggregation failed for height ${height - 1}. Cannot proceed.`);
+      return { pr, bri, prevBlockData: null, txHashes };
+    }
+
+    console.log(`[loadBlockInputs] Successfully recovered prevBlockData for height ${height - 1}`);
+    return { pr, bri, prevBlockData: retryData, txHashes };
+  }
+
+  return { pr, bri, prevBlockData, txHashes };
 }
 
 async function fetchTransactions(blockHeight: number, hashes: string[]): Promise<Map<string, Transaction>> {
@@ -464,70 +526,84 @@ async function fetchTransactions(blockHeight: number, hashes: string[]): Promise
   return txMap;
 }
 
-async function aggregateBlock(height_to_process: number, logProgress = false) {
+async function aggregateBlock(height_to_process: number, logProgress = false, recoveryDepth = 0): Promise<boolean> {
   if (logProgress) {
     console.log(`\tAggregating block: ${height_to_process}`);
   }
 
-  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process);
+  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process, recoveryDepth);
 
   if (!pr) {
     console.log("No pricing record found for height: ", height_to_process);
-    return;
+    return false;
   }
   if (!bri) {
     console.log("No block reward info found for height: ", height_to_process);
-    return;
+    return false;
+  }
+
+  // Abort if prevBlockData is missing and recovery failed (post-HFv1)
+  if (!prevBlockData && height_to_process > HF_VERSION_1_HEIGHT + 1) {
+    console.error(`[aggregate] ABORT: Cannot aggregate block ${height_to_process} — missing prevBlockData and recovery failed. Height will NOT advance.`);
+    return false;
   }
 
   const transactionsByHash = await fetchTransactions(height_to_process, txHashes);
 
-  // initialize the block data
+  // Seed running-tally fields from the previous block.
+  // Post-HFv1: the abort guard above guarantees prevBlockData is present — use it directly.
+  // At HFv1 start: no predecessor exists, use static known state at v1.
+  const runningTally = prevBlockData
+    ? {
+        zeph_in_reserve: prevBlockData.zeph_in_reserve,
+        zeph_in_reserve_atoms: prevBlockData.zeph_in_reserve_atoms,
+        zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve,
+        zeph_circ: prevBlockData.zeph_circ,
+        zephusd_circ: prevBlockData.zephusd_circ,
+        zephrsv_circ: prevBlockData.zephrsv_circ,
+        zyield_circ: prevBlockData.zyield_circ,
+        assets: prevBlockData.assets,
+        assets_ma: prevBlockData.assets_ma,
+        liabilities: prevBlockData.liabilities,
+        equity: prevBlockData.equity,
+        equity_ma: prevBlockData.equity_ma,
+        reserve_ratio: prevBlockData.reserve_ratio,
+        reserve_ratio_ma: prevBlockData.reserve_ratio_ma,
+        zsd_accrued_in_yield_reserve_from_yield_reward: prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward,
+      }
+    : {
+        zeph_in_reserve: 0,
+        zeph_in_reserve_atoms: undefined as string | undefined,
+        zsd_in_yield_reserve: 0,
+        zeph_circ: 1965112.77028345, // circulating supply at HF_VERSION_1_HEIGHT - 1
+        zephusd_circ: 0,
+        zephrsv_circ: 0,
+        zyield_circ: 0,
+        assets: 0,
+        assets_ma: 0,
+        liabilities: 0,
+        equity: 0,
+        equity_ma: 0,
+        reserve_ratio: 0 as number | null,
+        reserve_ratio_ma: 0 as number | null,
+        zsd_accrued_in_yield_reserve_from_yield_reward: 0,
+      };
+
   let blockData: ProtocolStats = {
+    // Block identity + pricing (from current block's pricing record)
     block_height: height_to_process,
-    block_timestamp: pr.timestamp, // Get timestamp from pricing record
-    spot: pr.spot, // Get spot from pricing record
-    moving_average: pr.moving_average, // Get moving average from pricing record
-    reserve: pr.reserve, // Get reserve from pricing record
-    reserve_ma: pr.reserve_ma, // Get reserve moving average from pricing record
-    stable: pr.stable, // Get stable from pricing record
-    stable_ma: pr.stable_ma, // Get stable moving average from pricing record
-    yield_price: pr.yield_price, // Get yield price from pricing record
-    zeph_in_reserve: prevBlockData.zeph_in_reserve || 0, // Initialize from previous block or 0
-    zeph_in_reserve_atoms: prevBlockData.zeph_in_reserve_atoms,
-    zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve || 0, // Initialize from previous block or 0
-    zeph_circ: prevBlockData.zeph_circ || 1965112.77028345, // Initialize from previous block or circulating supply at HF_VERSION_1_HEIGHT - 1
-    zephusd_circ: prevBlockData.zephusd_circ || 0, // Initialize from previous block or 0
-    zephrsv_circ: prevBlockData.zephrsv_circ || 0, // Initialize from previous block or 0
-    zyield_circ: prevBlockData.zyield_circ || 0, // Initialize from previous block or 0
-    assets: prevBlockData.assets || 0, // Initialize from previous block or 0
-    assets_ma: prevBlockData.assets_ma || 0, // Initialize from previous block or 0
-    liabilities: prevBlockData.liabilities || 0, // Initialize from previous block or 0
-    equity: prevBlockData.equity || 0, // Initialize from previous block or 0
-    equity_ma: prevBlockData.equity_ma || 0, // Initialize from previous block or 0
-    reserve_ratio: prevBlockData.reserve_ratio || 0, // Initialize from previous block or 0
-    reserve_ratio_ma: prevBlockData.reserve_ratio_ma || 0, // Initialize from previous block or 0
-    zsd_accrued_in_yield_reserve_from_yield_reward: prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward || 0, // Initialize from previous block or 0
-    zsd_minted_for_yield: 0,
-    conversion_transactions_count: 0,
-    yield_conversion_transactions_count: 0,
-    mint_reserve_count: 0,
-    mint_reserve_volume: 0,
-    fees_zephrsv: 0, // conversion fees from minting zeph -> zrs
-    redeem_reserve_count: 0,
-    redeem_reserve_volume: 0,
-    fees_zephusd: 0, // conversion fees from minting zeph -> zsd
-    mint_stable_count: 0,
-    mint_stable_volume: 0,
-    redeem_stable_count: 0,
-    redeem_stable_volume: 0,
-    fees_zeph: 0, // conversion fees from redeeming zsd -> zeph && redeeming zrs -> zeph
-    mint_yield_count: 0,
-    mint_yield_volume: 0,
-    redeem_yield_count: 0,
-    redeem_yield_volume: 0,
-    fees_zephusd_yield: 0, // conversion fees from redeeming zys -> zsd
-    fees_zyield: 0, // conversion fees from minting zsd -> zys
+    block_timestamp: pr.timestamp,
+    spot: pr.spot,
+    moving_average: pr.moving_average,
+    reserve: pr.reserve,
+    reserve_ma: pr.reserve_ma,
+    stable: pr.stable,
+    stable_ma: pr.stable_ma,
+    yield_price: pr.yield_price,
+    // Running tally (carried forward from previous block)
+    ...runningTally,
+    // Per-block counters (reset each block)
+    ...BLOCK_COUNTER_DEFAULTS,
   };
 
   let reserveAtoms = blockData.zeph_in_reserve_atoms
@@ -646,7 +722,12 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
               }
               applyReserveDeltaAtoms(-deltaAtoms, true);
             }
-            blockData.zephusd_circ -= tx.from_amount;
+            // Floor guard: prevent negative circulation from redemption
+            const prevZephusdCirc = blockData.zephusd_circ;
+            blockData.zephusd_circ = Math.max(0, blockData.zephusd_circ - tx.from_amount);
+            if (prevZephusdCirc - tx.from_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zephusd_circ would go negative at height ${height_to_process}: ${prevZephusdCirc} - ${tx.from_amount} = ${prevZephusdCirc - tx.from_amount}`);
+            }
             break;
           case "mint_reserve":
             blockData.conversion_transactions_count += 1;
@@ -677,7 +758,12 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
               }
               applyReserveDeltaAtoms(-deltaAtoms, true);
             }
-            blockData.zephrsv_circ -= tx.from_amount;
+            // Floor guard: prevent negative circulation from redemption
+            const prevZephrsvCirc = blockData.zephrsv_circ;
+            blockData.zephrsv_circ = Math.max(0, blockData.zephrsv_circ - tx.from_amount);
+            if (prevZephrsvCirc - tx.from_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zephrsv_circ would go negative at height ${height_to_process}: ${prevZephrsvCirc} - ${tx.from_amount} = ${prevZephrsvCirc - tx.from_amount}`);
+            }
             blockData.fees_zeph += tx.conversion_fee_amount;
             break;
           case "mint_yield":
@@ -697,8 +783,17 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
             blockData.redeem_yield_count += 1;
             blockData.redeem_yield_volume += tx.from_amount;
             blockData.fees_zephusd_yield += tx.conversion_fee_amount;
-            blockData.zyield_circ -= tx.from_amount;
-            blockData.zsd_in_yield_reserve -= tx.to_amount;
+            // Floor guards: prevent negative values from yield redemption
+            const prevZyieldCirc = blockData.zyield_circ;
+            const prevZsdInYieldReserve = blockData.zsd_in_yield_reserve;
+            blockData.zyield_circ = Math.max(0, blockData.zyield_circ - tx.from_amount);
+            blockData.zsd_in_yield_reserve = Math.max(0, blockData.zsd_in_yield_reserve - tx.to_amount);
+            if (prevZyieldCirc - tx.from_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zyield_circ would go negative at height ${height_to_process}: ${prevZyieldCirc} - ${tx.from_amount}`);
+            }
+            if (prevZsdInYieldReserve - tx.to_amount < 0) {
+              console.warn(`[aggregate] ANOMALY: zsd_in_yield_reserve would go negative at height ${height_to_process}: ${prevZsdInYieldReserve} - ${tx.to_amount}`);
+            }
             break;
           default:
             console.log(`Unknown conversion type: ${tx.conversion_type}`);
@@ -744,6 +839,35 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
     }
   }
 
+  // Pre-save validation: abort on clearly invalid state to prevent corrupt data from persisting.
+  // reserve_ratio/reserve_ratio_ma are excluded — NaN is legitimate when liabilities === 0.
+  const criticalFields = [
+    { name: 'zephusd_circ', value: blockData.zephusd_circ },
+    { name: 'zephrsv_circ', value: blockData.zephrsv_circ },
+    { name: 'zyield_circ', value: blockData.zyield_circ },
+    { name: 'zeph_in_reserve', value: blockData.zeph_in_reserve },
+    { name: 'assets', value: blockData.assets },
+    { name: 'zsd_in_yield_reserve', value: blockData.zsd_in_yield_reserve },
+  ];
+
+  const validationErrors: string[] = [];
+  for (const { name, value } of criticalFields) {
+    if (!Number.isFinite(value)) {
+      validationErrors.push(`${name} is not finite (${value})`);
+    }
+    if (value < 0) {
+      validationErrors.push(`${name} is negative (${value})`);
+    }
+  }
+
+  if (validationErrors.length > 0) {
+    console.error(`[aggregate] ABORT: Invalid block data at height ${height_to_process}. Height will NOT advance.`);
+    for (const err of validationErrors) {
+      console.error(`  - ${err}`);
+    }
+    return false;
+  }
+
   if (usePostgres()) {
     await saveBlockProtocolStats(blockData as ProtocolStats);
   }
@@ -768,6 +892,8 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
       },
     });
   }
+
+  return true;
 }
 
 interface WalkthroughBlockContext {
@@ -800,11 +926,11 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
         conversion_transactions: context?.conversionTransactions ?? 0,
         reserve_debug: context?.reserveDebug
           ? {
-              prev_atoms: context.reserveDebug.prevAtoms.toString(),
-              reward_atoms: context.reserveDebug.rewardAtoms.toString(),
-              conversion_atoms: context.reserveDebug.conversionAtoms.toString(),
-              final_atoms: context.reserveDebug.finalAtoms.toString(),
-            }
+            prev_atoms: context.reserveDebug.prevAtoms.toString(),
+            reward_atoms: context.reserveDebug.rewardAtoms.toString(),
+            conversion_atoms: context.reserveDebug.conversionAtoms.toString(),
+            final_atoms: context.reserveDebug.finalAtoms.toString(),
+          }
           : undefined,
       };
       const reserveDiff = diffReport.diffs.find((entry) => entry.field === "zeph_in_reserve");
@@ -823,8 +949,7 @@ async function verifyReserveDiffs(blockHeight: number, context?: WalkthroughBloc
         });
       } else {
         console.warn(
-          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${
-            diffReport.source_height ?? "unknown"
+          `[walkthrough] reserve snapshot mismatch at block ${blockHeight} (source height: ${diffReport.source_height ?? "unknown"
           })`
         );
       }

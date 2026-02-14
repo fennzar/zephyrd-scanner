@@ -3,7 +3,7 @@ import { Pipeline } from "ioredis";
 
 import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
-import { usePostgres } from "./config";
+import { usePostgres, getStartBlock, getEndBlock } from "./config";
 import { stores } from "./storage/factory";
 import { deleteAllBlockRewards, upsertBlockReward } from "./db/blockRewards";
 import { insertTransactions, ConversionTransactionRecord, deleteAllTransactions } from "./db/transactions";
@@ -715,9 +715,14 @@ export async function scanTransactions(reset = false) {
 
   await ensureTotalsBaseline();
 
-  let startingHeight = Math.max(redisHeight + 1, hfHeight);
+  const configStartBlock = getStartBlock();
+  const configEndBlock = getEndBlock();
+  const effectiveHfHeight = configStartBlock > 0 ? configStartBlock : hfHeight;
+  const effectiveEndHeight = configEndBlock > 0 ? Math.min(configEndBlock, rpcHeight - 1) : rpcHeight - 1;
+
+  let startingHeight = Math.max(redisHeight + 1, effectiveHfHeight);
   if (reset) {
-    startingHeight = hfHeight;
+    startingHeight = effectiveHfHeight;
     // clear totals
     await redis.del("totals");
     await ensureTotalsBaseline();
@@ -741,36 +746,35 @@ export async function scanTransactions(reset = false) {
   }
 
   console.log("Fired tx scanner...");
-  console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
+  console.log(`Starting height: ${startingHeight} | Ending height: ${effectiveEndHeight}${configEndBlock > 0 ? ` (capped by END_BLOCK)` : ''}`);
 
   if (process.env.WALKTHROUGH_MODE === "true") {
     await fs.writeFile(WALKTHROUGH_DEBUG_LOG, "");
   }
 
   let verbose_logs = false;
-  if (rpcHeight - startingHeight > 1000) {
+  if (effectiveEndHeight - startingHeight > 1000) {
     console.log("This is a large scan, verbose logs are disabled.");
     verbose_logs = false;
   }
 
   const total_of_total_increments: IncrTotals = blankIncrTotals();
-  const progressStep = Math.max(1, Math.floor((rpcHeight - 1) / 100));
+  const progressStep = Math.max(1, Math.floor((effectiveEndHeight - startingHeight) / 100));
   const pipeline = redis.pipeline() as Pipeline;
 
-  for (let height = startingHeight; height <= rpcHeight - 1; height++) {
+  for (let height = startingHeight; height <= effectiveEndHeight; height++) {
     const blockHashes: string[] = [];
     const postgresBlockTransactions: ConversionTransactionRecord[] = [];
     const block: any = await getBlock(height);
     if (!block) {
-      console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
+      console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
       await setStoredTxHeight(height);
       return;
     }
 
-    if (height % progressStep === 0 || height === rpcHeight - 1 - 1) {
-      // const percent = ((height + 1) / (rpcHeight - 1) * 100).toFixed(2);
-      const percentComplete = (((height - startingHeight) / (rpcHeight - startingHeight)) * 100).toFixed(2);
-      console.log(`TXs SCANNING BLOCK: [${height + 1}/${rpcHeight - 1}] Processed (${percentComplete}%)`);
+    if (height % progressStep === 0 || height === effectiveEndHeight - 1) {
+      const percentComplete = (((height - startingHeight) / (effectiveEndHeight - startingHeight)) * 100).toFixed(2);
+      console.log(`TXs SCANNING BLOCK: [${height + 1}/${effectiveEndHeight}] Processed (${percentComplete}%)`);
     }
 
     // console.log(`TXs SCANNING BLOCK: ${height}/${rpcHeight - 1} \t | ${percentComplete}%`);
@@ -848,7 +852,7 @@ export async function scanTransactions(reset = false) {
 
   // EXECUTE ALL REDIS COMMANDS IN BATCH
   await pipeline.exec();
-  await setStoredTxHeight(rpcHeight - 1);
+  await setStoredTxHeight(effectiveEndHeight);
 }
 
 // (async () => {
