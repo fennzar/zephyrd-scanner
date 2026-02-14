@@ -62,6 +62,29 @@ const TEMP_DAILY_MAX_LAG = 720;
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
+const BLOCK_COUNTER_DEFAULTS = {
+  zsd_minted_for_yield: 0,
+  conversion_transactions_count: 0,
+  yield_conversion_transactions_count: 0,
+  mint_reserve_count: 0,
+  mint_reserve_volume: 0,
+  fees_zephrsv: 0,
+  redeem_reserve_count: 0,
+  redeem_reserve_volume: 0,
+  fees_zephusd: 0,
+  mint_stable_count: 0,
+  mint_stable_volume: 0,
+  redeem_stable_count: 0,
+  redeem_stable_volume: 0,
+  fees_zeph: 0,
+  mint_yield_count: 0,
+  mint_yield_volume: 0,
+  redeem_yield_count: 0,
+  redeem_yield_volume: 0,
+  fees_zephusd_yield: 0,
+  fees_zyield: 0,
+};
+
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
 const WALKTHROUGH_DIFF_THRESHOLD = Number(process.env.WALKTHROUGH_DIFF_THRESHOLD ?? "1");
 const WALKTHROUGH_REPORT_PATH = process.env.WALKTHROUGH_REPORT_PATH;
@@ -407,25 +430,22 @@ async function loadBlockInputs(height: number) {
     getTransactionHashesForBlock(height),
   ]);
 
-  // For HFv1 (first block after hardfork), missing prevBlockData is expected — use empty defaults
-  if (!prevBlockData && height <= HF_VERSION_1_HEIGHT + 1) {
-    const previousStats: Partial<ProtocolStats> = prevBlockData ?? {};
-    return { pr, bri, prevBlockData: previousStats, txHashes };
+  // At HFv1 start, missing prevBlockData is expected — there's no predecessor
+  if (height <= HF_VERSION_1_HEIGHT + 1) {
+    return { pr, bri, prevBlockData: prevBlockData ?? null, txHashes };
   }
 
   // For later heights, missing prevBlockData is a real problem — attempt recovery
   if (!prevBlockData) {
     console.warn(`[loadBlockInputs] Missing prevBlockData for height ${height - 1}. Attempting re-aggregation...`);
 
-    // Try to regenerate the missing block
     await aggregateBlock(height - 1);
 
-    // Re-fetch after re-aggregation
     const retryData = await getProtocolStatsRecord(height - 1);
 
     if (!retryData) {
       console.error(`[loadBlockInputs] FATAL: Re-aggregation failed for height ${height - 1}. Cannot proceed.`);
-      return { pr, bri, prevBlockData: null as unknown as Partial<ProtocolStats>, txHashes };
+      return { pr, bri, prevBlockData: null, txHashes };
     }
 
     console.log(`[loadBlockInputs] Successfully recovered prevBlockData for height ${height - 1}`);
@@ -512,54 +532,60 @@ async function aggregateBlock(height_to_process: number, logProgress = false) {
 
   const transactionsByHash = await fetchTransactions(height_to_process, txHashes);
 
-  // initialize the block data
-  const isGenesisBlock = height_to_process <= HF_VERSION_1_HEIGHT + 1;
+  // Seed running-tally fields from the previous block.
+  // Post-HFv1: the abort guard above guarantees prevBlockData is present — use it directly.
+  // At HFv1 start: no predecessor exists, use static known state at v1.
+  const runningTally = prevBlockData
+    ? {
+        zeph_in_reserve: prevBlockData.zeph_in_reserve,
+        zeph_in_reserve_atoms: prevBlockData.zeph_in_reserve_atoms,
+        zsd_in_yield_reserve: prevBlockData.zsd_in_yield_reserve,
+        zeph_circ: prevBlockData.zeph_circ,
+        zephusd_circ: prevBlockData.zephusd_circ,
+        zephrsv_circ: prevBlockData.zephrsv_circ,
+        zyield_circ: prevBlockData.zyield_circ,
+        assets: prevBlockData.assets,
+        assets_ma: prevBlockData.assets_ma,
+        liabilities: prevBlockData.liabilities,
+        equity: prevBlockData.equity,
+        equity_ma: prevBlockData.equity_ma,
+        reserve_ratio: prevBlockData.reserve_ratio,
+        reserve_ratio_ma: prevBlockData.reserve_ratio_ma,
+        zsd_accrued_in_yield_reserve_from_yield_reward: prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward,
+      }
+    : {
+        zeph_in_reserve: 0,
+        zeph_in_reserve_atoms: undefined as string | undefined,
+        zsd_in_yield_reserve: 0,
+        zeph_circ: 1965112.77028345, // circulating supply at HF_VERSION_1_HEIGHT - 1
+        zephusd_circ: 0,
+        zephrsv_circ: 0,
+        zyield_circ: 0,
+        assets: 0,
+        assets_ma: 0,
+        liabilities: 0,
+        equity: 0,
+        equity_ma: 0,
+        reserve_ratio: 0 as number | null,
+        reserve_ratio_ma: 0 as number | null,
+        zsd_accrued_in_yield_reserve_from_yield_reward: 0,
+      };
+
   let blockData: ProtocolStats = {
+    // Block identity + pricing (from current block's pricing record)
     block_height: height_to_process,
-    block_timestamp: pr.timestamp, // Get timestamp from pricing record
-    spot: pr.spot, // Get spot from pricing record
-    moving_average: pr.moving_average, // Get moving average from pricing record
-    reserve: pr.reserve, // Get reserve from pricing record
-    reserve_ma: pr.reserve_ma, // Get reserve moving average from pricing record
-    stable: pr.stable, // Get stable from pricing record
-    stable_ma: pr.stable_ma, // Get stable moving average from pricing record
-    yield_price: pr.yield_price, // Get yield price from pricing record
-    // Seed defaults only at HFv1 genesis; for later heights prevBlockData is guaranteed present
-    zeph_in_reserve: isGenesisBlock ? (prevBlockData.zeph_in_reserve ?? 0) : prevBlockData.zeph_in_reserve!,
-    zeph_in_reserve_atoms: isGenesisBlock ? (prevBlockData.zeph_in_reserve_atoms ?? undefined) : prevBlockData.zeph_in_reserve_atoms,
-    zsd_in_yield_reserve: isGenesisBlock ? (prevBlockData.zsd_in_yield_reserve ?? 0) : prevBlockData.zsd_in_yield_reserve!,
-    zeph_circ: isGenesisBlock ? (prevBlockData.zeph_circ ?? 1965112.77028345) : prevBlockData.zeph_circ!,
-    zephusd_circ: isGenesisBlock ? (prevBlockData.zephusd_circ ?? 0) : prevBlockData.zephusd_circ!,
-    zephrsv_circ: isGenesisBlock ? (prevBlockData.zephrsv_circ ?? 0) : prevBlockData.zephrsv_circ!,
-    zyield_circ: isGenesisBlock ? (prevBlockData.zyield_circ ?? 0) : prevBlockData.zyield_circ!,
-    assets: isGenesisBlock ? (prevBlockData.assets ?? 0) : prevBlockData.assets!,
-    assets_ma: isGenesisBlock ? (prevBlockData.assets_ma ?? 0) : prevBlockData.assets_ma!,
-    liabilities: isGenesisBlock ? (prevBlockData.liabilities ?? 0) : prevBlockData.liabilities!,
-    equity: isGenesisBlock ? (prevBlockData.equity ?? 0) : prevBlockData.equity!,
-    equity_ma: isGenesisBlock ? (prevBlockData.equity_ma ?? 0) : prevBlockData.equity_ma!,
-    reserve_ratio: isGenesisBlock ? (prevBlockData.reserve_ratio ?? 0) : prevBlockData.reserve_ratio!,
-    reserve_ratio_ma: isGenesisBlock ? (prevBlockData.reserve_ratio_ma ?? 0) : prevBlockData.reserve_ratio_ma!,
-    zsd_accrued_in_yield_reserve_from_yield_reward: isGenesisBlock ? (prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward ?? 0) : prevBlockData.zsd_accrued_in_yield_reserve_from_yield_reward!,
-    zsd_minted_for_yield: 0,
-    conversion_transactions_count: 0,
-    yield_conversion_transactions_count: 0,
-    mint_reserve_count: 0,
-    mint_reserve_volume: 0,
-    fees_zephrsv: 0, // conversion fees from minting zeph -> zrs
-    redeem_reserve_count: 0,
-    redeem_reserve_volume: 0,
-    fees_zephusd: 0, // conversion fees from minting zeph -> zsd
-    mint_stable_count: 0,
-    mint_stable_volume: 0,
-    redeem_stable_count: 0,
-    redeem_stable_volume: 0,
-    fees_zeph: 0, // conversion fees from redeeming zsd -> zeph && redeeming zrs -> zeph
-    mint_yield_count: 0,
-    mint_yield_volume: 0,
-    redeem_yield_count: 0,
-    redeem_yield_volume: 0,
-    fees_zephusd_yield: 0, // conversion fees from redeeming zys -> zsd
-    fees_zyield: 0, // conversion fees from minting zsd -> zys
+    block_timestamp: pr.timestamp,
+    spot: pr.spot,
+    moving_average: pr.moving_average,
+    reserve: pr.reserve,
+    reserve_ma: pr.reserve_ma,
+    stable: pr.stable,
+    stable_ma: pr.stable_ma,
+    yield_price: pr.yield_price,
+    // Running tally (carried forward from previous block)
+    ...runningTally,
+    // Per-block counters (reset each block)
+    ...BLOCK_COUNTER_DEFAULTS,
   };
 
   let reserveAtoms = blockData.zeph_in_reserve_atoms
