@@ -433,7 +433,7 @@ export async function aggregate() {
   console.log(`Finished aggregation`);
 }
 
-const MAX_RECOVERY_DEPTH = 10;
+const MAX_RECOVERY_DEPTH = 100;
 
 async function loadBlockInputs(height: number, recoveryDepth = 0) {
   const [pr, bri, prevBlockData, txHashes] = await Promise.all([
