@@ -1,7 +1,7 @@
 import { getCurrentBlockHeight, getBlock } from "./utils";
 import redis from "./redis";
 import { stores } from "./storage/factory";
-import { usePostgres, getStartBlock } from "./config";
+import { usePostgres, getStartBlock, getEndBlock } from "./config";
 import { appendZysPriceHistory, fetchZysPriceHistory as fetchZysPriceHistorySql } from "./db/yieldAnalytics";
 
 const DEATOMIZE = 10 ** -12;
@@ -34,29 +34,31 @@ export async function scanPricingRecords() {
   const redisHeight = await getStoredHeight();
 
   const configStartBlock = getStartBlock();
+  const configEndBlock = getEndBlock();
   const effectiveHfHeight = configStartBlock > 0 ? configStartBlock : hfHeight;
+  const effectiveEndHeight = configEndBlock > 0 ? Math.min(configEndBlock, rpcHeight - 1) : rpcHeight - 1;
 
   const startingHeight = Math.max(redisHeight + 1, effectiveHfHeight);
 
   console.log("Fired pricing record scanner...");
-  console.log(`Starting height: ${startingHeight} | Ending height: ${rpcHeight - 1}`);
+  console.log(`Starting height: ${startingHeight} | Ending height: ${effectiveEndHeight}${configEndBlock > 0 ? ` (capped by END_BLOCK)` : ''}`);
 
   // Compute interval for approx 1% of blocks (at least 1)
-  const totalBlocks = rpcHeight - startingHeight;
+  const totalBlocks = effectiveEndHeight - startingHeight;
   const logInterval = Math.max(1, Math.floor(totalBlocks / 100));
 
-  for (let height = startingHeight; height <= rpcHeight - 1; height++) {
+  for (let height = startingHeight; height <= effectiveEndHeight; height++) {
     const block = await getBlock(height);
     if (!block) {
-      console.log(`${height}/${rpcHeight - 1} - No block info found, exiting try later`);
+      console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
       return;
     }
     await redis.hset("block_hashes", height, block.result.block_header.hash);
     const pricingRecord = block.result.block_header.pricing_record;
     if (!pricingRecord) {
-      if (height === startingHeight || height === rpcHeight - 1 || (height - startingHeight) % logInterval === 0) {
+      if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
         const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
-        console.log(`PRs SCANNING BLOCK(s): ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
+        console.log(`PRs SCANNING BLOCK(s): ${height}/${effectiveEndHeight}  | ${percentComplete.toFixed(2)}%`);
       }
       await stores.pricing.save({
         blockHeight: height,
@@ -72,9 +74,9 @@ export async function scanPricingRecords() {
       continue;
     }
 
-    if (height === startingHeight || height === rpcHeight - 1 || (height - startingHeight) % logInterval === 0) {
+    if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
       const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
-      console.log(`PRs SCANNING BLOCK: ${height}/${rpcHeight - 1}  | ${percentComplete.toFixed(2)}%`);
+      console.log(`PRs SCANNING BLOCK: ${height}/${effectiveEndHeight}  | ${percentComplete.toFixed(2)}%`);
     }
 
     const timestamp = pricingRecord.timestamp;

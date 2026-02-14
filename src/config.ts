@@ -108,6 +108,13 @@ export function getStartBlock(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+export function getEndBlock(): number {
+  const envValue = process.env.END_BLOCK;
+  if (!envValue) return 0;
+  const parsed = parseInt(envValue, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 export function logRuntimeConfig(context = "runtime"): void {
   const summary = getRuntimeConfigSummary();
   console.log(
