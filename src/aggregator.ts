@@ -17,7 +17,6 @@ import {
   recordReserveMismatch,
   clearReserveMismatch,
   saveReserveSnapshotToRedis,
-  getCurrentBlockHeight,
   getLatestProtocolStats,
   getPricingRecordHeight,
   getRedisBlockRewardInfo,
@@ -56,9 +55,6 @@ const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
 
 const RESERVE_SNAPSHOT_INTERVAL = RESERVE_SNAPSHOT_INTERVAL_BLOCKS;
-const TEMP_HOURLY_MAX_LAG = 30;
-const TEMP_DAILY_MAX_LAG = 720;
-
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 
@@ -397,35 +393,8 @@ export async function aggregate() {
   const timestamp_hourly = await getScannerTimestampHourly();
   const timestamp_daily = await getScannerTimestampDaily();
 
-  const priorAggregatedHeight = await getScannerHeight();
-  let allowHourlyAggregation = true;
-  let allowDailyAggregation = true;
-
-  if (priorAggregatedHeight && priorAggregatedHeight > 0) {
-    try {
-      const daemonHeight = await getCurrentBlockHeight();
-      if (daemonHeight && daemonHeight > priorAggregatedHeight) {
-        const lag = daemonHeight - priorAggregatedHeight;
-        if (lag > TEMP_HOURLY_MAX_LAG) {
-          allowHourlyAggregation = false;
-          console.log(`Skipping hourly aggregation – daemon ahead by ${lag} blocks (threshold ${TEMP_HOURLY_MAX_LAG})`);
-        }
-        if (lag > TEMP_DAILY_MAX_LAG) {
-          allowDailyAggregation = false;
-          console.log(`Skipping daily aggregation – daemon ahead by ${lag} blocks (threshold ${TEMP_DAILY_MAX_LAG})`);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to determine daemon height for temp aggregation check:", error);
-    }
-  }
-
-  if (allowHourlyAggregation) {
-    await aggregateByTimestamp(Math.max(timestamp_hourly, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "hourly");
-  }
-  if (allowDailyAggregation) {
-    await aggregateByTimestamp(Math.max(timestamp_daily, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "daily");
-  }
+  await aggregateByTimestamp(Math.max(timestamp_hourly, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "hourly");
+  await aggregateByTimestamp(Math.max(timestamp_daily, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "daily");
 
   if (WALKTHROUGH_MODE) {
     await outputWalkthroughDiffReport();
@@ -1273,25 +1242,27 @@ async function aggregateByTimestamp(
 ) {
   console.log(`\tAggregating by timestamp: ${startTimestamp} to ${endingTimestamp} for ${windowType}`);
   const timestampWindow = windowType === "hourly" ? 3600 : 86400;
+  const windowsPerChunk = windowType === "daily" ? 30 : 168; // 30 days or 7 days worth of hours
+  const chunkSize = windowsPerChunk * timestampWindow;
   const diff = Math.max(endingTimestamp - startTimestamp, 0);
   const totalWindows = Math.max(1, Math.ceil(diff / timestampWindow));
-  // get all protocol stats between start and end timestamp
-  // aggregate into a single key "protocol_stats_hourly" as a sorted set
-  // store in redis
 
-  const protocolStats = await loadProtocolStatsForRange(startTimestamp, endingTimestamp);
+  let windowIndex = 0;
 
-  if (protocolStats.length === 0) {
-    console.log("No protocol stats available");
-    return;
-  }
+  for (let chunkStart = startTimestamp; chunkStart < endingTimestamp; chunkStart += chunkSize) {
+    const chunkEnd = Math.min(chunkStart + chunkSize, endingTimestamp);
+    const protocolStats = await loadProtocolStatsForRange(chunkStart, chunkEnd);
 
-  const groupedStats = bucketProtocolStatsByWindow(protocolStats, startTimestamp, timestampWindow);
+    if (protocolStats.length === 0) {
+      const windowsInChunk = Math.ceil((chunkEnd - chunkStart) / timestampWindow);
+      windowIndex += windowsInChunk;
+      console.log(`No protocol stats in chunk ${chunkStart}–${chunkEnd}, skipping ${windowsInChunk} windows`);
+      continue;
+    }
 
-  let windowIndex = 0; // Track the current window index
+    const groupedStats = bucketProtocolStatsByWindow(protocolStats, chunkStart, timestampWindow);
 
-  // Loop through the time range in increments, allowing partial windows
-  for (let windowStart = startTimestamp; windowStart < endingTimestamp; windowStart += timestampWindow) {
+    for (let windowStart = chunkStart; windowStart < chunkEnd; windowStart += timestampWindow) {
     const expectedEnd = windowStart + timestampWindow;
     const windowEnd = Math.min(expectedEnd, endingTimestamp);
     const windowComplete = windowEnd === expectedEnd;
@@ -1698,5 +1669,6 @@ async function aggregateByTimestamp(
       console.log(`\n\nprotocolStatsWindow:`);
       protocolStatsWindow[0];
     }
+  }
   }
 }
