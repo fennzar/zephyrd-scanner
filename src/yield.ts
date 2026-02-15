@@ -839,36 +839,40 @@ export async function determineProjectedReturns(test = false) {
 }
 
 
+// In-memory cache so block rewards are computed at most once per process lifetime
+let cachedBlockRewards: { block_height: number; block_reward: number }[] | null = null;
+
 async function getPrecalculatedBlockRewards(current_block_height: number) {
 
   // For pre 2.0.0 fork to do the projections before the fork
   if (current_block_height < VERSION_2_HF_V6_BLOCK_HEIGHT) {
     current_block_height = VERSION_2_HF_V6_BLOCK_HEIGHT;
   }
-  // Calculate the block rewards for each block and save this info to redis if we don't already have it
-  // We need to calculate over 1 year in advance to get the projected returns for 1 year.
-  // We may as well calculate 5 years in advance.
 
   const oneyear_block_height = current_block_height + (720 * 30 * 12);
-  console.log(`getPrecalculatedBlockRewards: current_block_height: ${current_block_height}, oneyear_block_height: ${oneyear_block_height}`);
 
-  // check if the cached precalculated block rewards exist
-  let precalculatedBlockRewardsRaw = useRedis() ? await redis.get("precalculated_block_rewards") : null;
+  // 1. Check in-memory cache first (fastest)
+  if (cachedBlockRewards && cachedBlockRewards.length > oneyear_block_height) {
+    return cachedBlockRewards;
+  }
+
+  // 2. Fall back to Redis cache
+  const precalculatedBlockRewardsRaw = useRedis() ? await redis.get("precalculated_block_rewards") : null;
 
   if (precalculatedBlockRewardsRaw) {
-    // ensure we have enough precalculated block rewards to cover the next year
-    const precalculatedBlockRewardsJson = JSON.parse(precalculatedBlockRewardsRaw);
-    const lastPreCalcBlockHeight = precalculatedBlockRewardsJson[precalculatedBlockRewardsJson.length - 1].block_height;
-    // Ensure we have enough precalculated block rewards to cover the next year
+    const parsed = JSON.parse(precalculatedBlockRewardsRaw);
+    const lastPreCalcBlockHeight = parsed[parsed.length - 1].block_height;
     if (lastPreCalcBlockHeight >= oneyear_block_height) {
-      return precalculatedBlockRewardsJson;
+      cachedBlockRewards = parsed;
+      return parsed;
     }
   }
 
-  console.log(`We don't have any/enough precalculated block rewards from block 0 to block ${oneyear_block_height}...`);
-  // We haven't got the precalculated block rewards or we don't have enough to cover the next year, so we need to calculate them.
+  // 3. Calculate from scratch (only happens once per process)
+  console.log(`Calculating block rewards from block 0 to block ${current_block_height + (720 * 30 * 12 * 5)}...`);
   const ending_pre_calc_block_height = current_block_height + (720 * 30 * 12 * 5); // 5 years in advance
   const calculated = await precalculateBlockRewards(current_block_height, ending_pre_calc_block_height);
+  cachedBlockRewards = calculated;
 
   return calculated;
 }
