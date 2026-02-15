@@ -28,6 +28,7 @@ import {
   getReserveSnapshotByPreviousHeight,
   queryReserveSnapshots,
 } from "./db/reserveSnapshots";
+import { fetchProjectedReturns as fetchProjectedReturnsSql } from "./db/yieldAnalytics";
 import { upsertReserveMismatch, deleteReserveMismatch } from "./db/reserveMismatches";
 import { upsertLiveStats, getLiveStats as getLiveStatsRow } from "./db/liveStats";
 import { queryTransactions, type ConversionTransactionRecord } from "./db/transactions";
@@ -344,6 +345,7 @@ export async function getLastReserveSnapshotPreviousHeight(): Promise<number | n
       return latest.previous_height;
     }
   }
+  if (!useRedis()) return null;
   const height = await redis.get(RESERVE_SNAPSHOT_LAST_KEY);
   if (!height) {
     return null;
@@ -361,6 +363,7 @@ async function loadReserveSnapshotByPreviousHeightFromRedis(
       return { snapshot, filePath: `postgres:${previousHeight}` };
     }
   }
+  if (!useRedis()) return null;
   const json = await redis.hget(RESERVE_SNAPSHOT_REDIS_KEY, previousHeight.toString());
   if (!json) {
     return null;
@@ -386,6 +389,7 @@ export async function getLatestReserveSnapshot(): Promise<ReserveSnapshot | null
     return null;
   }
 
+  if (!useRedis()) return null;
   const json = await redis.hget(RESERVE_SNAPSHOT_REDIS_KEY, previousHeight.toString());
   if (!json) {
     return null;
@@ -423,6 +427,7 @@ export async function getLatestProtocolStats(): Promise<ProtocolStats | null> {
     return fetchLatestProtocolStats();
   }
 
+  if (!useRedis()) return null;
   const allStats = await redis.hgetall("protocol_stats");
   if (!allStats) {
     return null;
@@ -659,7 +664,9 @@ export async function getReserveDiffs(options: ReserveDiffOptions = {}): Promise
   } else if (options.allowSnapshots) {
     const requestedSource = (options.snapshotSource ?? WALKTHROUGH_SNAPSHOT_SOURCE).toLowerCase();
     let snapshotResult: ReserveSnapshotWithPath | null = null;
-    if (requestedSource === "redis") {
+    if (requestedSource === "postgres") {
+      snapshotResult = await loadReserveSnapshotByPreviousHeightFromRedis(targetHeight);
+    } else if (requestedSource === "redis") {
       snapshotResult = await loadReserveSnapshotByPreviousHeightFromRedis(targetHeight);
       if (!snapshotResult) {
         snapshotResult = await loadReserveSnapshotByPreviousHeight(targetHeight, options.snapshotDir);
@@ -789,6 +796,7 @@ export async function getTotalsFromRedis() {
       };
     }
   }
+  if (!useRedis()) return null;
   const totals = await redis.hgetall("totals");
   if (!totals) {
     return null;
@@ -825,6 +833,7 @@ export async function getBlockProtocolStatsFromRedis<T extends keyof ProtocolSta
       };
     });
   }
+  if (!useRedis()) return [];
   let redisKey = "protocol_stats";
   let start = from ? parseInt(from) : 0;
   let end = to ? parseInt(to) : await getAggregatorHeight();
@@ -862,6 +871,7 @@ export async function getAggregatedProtocolStatsFromRedis<T extends keyof Aggreg
       };
     });
   }
+  if (!useRedis()) return [];
   const redisKey = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
   const pendingKey = scale === "hour" ? HOURLY_PENDING_KEY : DAILY_PENDING_KEY;
   const startScore = from ? parseInt(from) : "-inf";
@@ -1117,6 +1127,7 @@ export async function getPricingRecordFromStore(height: number) {
       yield_price: storeRecord.yieldPrice,
     };
   }
+  if (!useRedis()) return null;
   const pr = await redis.hget("pricing_records", height.toString());
   if (!pr) {
     return null;
@@ -1143,6 +1154,7 @@ export async function getRedisBlockRewardInfo(height: number) {
       };
     }
   }
+  if (!useRedis()) return null;
   const bri = await redis.hget("block_rewards", height.toString());
   if (!bri) {
     return null;
@@ -1243,6 +1255,7 @@ export async function getPricingRecords(
     };
   }
 
+  if (!useRedis()) return { total: 0, results: [], limit: null, order };
   const entries = await redis.hgetall("pricing_records");
   const records: PricingRecord[] = [];
 
@@ -1398,6 +1411,7 @@ export async function getBlockRewards(
     };
   }
 
+  if (!useRedis()) return { total: 0, results: [], limit: null, order };
   const entries = await redis.hgetall("block_rewards");
   const records: BlockRewardRecord[] = [];
 
@@ -1442,6 +1456,7 @@ export async function getBlockRewards(
 }
 
 export async function getRedisTransaction(hash: string) {
+  if (!useRedis()) return null;
   const txs = await redis.hget("txs", hash);
   if (!txs) {
     return null;
@@ -1493,6 +1508,7 @@ export async function getReserveSnapshots(
     };
   }
 
+  if (!useRedis()) return { total: 0, results: [], limit: null, order };
   const entries = await redis.hgetall(RESERVE_SNAPSHOT_REDIS_KEY);
   const records: ReserveSnapshot[] = [];
 
@@ -1810,6 +1826,7 @@ export async function getTransactions(options: TransactionQueryOptions = {}): Pr
     };
   }
 
+  if (!useRedis()) return { total: 0, results: [], limit: null, offset: 0, order };
   const rawValues = await redis.hvals("txs");
   const records: TransactionRecord[] = [];
 
@@ -2006,6 +2023,7 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
         const rows = await fetchBlockProtocolStats(height, height);
         return rows[0] ?? null;
       }
+      if (!useRedis()) return null;
       const raw = await redis.hget("protocol_stats", height.toString());
       return raw ? (JSON.parse(raw) as ProtocolStats) : null;
     };
@@ -2096,18 +2114,27 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
 
     let zysCurrentVariableApy: number | null = null;
 
-    const projectedReturnsRaw = await redis.get("projected_returns");
-    if (projectedReturnsRaw) {
-      try {
-        const projectedReturns = JSON.parse(projectedReturnsRaw) as {
-          oneYear?: { simple?: { return?: number } };
-        };
-        const simpleReturn = projectedReturns.oneYear?.simple?.return;
-        if (typeof simpleReturn === "number" && Number.isFinite(simpleReturn)) {
-          zysCurrentVariableApy = Number(simpleReturn.toFixed(4));
+    if (usePostgres()) {
+      const projectedReturns = await fetchProjectedReturnsSql();
+      const simpleReturn = projectedReturns?.oneYear?.simple?.return;
+      if (typeof simpleReturn === "number" && Number.isFinite(simpleReturn)) {
+        zysCurrentVariableApy = Number(simpleReturn.toFixed(4));
+      }
+    }
+    if (zysCurrentVariableApy === null && useRedis()) {
+      const projectedReturnsRaw = await redis.get("projected_returns");
+      if (projectedReturnsRaw) {
+        try {
+          const projectedReturns = JSON.parse(projectedReturnsRaw) as {
+            oneYear?: { simple?: { return?: number } };
+          };
+          const simpleReturn = projectedReturns.oneYear?.simple?.return;
+          if (typeof simpleReturn === "number" && Number.isFinite(simpleReturn)) {
+            zysCurrentVariableApy = Number(simpleReturn.toFixed(4));
+          }
+        } catch (error) {
+          console.warn("calculateLiveStats: Unable to parse projected returns for current variable APY", error);
         }
-      } catch (error) {
-        console.warn("calculateLiveStats: Unable to parse projected returns for current variable APY", error);
       }
     }
 
@@ -2170,6 +2197,7 @@ export async function getLiveStats(): Promise<LiveStats | null> {
       return row;
     }
   }
+  if (!useRedis()) return refreshLiveStatsCache();
   const cached = await redis.get(LIVE_STATS_REDIS_KEY);
   if (cached) {
     try {

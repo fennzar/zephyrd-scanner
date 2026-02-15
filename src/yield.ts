@@ -36,6 +36,7 @@ async function getProtocolStatsForHeight(height: number): Promise<Record<string,
   if (usePostgres()) {
     return getProtocolStatsBlock(height);
   }
+  if (!useRedis()) return null;
   const json = await redis.hget("protocol_stats", height.toString());
   return json ? JSON.parse(json) : null;
 }
@@ -968,6 +969,7 @@ export async function getHistoricalReturnsFromRedis(test = false): Promise<Histo
       return stored;
     }
   }
+  if (!useRedis()) return null;
   const historicalStats = await redis.get("historical_returns");
   if (!historicalStats) {
     return null;
@@ -997,6 +999,7 @@ export async function getProjectedReturnsFromRedis(test = false): Promise<Projec
       return stored;
     }
   }
+  if (!useRedis()) return null;
   const projectedStats = await redis.get("projected_returns");
   if (!projectedStats) {
     return null;
@@ -1160,6 +1163,7 @@ export async function getAPYHistoryFromRedis(): Promise<ApyHistoryEntry[] | null
       return rows;
     }
   }
+  if (!useRedis()) return null;
   const apyHistory = await redis.get("apy_history");
   if (!apyHistory) {
     return null;

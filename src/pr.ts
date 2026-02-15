@@ -172,6 +172,7 @@ export async function getZYSPriceHistoryFromRedis(): Promise<ZysPriceHistoryEntr
       return rows;
     }
   }
+  if (!useRedis()) return [];
   // Retrieve all records from Redis along with their scores (timestamps)
   const result = await redis.zrangebyscore("zys_price_history", "-inf", "+inf", "WITHSCORES");
 
@@ -194,6 +195,13 @@ export async function getZYSPriceHistoryFromRedis(): Promise<ZysPriceHistoryEntr
 
 // Function to retrieve the most recent block height from Redis
 export async function getMostRecentBlockHeightFromRedis() {
+  if (usePostgres()) {
+    const rows = await fetchZysPriceHistorySql();
+    if (rows.length > 0) {
+      return rows[rows.length - 1].block_height;
+    }
+  }
+  if (!useRedis()) return 0;
   // Fetch the last (highest) scored element from the sorted set (which is the latest timestamp)
   const most_recent = await redis.zrevrange("zys_price_history", 0, 0);
 

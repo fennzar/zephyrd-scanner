@@ -215,6 +215,7 @@ async function getProtocolStatsRecord(height: number): Promise<ProtocolStats | n
   if (usePostgres()) {
     return getProtocolStatsBlock(height);
   }
+  if (!useRedis()) return null;
   const json = await redis.hget("protocol_stats", height.toString());
   if (!json) {
     return null;
@@ -234,6 +235,7 @@ async function getTransactionHashesForBlock(height: number): Promise<string[]> {
     transactionCache.set(height, mapped);
     return mapped.map((tx) => tx.hash);
   }
+  if (!useRedis()) return [];
   const json = await redis.hget("txs_by_block", height.toString());
   if (!json) {
     return [];
@@ -250,6 +252,7 @@ async function loadProtocolStatsForRange(startTimestamp: number, endTimestamp: n
   if (usePostgres()) {
     return fetchBlockProtocolStatsByTimestampRange(startTimestamp, endTimestamp);
   }
+  if (!useRedis()) return [];
   const raw = await redis.hgetall("protocol_stats");
   if (!raw) {
     return [];
@@ -493,6 +496,7 @@ async function fetchTransactions(blockHeight: number, hashes: string[]): Promise
     return txMap;
   }
 
+  if (!useRedis()) return txMap;
   const pipeline = redis.pipeline();
   for (const hash of hashes) {
     pipeline.hget("txs", hash);
