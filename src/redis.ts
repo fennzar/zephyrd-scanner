@@ -48,10 +48,15 @@ function buildOptions(db: number): RedisOptions {
   return baseOptions;
 }
 
-export function createRedisClient(dbOverride?: number): Redis {
-  const parsedDb = Number(dbOverride ?? REDIS_DB ?? 0);
+export function createRedisClient(overrides?: number | { dbOverride?: number; lazyConnect?: boolean }): Redis {
+  const opts = typeof overrides === "number" ? { dbOverride: overrides } : overrides;
+  const parsedDb = Number(opts?.dbOverride ?? REDIS_DB ?? 0);
   const db = Number.isFinite(parsedDb) ? parsedDb : 0;
   const options = buildOptions(db);
+
+  if (opts?.lazyConnect) {
+    options.lazyConnect = true;
+  }
 
   const instance =
     typeof REDIS_URL === "string" && REDIS_URL.length > 0 ? new Redis(REDIS_URL, options) : new Redis(options);
@@ -87,6 +92,11 @@ function attachLogging(instance: Redis, db: number) {
   });
 }
 
-const client = createRedisClient();
+const dataStore = (process.env.DATA_STORE ?? "redis").toLowerCase();
+const redisNeeded = dataStore === "redis" || dataStore === "hybrid";
+
+// When Redis is not the data store, use lazyConnect so no TCP connection is opened.
+// All redis calls are gated behind useRedis(), so the connection is never triggered.
+const client = redisNeeded ? createRedisClient() : createRedisClient({ lazyConnect: true });
 
 export default client;

@@ -49,10 +49,16 @@ function bootstrap(): BootstrapResult {
   const { server } = startServer();
   const scanner = startScannerProcess();
 
-  const shutdown = (signal: NodeJS.Signals) => {
+  const shutdown = async (signal: NodeJS.Signals) => {
     console.log(`Received ${signal}. Shutting down Zephyrd Scanner services...`);
 
     scanner?.kill("SIGTERM");
+
+    try {
+      const { disconnectPrisma } = await import("./db");
+      await disconnectPrisma();
+      console.log("Prisma connection closed.");
+    } catch {}
 
     if (server) {
       server.close(() => {

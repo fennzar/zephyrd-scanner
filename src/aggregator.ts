@@ -44,7 +44,7 @@ import {
   getTransactionsByHashes,
   type ConversionTransactionRecord,
 } from "./db/transactions";
-import { setAggregatorHeight, setDailyTimestamp, setHourlyTimestamp } from "./scannerState";
+import { setAggregatorHeight, setDailyTimestamp, setHourlyTimestamp, getTransactionHeight } from "./scannerState";
 // const DEATOMIZE = 10 ** -12;
 const HF_VERSION_1_HEIGHT = 89300;
 const HF_VERSION_1_TIMESTAMP = 1696152427;
@@ -347,9 +347,10 @@ export async function aggregate() {
   console.log(`Starting aggregation...`);
 
   const current_height_prs = await getPricingRecordHeight();
+  const current_height_txs = await getTransactionHeight();
 
-  if (!current_height_prs) {
-    console.log("No current height found for pricing records");
+  if (!current_height_prs || !current_height_txs) {
+    console.log("No current height found for pricing records or transactions — skipping aggregation");
     return;
   }
 
@@ -357,9 +358,9 @@ export async function aggregate() {
   const height_by_block = await getScannerHeight(); // where we are at in the data aggregation
   const height_to_process = Math.max(height_by_block + 1, HF_VERSION_1_HEIGHT); // only process from HF_VERSION_1_HEIGHT
 
-  console.log(`\tAggregating from block: ${height_to_process} to ${current_height_prs}`);
-
-  const lastBlockToProcess = current_height_prs;
+  // Aggregate only up to the minimum of pricing and tx heights — both inputs are required
+  const lastBlockToProcess = Math.min(current_height_prs, current_height_txs);
+  console.log(`\tAggregating from block: ${height_to_process} to ${lastBlockToProcess}`);
   // const lastBlockToProcess = 89303; // TEMP OVERRIDE FOR TESTING
   if (lastBlockToProcess < height_to_process) {
     console.log("\tNo new blocks to aggregate.");

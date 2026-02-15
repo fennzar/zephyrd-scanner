@@ -837,12 +837,12 @@ export async function scanTransactions(reset = false) {
       await insertTransactions(postgresBlockTransactions);
     }
 
-    // await setRedisHeight(height);
-
-    // update scan height
-    // pipeline.set("height_txs", height);
-
-    // Print out count of pipeline commands
+    // In postgres mode, advance height per-block so a crash doesn't leave
+    // height_txs behind height_prs (which causes "No block reward info" spam).
+    // In redis mode, height is set once after the pipeline executes.
+    if (postgresEnabled && !redisEnabled) {
+      await setStoredTxHeight(height);
+    }
   }
 
   if (pipeline) {
