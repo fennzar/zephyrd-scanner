@@ -2024,7 +2024,11 @@ async function calculateLiveStats(): Promise<LiveStats | null> {
 
     const zephCircFromStats = currentBlockProtocolStats.zeph_circ;
 
+    const daemonHeight = reserveInfo.result.height;
+    const heightsAligned = typeof daemonHeight === "number" && currentBlockHeight === daemonHeight;
+
     if (
+      heightsAligned &&
       typeof zephCircFromSupply === "number" &&
       Number.isFinite(zephCircFromSupply) &&
       Math.abs(zephCircFromSupply - zephCircFromStats) > 1000

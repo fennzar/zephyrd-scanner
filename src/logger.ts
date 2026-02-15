@@ -514,9 +514,12 @@ export async function logScannerHealth(
   ]);
   const reserveResult = reserveInfoResponse?.result;
 
-  const scannerHeight = stats?.block_height?.toLocaleString("en-US") ?? "?";
-  const daemonHeight = reserveResult?.height?.toLocaleString("en-US") ?? "?";
-  console.log(`[health] scanner=${scannerHeight} | daemon=${daemonHeight}`);
+  const scannerHeightNum = stats?.block_height;
+  const daemonHeightNum = reserveResult?.height;
+  const heightsAligned = scannerHeightNum !== undefined && daemonHeightNum !== undefined && scannerHeightNum === daemonHeightNum;
+  const scannerHeightStr = scannerHeightNum?.toLocaleString("en-US") ?? "?";
+  const daemonHeightStr = daemonHeightNum?.toLocaleString("en-US") ?? "?";
+  console.log(`[health] scanner=${scannerHeightStr} | daemon=${daemonHeightStr}${heightsAligned ? "" : " (misaligned)"}`);
   if (!reserveResult && !snapshot) {
     console.warn("[health] Unable to fetch reserve info and no cached snapshot available");
   }
@@ -571,13 +574,22 @@ export async function logScannerHealth(
   );
 
   const rows: Array<{ metric: string; scanner: string; on_chain: string; diff: string }> = [];
+
+  rows.push({
+    metric: "Height",
+    scanner: scannerHeightStr,
+    on_chain: daemonHeightStr,
+    diff: heightsAligned ? "aligned" : "(misaligned)",
+  });
+  rows.push({ metric: "----", scanner: "-", on_chain: "-", diff: "-" });
+
   const pushRow = (metric: string, aggregatorValue: number | undefined, onChainValue: number | undefined, decimals: number) => {
     const diff = computeDiff(aggregatorValue, onChainValue);
     rows.push({
       metric,
       scanner: formatNumber(aggregatorValue, decimals),
       on_chain: formatNumber(onChainValue, decimals),
-      diff: formatNumber(diff, decimals),
+      diff: heightsAligned ? formatNumber(diff, decimals) : `${formatNumber(diff, decimals)} (expected)`,
     });
   };
 
