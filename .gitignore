@@ -2,6 +2,7 @@ node_modules
 /py/csvs/*
 /py/graphs/*
 .env
+.env.test
 *.csv
 *.png
 *.txt
