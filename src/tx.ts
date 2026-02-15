@@ -3,7 +3,7 @@ import { Pipeline } from "ioredis";
 
 import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
 import redis from "./redis";
-import { usePostgres, getStartBlock, getEndBlock } from "./config";
+import { usePostgres, useRedis, getStartBlock, getEndBlock } from "./config";
 import { stores } from "./storage/factory";
 import { deleteAllBlockRewards, upsertBlockReward } from "./db/blockRewards";
 import { insertTransactions, ConversionTransactionRecord, deleteAllTransactions } from "./db/transactions";
@@ -109,20 +109,22 @@ async function ensureTotalsBaseline() {
     }
   }
 
-  const totalsExists = await redis.exists("totals");
-  if (!totalsExists) {
-    await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE, "governance_reward", GOVERNANCE_REWARD_BASELINE);
-    return;
-  }
+  if (useRedis()) {
+    const totalsExists = await redis.exists("totals");
+    if (!totalsExists) {
+      await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE, "governance_reward", GOVERNANCE_REWARD_BASELINE);
+      return;
+    }
 
-  const [minerReward, governanceReward] = await redis.hmget("totals", "miner_reward", "governance_reward");
+    const [minerReward, governanceReward] = await redis.hmget("totals", "miner_reward", "governance_reward");
 
-  if (minerReward === null) {
-    await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE);
-  }
+    if (minerReward === null) {
+      await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE);
+    }
 
-  if (governanceReward === null) {
-    await redis.hset("totals", "governance_reward", GOVERNANCE_REWARD_BASELINE);
+    if (governanceReward === null) {
+      await redis.hset("totals", "governance_reward", GOVERNANCE_REWARD_BASELINE);
+    }
   }
 }
 
@@ -154,11 +156,11 @@ async function getRedisPricingRecord(height: number) {
       yield_price: record.yieldPrice,
     };
   }
-  const pr = await redis.hget("pricing_records", height.toString());
-  if (!pr) {
-    return null;
+  if (useRedis()) {
+    const pr = await redis.hget("pricing_records", height.toString());
+    if (pr) return JSON.parse(pr);
   }
-  return JSON.parse(pr);
+  return null;
 }
 
 async function saveBlockRewardInfo(
@@ -167,7 +169,7 @@ async function saveBlockRewardInfo(
   governance_reward: number,
   reserve_reward: number,
   yield_reward: number,
-  pipeline: Pipeline,
+  pipeline: Pipeline | null,
   rewardAtoms?: {
     miner: bigint;
     governance: bigint;
@@ -192,7 +194,9 @@ async function saveBlockRewardInfo(
   };
 
   const block_reward_info_json = JSON.stringify(block_reward_info);
-  pipeline.hset("block_rewards", height, block_reward_info_json);
+  if (pipeline) {
+    pipeline.hset("block_rewards", height, block_reward_info_json);
+  }
 
   if (usePostgres()) {
     await upsertBlockReward({
@@ -363,7 +367,7 @@ interface ProcessTxResult {
 async function processTx(
   hash: string,
   verbose_logs: boolean,
-  pipeline: Pipeline,
+  pipeline: Pipeline | null,
   options: ProcessTxOptions = {}
 ): Promise<ProcessTxResult> {
   if (verbose_logs) console.log(`\tProcessing tx: ${hash}`);
@@ -723,15 +727,13 @@ export async function scanTransactions(reset = false) {
   let startingHeight = Math.max(redisHeight + 1, effectiveHfHeight);
   if (reset) {
     startingHeight = effectiveHfHeight;
-    // clear totals
-    await redis.del("totals");
+    if (useRedis()) {
+      await redis.del("totals");
+      await redis.del("txs");
+      await redis.del("txs_by_block");
+      await redis.del("block_rewards");
+    }
     await ensureTotalsBaseline();
-    // clear txs
-    await redis.del("txs");
-    // clear txs_by_block
-    await redis.del("txs_by_block");
-    // clear block_rewards
-    await redis.del("block_rewards");
     // reset scanner height
     await setStoredTxHeight(hfHeight);
     if (postgresEnabled) {
@@ -760,7 +762,8 @@ export async function scanTransactions(reset = false) {
 
   const total_of_total_increments: IncrTotals = blankIncrTotals();
   const progressStep = Math.max(1, Math.floor((effectiveEndHeight - startingHeight) / 100));
-  const pipeline = redis.pipeline() as Pipeline;
+  const redisEnabled = useRedis();
+  const pipeline = redisEnabled ? redis.pipeline() as Pipeline : null;
 
   for (let height = startingHeight; height <= effectiveEndHeight; height++) {
     const blockHashes: string[] = [];
@@ -793,7 +796,9 @@ export async function scanTransactions(reset = false) {
       }
       if (tx_info) {
         blockHashes.push(hash);
-        pipeline.hset("txs", hash, JSON.stringify(tx_info));
+        if (pipeline) {
+          pipeline.hset("txs", hash, JSON.stringify(tx_info));
+        }
         if (postgresEnabled) {
           postgresBlockTransactions.push(toPostgresTransactionRecord(tx_info));
         }
@@ -824,7 +829,9 @@ export async function scanTransactions(reset = false) {
       total_of_total_increments[key] += miner_tx_incr_totals[key];
     }
 
-    pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
+    if (pipeline) {
+      pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
+    }
 
     if (postgresEnabled && postgresBlockTransactions.length > 0) {
       await insertTransactions(postgresBlockTransactions);
@@ -838,20 +845,18 @@ export async function scanTransactions(reset = false) {
     // Print out count of pipeline commands
   }
 
-  // add the increment totals to pipeline
-  for (const key of Object.keys(total_of_total_increments) as (keyof IncrTotals)[]) {
-    pipeline.hincrbyfloat("totals", key, total_of_total_increments[key]);
+  if (pipeline) {
+    for (const key of Object.keys(total_of_total_increments) as (keyof IncrTotals)[]) {
+      pipeline.hincrbyfloat("totals", key, total_of_total_increments[key]);
+    }
+    console.log(`Pipeline command count: ${pipeline.length}`);
+    await pipeline.exec();
   }
 
   if (postgresEnabled) {
     await incrementTotals(mapTotalsDelta(total_of_total_increments));
   }
 
-  const pipelineCommandCount = pipeline.length;
-  console.log(`Pipeline command count: ${pipelineCommandCount}`);
-
-  // EXECUTE ALL REDIS COMMANDS IN BATCH
-  await pipeline.exec();
   await setStoredTxHeight(effectiveEndHeight);
 }
 

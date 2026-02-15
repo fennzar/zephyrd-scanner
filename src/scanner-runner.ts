@@ -74,13 +74,18 @@ export async function runScannerCycle(): Promise<void> {
 
     await delay(MAIN_PAUSE_MS);
 
-    const isPaused = (await redis.get(SCANNER_PAUSE_KEY)) === "true";
+    const isPaused = useRedis()
+      ? (await redis.get(SCANNER_PAUSE_KEY)) === "true"
+      : (await stores.scannerState.get(SCANNER_PAUSE_KEY)) === "true";
     if (isPaused) {
       console.log("Scanner paused by API request, skipping this cycle");
       return;
     }
 
-    const isRollingBack = (await redis.get("scanner_rolling_back")) === "true";
+    const rollingBackKey = "scanner_rolling_back";
+    const isRollingBack = useRedis()
+      ? (await redis.get(rollingBackKey)) === "true"
+      : (await stores.scannerState.get(rollingBackKey)) === "true";
     if (isRollingBack) {
       console.log("Scanner is rolling back, skipping this cycle");
       return;

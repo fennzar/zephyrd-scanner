@@ -24,6 +24,8 @@ import {
 import { getZYSPriceHistoryFromRedis } from "./pr";
 import { resetScanner, retallyTotals, rollbackScanner } from "./rollback";
 import redis from "./redis";
+import { useRedis } from "./config";
+import { stores } from "./storage/factory";
 
 dotenv.config();
 
@@ -87,7 +89,10 @@ export function createApp() {
     }
 
     try {
-      await redis.set(SCANNER_PAUSE_KEY, "true");
+      if (useRedis()) {
+        await redis.set(SCANNER_PAUSE_KEY, "true");
+      }
+      await stores.scannerState.set(SCANNER_PAUSE_KEY, "true");
     } catch (error) {
       console.error("Failed to pause scanner loop", error);
       res.status(500).send("Unable to pause scanner loop");
@@ -101,15 +106,20 @@ export function createApp() {
   async function releaseExclusiveLock() {
     exclusiveRouteInProgress = false;
     try {
-      await redis.del(SCANNER_PAUSE_KEY);
+      if (useRedis()) {
+        await redis.del(SCANNER_PAUSE_KEY);
+      }
+      await stores.scannerState.set(SCANNER_PAUSE_KEY, "false");
     } catch (error) {
       console.error("Failed to resume scanner loop", error);
     }
   }
 
-  redis.del(SCANNER_PAUSE_KEY).catch((error) => {
-    console.warn("Unable to clear scanner pause flag on server start", error);
-  });
+  if (useRedis()) {
+    redis.del(SCANNER_PAUSE_KEY).catch((error) => {
+      console.warn("Unable to clear scanner pause flag on server start", error);
+    });
+  }
 
   app.get("/", async (_, res: Response) => {
     res.send("zephyrdscanner reached");

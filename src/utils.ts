@@ -327,8 +327,10 @@ export async function saveReserveSnapshotToRedis(reserveInfo: ReserveInfoRespons
   }
 
   const key = snapshot.previous_height.toString();
-  await redis.hset(RESERVE_SNAPSHOT_REDIS_KEY, key, JSON.stringify(snapshot));
-  await redis.set(RESERVE_SNAPSHOT_LAST_KEY, key);
+  if (useRedis()) {
+    await redis.hset(RESERVE_SNAPSHOT_REDIS_KEY, key, JSON.stringify(snapshot));
+    await redis.set(RESERVE_SNAPSHOT_LAST_KEY, key);
+  }
   if (usePostgres()) {
     await upsertReserveSnapshot(snapshot);
   }
@@ -586,14 +588,18 @@ export interface ReserveDiffReport {
 }
 
 export async function recordReserveMismatch(height: number, report: ReserveDiffReport): Promise<void> {
-  await redis.hset(RESERVE_MISMATCH_REDIS_KEY, height.toString(), JSON.stringify(report));
+  if (useRedis()) {
+    await redis.hset(RESERVE_MISMATCH_REDIS_KEY, height.toString(), JSON.stringify(report));
+  }
   if (usePostgres()) {
     await upsertReserveMismatch(report);
   }
 }
 
 export async function clearReserveMismatch(height: number): Promise<void> {
-  await redis.hdel(RESERVE_MISMATCH_REDIS_KEY, height.toString());
+  if (useRedis()) {
+    await redis.hdel(RESERVE_MISMATCH_REDIS_KEY, height.toString());
+  }
   if (usePostgres()) {
     await deleteReserveMismatch(height);
   }
@@ -2144,7 +2150,9 @@ export async function refreshLiveStatsCache(): Promise<LiveStats | null> {
   if (!liveStats) {
     return null;
   }
-  await redis.set(LIVE_STATS_REDIS_KEY, JSON.stringify(liveStats));
+  if (useRedis()) {
+    await redis.set(LIVE_STATS_REDIS_KEY, JSON.stringify(liveStats));
+  }
   if (usePostgres()) {
     await upsertLiveStats(liveStats);
   }

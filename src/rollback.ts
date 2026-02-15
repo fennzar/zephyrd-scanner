@@ -149,10 +149,17 @@ async function retallyTotalsViaPostgres({ redisEnabled, postgresEnabled }: { red
 }
 
 export async function rollbackScanner(rollBackHeight: number) {
-  //set variable in redis to indicate that we are rolling back
-  await redis.set("scanner_rolling_back", "true");
+  const redisEnabled = useRedis();
   const postgresEnabled = usePostgres();
   const prisma = postgresEnabled ? getPrismaClient() : null;
+
+  // Set rolling-back flag
+  if (redisEnabled) {
+    await redis.set("scanner_rolling_back", "true");
+  }
+  if (postgresEnabled) {
+    await stores.scannerState.set("scanner_rolling_back", "true");
+  }
 
   const daemon_height = await getCurrentBlockHeight();
   const rollback_block_info = await getBlock(rollBackHeight);
@@ -161,175 +168,118 @@ export async function rollbackScanner(rollBackHeight: number) {
     return;
   }
 
-  // ------------------------------------------------------
-  // -------------------- Block Hashes --------------------
-  // ------------------------------------------------------
-
-  console.log(`\t Removing block hashes that we are rolling back: (${rollBackHeight} - ${daemon_height})...`);
-  let pipeline = redis.pipeline()
-  for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    pipeline.hdel("block_hashes", height_to_process.toString());
-  }
-  console.log(`Redis Pipeling ${pipeline.length} commands to remove block hashes`);
-  await pipeline.exec();
-
   const rollback_timestamp = rollback_block_info.result.block_header.timestamp;
 
   console.log(`Rolling back scanner to height ${rollBackHeight}`);
   console.log(`\t Daemon height is ${daemon_height} - We are removing ${daemon_height - rollBackHeight} blocks`);
 
-  // ---------------------------------------------------------------------------
-  // -------------------- Remove data from "protocol_stats" --------------------
-  // ---------------------------------------------------------------------------
-
-  console.log(`\t Removing data from protocol_stats & protocol_stats_hourly & protocol_stats_daily...`);
-  pipeline = redis.pipeline()
-  for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    pipeline.hdel("protocol_stats", height_to_process.toString());
-  }
-  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove protocol_stats`);
-  await pipeline.exec();
-
-  // Set "height_aggregator" to the rollBackHeight
-  await redis.set("height_aggregator", rollBackHeight.toString());
-  if (postgresEnabled && prisma) {
-    await deleteBlockStatsAboveHeight(rollBackHeight);
-    await stores.scannerState.set("height_aggregator", rollBackHeight.toString());
-  }
-
-  // Remove data from "protocol_stats_hourly"
-  const hourlyResults = await redis.zrangebyscore("protocol_stats_hourly", rollback_timestamp.toString(), "+inf");
-  console.log(`\t Removing ${hourlyResults.length} entries from protocol_stats_hourly...`);
-  pipeline = redis.pipeline();
-  for (const score of hourlyResults) {
-    pipeline.zrem("protocol_stats_hourly", score);
-  }
-  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove protocol_stats_hourly`);
-  await pipeline.exec();
-
-  // Set "timestamp_aggregator_hourly" to the rollBackTimestamp
-  await redis.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
-  if (postgresEnabled) {
-    await deleteAggregatesFromTimestamp("hour", rollback_timestamp);
-    await stores.scannerState.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
-  }
-
-  // Remove data from "protocol_stats_daily"
-  const dailyResults = await redis.zrangebyscore("protocol_stats_daily", rollback_timestamp.toString(), "+inf");
-  console.log(`\t Removing ${dailyResults.length} entries from protocol_stats_daily...`);
-  pipeline = redis.pipeline();
-  for (const score of dailyResults) {
-    pipeline.zrem("protocol_stats_daily", score);
-  }
-  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove protocol_stats_daily`);
-  await pipeline.exec();
-
-  // Set "timestamp_aggregator_daily" to the rollBackTimestamp
-  await redis.set("timestamp_aggregator_daily", rollback_timestamp.toString());
-  if (postgresEnabled) {
-    await deleteAggregatesFromTimestamp("day", rollback_timestamp);
-    await stores.scannerState.set("timestamp_aggregator_daily", rollback_timestamp.toString());
-  }
-
-  // ---------------------------------------------------------
-  // -------------------- Pricing Records --------------------
-  // ---------------------------------------------------------
-
-  console.log(`\t Removing data from pricing_records...`);
-  pipeline = redis.pipeline();
-  for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    pipeline.hdel("pricing_records", height_to_process.toString());
-  }
-  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove pricing_records`);
-  await pipeline.exec();
-  // Set "height_prs" to the rollBackHeight
-  await redis.set("height_prs", rollBackHeight.toString());
-  if (postgresEnabled && prisma) {
-    await prisma.pricingRecord.deleteMany({
-      where: {
-        blockHeight: {
-          gt: rollBackHeight,
-        },
-      },
-    });
-    await stores.scannerState.set("height_prs", rollBackHeight.toString());
-  }
-
-  console.log(`\t Rescanning Pricing Records...`);
-  // Refire scanPricingRecords to repopulate the pricing records
-  await scanPricingRecords();
-
-  // ------------------------------------------------------
-  // -------------------- Transactions --------------------
-  // ------------------------------------------------------
-
-  console.log(`\t Removing data from transactions...`);
-  pipeline = redis.pipeline();
-
-  for (let height_to_process = rollBackHeight + 1; height_to_process <= daemon_height; height_to_process++) {
-    // Remove block rewards
-    pipeline.hdel("block_rewards", height_to_process.toString());
-
-    // Retrieve txs_by_block for the block being rolled back
-    const txsByBlockHashes = await redis.hget("txs_by_block", height_to_process.toString());
-    if (txsByBlockHashes) {
-      const txs = JSON.parse(txsByBlockHashes);
-      // Remove each transaction from "txs" key
-      for (const tx_id of txs) {
-        pipeline.hdel("txs", tx_id);
-      }
+  // --- Redis cleanup ---
+  if (redisEnabled) {
+    console.log(`\t Removing block hashes (${rollBackHeight} - ${daemon_height})...`);
+    let pipeline = redis.pipeline();
+    for (let h = rollBackHeight + 1; h <= daemon_height; h++) {
+      pipeline.hdel("block_hashes", h.toString());
     }
+    await pipeline.exec();
 
-    // Remove the block from "txs_by_block"
-    pipeline.hdel("txs_by_block", height_to_process.toString());
+    console.log(`\t Removing protocol_stats, hourly & daily from Redis...`);
+    pipeline = redis.pipeline();
+    for (let h = rollBackHeight + 1; h <= daemon_height; h++) {
+      pipeline.hdel("protocol_stats", h.toString());
+    }
+    await pipeline.exec();
+    await redis.set("height_aggregator", rollBackHeight.toString());
+
+    const hourlyResults = await redis.zrangebyscore("protocol_stats_hourly", rollback_timestamp.toString(), "+inf");
+    pipeline = redis.pipeline();
+    for (const score of hourlyResults) { pipeline.zrem("protocol_stats_hourly", score); }
+    await pipeline.exec();
+    await redis.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
+
+    const dailyResults = await redis.zrangebyscore("protocol_stats_daily", rollback_timestamp.toString(), "+inf");
+    pipeline = redis.pipeline();
+    for (const score of dailyResults) { pipeline.zrem("protocol_stats_daily", score); }
+    await pipeline.exec();
+    await redis.set("timestamp_aggregator_daily", rollback_timestamp.toString());
+
+    console.log(`\t Removing pricing_records from Redis...`);
+    pipeline = redis.pipeline();
+    for (let h = rollBackHeight + 1; h <= daemon_height; h++) {
+      pipeline.hdel("pricing_records", h.toString());
+    }
+    await pipeline.exec();
+    await redis.set("height_prs", rollBackHeight.toString());
+
+    console.log(`\t Removing transactions from Redis...`);
+    pipeline = redis.pipeline();
+    for (let h = rollBackHeight + 1; h <= daemon_height; h++) {
+      pipeline.hdel("block_rewards", h.toString());
+      const txsByBlockHashes = await redis.hget("txs_by_block", h.toString());
+      if (txsByBlockHashes) {
+        for (const tx_id of JSON.parse(txsByBlockHashes)) {
+          pipeline.hdel("txs", tx_id);
+        }
+      }
+      pipeline.hdel("txs_by_block", h.toString());
+    }
+    await pipeline.exec();
+    await redis.set("height_txs", rollBackHeight.toString());
   }
 
-  console.log(`\t \t Redis Pipeling ${pipeline.length} commands to remove transactions`);
-  await pipeline.exec();
-
-
-  // Set "height_txs" to the rollBackHeight
-  await redis.set("height_txs", rollBackHeight.toString());
+  // --- Postgres cleanup ---
   if (postgresEnabled) {
+    console.log(`\t Removing data from Postgres above height ${rollBackHeight}...`);
+    await deleteBlockStatsAboveHeight(rollBackHeight);
+    await deleteAggregatesFromTimestamp("hour", rollback_timestamp);
+    await deleteAggregatesFromTimestamp("day", rollback_timestamp);
+    if (prisma) {
+      await prisma.pricingRecord.deleteMany({
+        where: { blockHeight: { gt: rollBackHeight } },
+      });
+    }
     await deleteBlockRewardsAboveHeight(rollBackHeight);
     await deleteTransactionsAboveHeight(rollBackHeight);
+    await stores.scannerState.set("height_aggregator", rollBackHeight.toString());
+    await stores.scannerState.set("timestamp_aggregator_hourly", rollback_timestamp.toString());
+    await stores.scannerState.set("timestamp_aggregator_daily", rollback_timestamp.toString());
+    await stores.scannerState.set("height_prs", rollBackHeight.toString());
     await stores.scannerState.set("height_txs", rollBackHeight.toString());
   }
 
+  console.log(`\t Rescanning Pricing Records...`);
+  await scanPricingRecords();
+
   console.log(`\t Rescanning Transactions...`);
-
-  // Refire scanTransactions to repopulate the transactions
   await scanTransactions();
-
-  // ------------------------------------------------------
-  // ------------------- Aggregator -----------------------
-  // ------------------------------------------------------
 
   console.log(`\t Firing aggregator to repop protocol_stats...`);
   await aggregate();
 
-  // ------------------------------------------------------
-  // -------------------- APY Hitory --------------------
-  // ------------------------------------------------------
-
   console.log(`\t Recalculating APY History...`);
-  const resetAPYHistory = true;
-  await determineAPYHistory(resetAPYHistory);
+  await determineAPYHistory(true);
 
-  // ------------------------------------------------------
-  // ----------------------- Totals -----------------------
-  // ------------------------------------------------------
-  console.log(`\t Recalculating totals by rescanning all transactions...`);
+  console.log(`\t Recalculating totals...`);
   await retallyTotals();
 
-
   console.log(`Rollback to height ${rollBackHeight} and reset completed successfully`);
+
   // Unset the scanner_rolling_back flag
-  await redis.del("scanner_rolling_back");
+  if (redisEnabled) {
+    await redis.del("scanner_rolling_back");
+  }
+  if (postgresEnabled) {
+    await stores.scannerState.set("scanner_rolling_back", "false");
+  }
 }
 
 
 export async function detectAndHandleReorg() {
+  if (!useRedis()) {
+    // Reorg detection relies on block_hashes stored in Redis.
+    // In postgres-only mode, skip until a Postgres-backed implementation exists.
+    return;
+  }
+
   await setBlockHashesIfEmpty();
 
   // Start from the current scanner height
@@ -753,24 +703,36 @@ const AGGREGATION_KEYS = [
 ];
 
 async function clearAggregationArtifacts() {
-  const pipeline = redis.pipeline();
-  for (const key of AGGREGATION_KEYS) {
-    pipeline.del(key);
+  if (useRedis()) {
+    const pipeline = redis.pipeline();
+    for (const key of AGGREGATION_KEYS) {
+      pipeline.del(key);
+    }
+    await pipeline.exec();
   }
-  await pipeline.exec();
   await clearPostgresAggregationState();
 }
 
 type ResetScope = "full" | "aggregation";
 
 export async function resetScanner(scope: ResetScope = "aggregation") {
+  const redisEnabled = useRedis();
+  const postgresEnabled = usePostgres();
+
   console.log(`[resetScanner] Starting ${scope} reset`);
-  await redis.set("scanner_rolling_back", "true");
+  if (redisEnabled) {
+    await redis.set("scanner_rolling_back", "true");
+  }
+  if (postgresEnabled) {
+    await stores.scannerState.set("scanner_rolling_back", "true");
+  }
 
   try {
     if (scope === "full") {
-      console.log("[resetScanner] Flushing Redis database");
-      await redis.flushdb();
+      if (redisEnabled) {
+        console.log("[resetScanner] Flushing Redis database");
+        await redis.flushdb();
+      }
       await truncatePostgresData();
 
       console.log("[resetScanner] Rescanning pricing records");
@@ -787,7 +749,9 @@ export async function resetScanner(scope: ResetScope = "aggregation") {
     await aggregate();
 
     console.log("[resetScanner] Rebuilding ZYS price history");
-    await redis.del("zys_price_history");
+    if (redisEnabled) {
+      await redis.del("zys_price_history");
+    }
     await processZYSPriceHistory();
 
     console.log("[resetScanner] Rebuilding yield analytics");
@@ -803,6 +767,11 @@ export async function resetScanner(scope: ResetScope = "aggregation") {
     console.error(`[resetScanner] ${scope} reset failed`, error);
     throw error;
   } finally {
-    await redis.del("scanner_rolling_back");
+    if (redisEnabled) {
+      await redis.del("scanner_rolling_back");
+    }
+    if (postgresEnabled) {
+      await stores.scannerState.set("scanner_rolling_back", "false");
+    }
   }
 }

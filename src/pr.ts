@@ -1,7 +1,7 @@
 import { getCurrentBlockHeight, getBlock } from "./utils";
 import redis from "./redis";
 import { stores } from "./storage/factory";
-import { usePostgres, getStartBlock, getEndBlock } from "./config";
+import { usePostgres, useRedis, getStartBlock, getEndBlock } from "./config";
 import { appendZysPriceHistory, fetchZysPriceHistory as fetchZysPriceHistorySql } from "./db/yieldAnalytics";
 
 const DEATOMIZE = 10 ** -12;
@@ -53,7 +53,9 @@ export async function scanPricingRecords() {
       console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
       return;
     }
-    await redis.hset("block_hashes", height, block.result.block_header.hash);
+    if (useRedis()) {
+      await redis.hset("block_hashes", height, block.result.block_header.hash);
+    }
     const pricingRecord = block.result.block_header.pricing_record;
     if (!pricingRecord) {
       if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
@@ -148,7 +150,9 @@ export async function processZYSPriceHistory() {
     console.log(`\t Block ${height} - ZYS Price: ${zys_price} - Timestamp: ${timestamp}`);
 
     // Store in a sorted set with the timestamp as the score and the data as the value
-    await redis.zadd("zys_price_history", timestamp, data);
+    if (useRedis()) {
+      await redis.zadd("zys_price_history", timestamp, data);
+    }
     if (usePostgres()) {
       await appendZysPriceHistory([
         {

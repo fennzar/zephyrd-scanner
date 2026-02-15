@@ -508,13 +508,15 @@ export async function logScannerHealth(
   stats: ProtocolStats | null,
   snapshot: ReserveSnapshot | null
 ) {
-  console.log("[health] scanner vs reserve_info");
-
   const [reserveInfoResponse, circulatingSupplyEntries] = await Promise.all([
     getReserveInfo(),
     getCirculatingSupplyFromDaemon(),
   ]);
   const reserveResult = reserveInfoResponse?.result;
+
+  const scannerHeight = stats?.block_height?.toLocaleString("en-US") ?? "?";
+  const daemonHeight = reserveResult?.height?.toLocaleString("en-US") ?? "?";
+  console.log(`[health] scanner=${scannerHeight} | daemon=${daemonHeight}`);
   if (!reserveResult && !snapshot) {
     console.warn("[health] Unable to fetch reserve info and no cached snapshot available");
   }

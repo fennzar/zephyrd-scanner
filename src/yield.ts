@@ -19,7 +19,8 @@ import {
   logProjectedBaseStats,
   logProjectedReturns,
 } from "./logger";
-import { usePostgres } from "./config";
+import { usePostgres, useRedis } from "./config";
+import { getProtocolStatsBlock } from "./db/protocolStats";
 import {
   upsertHistoricalReturns,
   fetchHistoricalReturns,
@@ -30,6 +31,14 @@ import {
   appendZysPriceHistory,
   fetchZysPriceHistory as fetchZysPriceHistorySql,
 } from "./db/yieldAnalytics";
+
+async function getProtocolStatsForHeight(height: number): Promise<Record<string, any> | null> {
+  if (usePostgres()) {
+    return getProtocolStatsBlock(height);
+  }
+  const json = await redis.hget("protocol_stats", height.toString());
+  return json ? JSON.parse(json) : null;
+}
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
@@ -216,8 +225,7 @@ export async function determineHistoricalReturns() {
     // Get all time zsd auto-minted from the zeph reward from zsd_accrued_in_yield_reserve_from_yield_reward in latest protocol_stats
 
     // Fetch current block's data to determine all time zsd auto-minted from the zeph reward
-    const currentProtocolStatsDataJson = await redis.hget("protocol_stats", (currentBlockHeight).toString());
-    let currentProtocolStatsData = currentProtocolStatsDataJson ? JSON.parse(currentProtocolStatsDataJson) : {};
+    const currentProtocolStatsData = await getProtocolStatsForHeight(currentBlockHeight) ?? {};
 
     const total_zsd_accrued_in_yield_reserve_from_yield_reward = currentProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
     if (!total_zsd_accrued_in_yield_reserve_from_yield_reward) {
@@ -228,33 +236,27 @@ export async function determineHistoricalReturns() {
     const alltimeZSDAccrued = total_zsd_accrued_in_yield_reserve_from_yield_reward;
 
     // Last block
-    const previousProtocolStatsDataJson = await redis.hget("protocol_stats", (previousBlockHeight).toString());
-    let previousProtocolStatsData = previousProtocolStatsDataJson ? JSON.parse(previousProtocolStatsDataJson) : {};
+    const previousProtocolStatsData = await getProtocolStatsForHeight(previousBlockHeight) ?? {};
     const previousZSDAccrued = alltimeZSDAccrued - previousProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
     // 1 Day
-    const onedayagoProtocolStatsDataJson = await redis.hget("protocol_stats", (onedayagoBlockHeight).toString());
-    let onedayagoProtocolStatsData = onedayagoProtocolStatsDataJson ? JSON.parse(onedayagoProtocolStatsDataJson) : {};
+    const onedayagoProtocolStatsData = await getProtocolStatsForHeight(onedayagoBlockHeight) ?? {};
     const onedayagoZSDAccrued = alltimeZSDAccrued - onedayagoProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
     // 1 Week
-    const oneweekagoProtocolStatsDataJson = await redis.hget("protocol_stats", (oneweekagoBlockHeight).toString());
-    let oneweekagoProtocolStatsData = oneweekagoProtocolStatsDataJson ? JSON.parse(oneweekagoProtocolStatsDataJson) : {};
+    const oneweekagoProtocolStatsData = await getProtocolStatsForHeight(oneweekagoBlockHeight) ?? {};
     const oneweekagoZSDAccrued = alltimeZSDAccrued - oneweekagoProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
     // 1 Month
-    const onemonthagoProtocolStatsDataJson = await redis.hget("protocol_stats", (onemonthagoBlockHeight).toString());
-    let onemonthagoProtocolStatsData = onemonthagoProtocolStatsDataJson ? JSON.parse(onemonthagoProtocolStatsDataJson) : {};
+    const onemonthagoProtocolStatsData = await getProtocolStatsForHeight(onemonthagoBlockHeight) ?? {};
     const onemonthagoZSDAccrued = alltimeZSDAccrued - onemonthagoProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
     // 3 Months
-    const threemonthsagoProtocolStatsDataJson = await redis.hget("protocol_stats", (threemonthsagoBlockHeight).toString());
-    let threemonthsagoProtocolStatsData = threemonthsagoProtocolStatsDataJson ? JSON.parse(threemonthsagoProtocolStatsDataJson) : {};
+    const threemonthsagoProtocolStatsData = await getProtocolStatsForHeight(threemonthsagoBlockHeight) ?? {};
     const threemonthsagoZSDAccrued = alltimeZSDAccrued - threemonthsagoProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
     // 1 Year
-    const oneyearagoProtocolStatsDataJson = await redis.hget("protocol_stats", (oneyearagoBlockHeight).toString());
-    let oneyearagoProtocolStatsData = oneyearagoProtocolStatsDataJson ? JSON.parse(oneyearagoProtocolStatsDataJson) : {};
+    const oneyearagoProtocolStatsData = await getProtocolStatsForHeight(oneyearagoBlockHeight) ?? {};
     const oneyearagoZSDAccrued = alltimeZSDAccrued - oneyearagoProtocolStatsData.zsd_accrued_in_yield_reserve_from_yield_reward;
 
 
@@ -291,8 +293,9 @@ export async function determineHistoricalReturns() {
       }
     }
 
-    // save to redis
-    await redis.set("historical_returns", JSON.stringify(historicalStats));
+    if (useRedis()) {
+      await redis.set("historical_returns", JSON.stringify(historicalStats));
+    }
     if (usePostgres()) {
       await upsertHistoricalReturns(historicalStats);
     }
@@ -823,9 +826,10 @@ export async function determineProjectedReturns(test = false) {
     },
   ]);
 
-  // save to redis
   if (!test) {
-    await redis.set("projected_returns", JSON.stringify(projectedStats));
+    if (useRedis()) {
+      await redis.set("projected_returns", JSON.stringify(projectedStats));
+    }
     if (usePostgres()) {
       await upsertProjectedReturns(projectedStats);
     }
@@ -847,12 +851,12 @@ async function getPrecalculatedBlockRewards(current_block_height: number) {
   const oneyear_block_height = current_block_height + (720 * 30 * 12);
   console.log(`getPrecalculatedBlockRewards: current_block_height: ${current_block_height}, oneyear_block_height: ${oneyear_block_height}`);
 
-  // check if the redis key "precalculated_block_rewards" exists
-  let precalculatedBlockRewards = await redis.get("precalculated_block_rewards");
+  // check if the cached precalculated block rewards exist
+  let precalculatedBlockRewardsRaw = useRedis() ? await redis.get("precalculated_block_rewards") : null;
 
-  if (precalculatedBlockRewards) {
+  if (precalculatedBlockRewardsRaw) {
     // ensure we have enough precalculated block rewards to cover the next year
-    const precalculatedBlockRewardsJson = JSON.parse(precalculatedBlockRewards);
+    const precalculatedBlockRewardsJson = JSON.parse(precalculatedBlockRewardsRaw);
     const lastPreCalcBlockHeight = precalculatedBlockRewardsJson[precalculatedBlockRewardsJson.length - 1].block_height;
     // Ensure we have enough precalculated block rewards to cover the next year
     if (lastPreCalcBlockHeight >= oneyear_block_height) {
@@ -863,13 +867,9 @@ async function getPrecalculatedBlockRewards(current_block_height: number) {
   console.log(`We don't have any/enough precalculated block rewards from block 0 to block ${oneyear_block_height}...`);
   // We haven't got the precalculated block rewards or we don't have enough to cover the next year, so we need to calculate them.
   const ending_pre_calc_block_height = current_block_height + (720 * 30 * 12 * 5); // 5 years in advance
-  await precalculateBlockRewards(current_block_height, ending_pre_calc_block_height);
+  const calculated = await precalculateBlockRewards(current_block_height, ending_pre_calc_block_height);
 
-  // get the precalculated block rewards from redis
-  precalculatedBlockRewards = await redis.get("precalculated_block_rewards");
-  if (precalculatedBlockRewards) return JSON.parse(precalculatedBlockRewards);
-
-  return null;
+  return calculated;
 }
 
 async function precalculateBlockRewards(current_block_height: number, ending_block_height: number) {
@@ -919,9 +919,11 @@ async function precalculateBlockRewards(current_block_height: number, ending_blo
   console.log(`Block 100000: ${precalculatedBlockRewards[100000].block_reward}`);
   console.log(`Current Block (${current_block_height}): ${precalculatedBlockRewards[current_block_height].block_reward}`);
 
-  // save to redis
-  await redis.set("precalculated_block_rewards", JSON.stringify(precalculatedBlockRewards));
+  if (useRedis()) {
+    await redis.set("precalculated_block_rewards", JSON.stringify(precalculatedBlockRewards));
+  }
 
+  return precalculatedBlockRewards;
 }
 
 // Function to calculate the block reward for a given supply
@@ -1006,9 +1008,10 @@ export async function getProjectedReturnsFromRedis(test = false): Promise<Projec
 export async function determineAPYHistory(reset = false) {
   console.log(`Determining APY history... reset: ${reset}`);
   if (reset) {
-    // If reset is true, we want to clear the existing APY history in Redis
-    await redis.del("apy_history");
-    console.log("APY history reset in Redis.");
+    if (useRedis()) {
+      await redis.del("apy_history");
+      console.log("APY history reset in Redis.");
+    }
   }
   // Effectively what we need to do is use the same logic as the projected returns for the "simple" calculation to determine what the effective APY was for each day.
   // We want to calculate the effective apy daily for all the days we have available from block 360_000 to the current block height.
@@ -1132,8 +1135,9 @@ export async function determineAPYHistory(reset = false) {
       });
     }
 
-    // Store APY history to Redis
-    await redis.set("apy_history", JSON.stringify(apyHistory));
+    if (useRedis()) {
+      await redis.set("apy_history", JSON.stringify(apyHistory));
+    }
     if (usePostgres()) {
       await replaceApyHistory(apyHistory);
     }
