@@ -12,6 +12,8 @@
  *   CHAIN_VERIFY_HEIGHT  — target height (e.g., "89400" or "current")
  *   CHAIN_VERIFY_RPC_PORT — RPC port for test daemon (default: 18767)
  *   ZEPHYR_RPC_URL       — full RPC URL (set by run-chain-verify.sh)
+ *   CHAIN_VERIFY_DELTA   — if set, skip DB reset and start scanning from this height
+ *                          (use after a previous run to continue from a checkpoint)
  */
 
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
@@ -44,6 +46,10 @@ const ALL_TARGETS: ChainTarget[] = [
   { height: 99_300, label: "chain_99300", dir: "chain_99300" },
   { height: 139_300, label: "chain_139300", dir: "chain_139300" },
   { height: 189_300, label: "chain_189300", dir: "chain_189300" },
+  { height: 295_100, label: "chain_295100", dir: "chain_295100" },  // ARTEMIS V5
+  { height: 360_100, label: "chain_360100", dir: "chain_360100" },  // V6/YIELD boundary
+  { height: 481_600, label: "chain_481600", dir: "chain_481600" },  // AUDIT V8
+  { height: 536_100, label: "chain_536100", dir: "chain_536100" },  // V11
   { height: "current", label: "chain_current", dir: "chain_current" },
 ];
 
@@ -192,12 +198,20 @@ describe("chain verification", () => {
         // get_reserve_info reports at height N (state after block N-1).
         scanEndBlock = chainHeight - 1;
 
-        // Set up test database
-        await setupTestDatabase();
-        await resetTestData();
+        // Delta mode: skip DB reset and continue from a previous checkpoint.
+        // Usage: CHAIN_VERIFY_DELTA=189300 means the DB already has state up to 189,300
+        // from a prior run, so we only scan the delta (189,300 → target height).
+        const deltaStart = process.env.CHAIN_VERIFY_DELTA;
+        if (deltaStart) {
+          console.log(`Delta mode: continuing from height ${deltaStart} (DB state preserved)`);
+          process.env.START_BLOCK = deltaStart;
+        } else {
+          // Full mode: reset DB schema and data, scan from the beginning
+          await setupTestDatabase();
+          await resetTestData();
+          process.env.START_BLOCK = HF_VERSION_1_HEIGHT.toString();
+        }
 
-        // Set scanner block range to scan from HF start to chain tip
-        process.env.START_BLOCK = HF_VERSION_1_HEIGHT.toString();
         process.env.END_BLOCK = chainHeight.toString();
         process.env.ZEPHYR_RPC_URL = RPC_URL;
       }, 180_000);
@@ -215,7 +229,7 @@ describe("chain verification", () => {
         const { stores } = await import("../src/storage/factory");
         const latestHeight = await stores.pricing.getLatestHeight();
         expect(latestHeight).toBe(scanEndBlock);
-      }, 600_000);
+      }, 3_600_000);
 
       test("scan transactions", async () => {
         const { scanTransactions } = await import("../src/tx");
@@ -224,7 +238,7 @@ describe("chain verification", () => {
         const { stores } = await import("../src/storage/factory");
         const txHeight = await stores.scannerState.get("height_txs");
         expect(Number(txHeight)).toBe(scanEndBlock);
-      }, 600_000);
+      }, 3_600_000);
 
       test("run aggregator", async () => {
         const { aggregate } = await import("../src/aggregator");
@@ -233,7 +247,7 @@ describe("chain verification", () => {
         const { stores } = await import("../src/storage/factory");
         const aggHeight = await stores.scannerState.get("height_aggregator");
         expect(Number(aggHeight)).toBe(scanEndBlock);
-      }, 600_000);
+      }, 3_600_000);
 
       test("compare scanner vs on-chain state", async () => {
         // Get on-chain truth from daemon

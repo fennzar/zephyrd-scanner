@@ -614,9 +614,17 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
   const block_txs = txHashes;
   // console.log(`block_txs`);
   // console.log(block_txs);
-  const reserveIncrementAtoms = bri.reserve_reward_atoms
+  let reserveIncrementAtoms = bri.reserve_reward_atoms
     ? BigInt(bri.reserve_reward_atoms)
     : toAtoms(bri.reserve_reward || 0);
+  // V6+: daemon adds yield_reward_in_zeph to the DJED reserve alongside reserve_reward.
+  // The ZEPH yield reward goes to the reserve; it's separately converted to ZSD for yield accrual below.
+  if (height_to_process >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
+    const yieldInZephAtoms = bri.yield_reward_atoms
+      ? BigInt(bri.yield_reward_atoms)
+      : toAtoms(bri.yield_reward || 0);
+    reserveIncrementAtoms += yieldInZephAtoms;
+  }
   applyReserveDeltaAtoms(reserveIncrementAtoms);
   const rewardAtoms = reserveIncrementAtoms;
 
@@ -802,7 +810,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
 
   // Calculate ZSD Yield Reserve Accrual and ZSD Minted this block
   if (height_to_process >= VERSION_2_HF_V6_BLOCK_HEIGHT) {
-    if (blockData.reserve_ratio >= 2 && blockData.reserve_ratio_ma >= 2) {
+    if (blockData.reserve_ratio > 2 && blockData.reserve_ratio_ma > 2) {
       const yield_reward_zeph = bri.yield_reward;
       const zsd_auto_minted = convertZephToZsd(yield_reward_zeph, pr.stable, pr.stable_ma, height_to_process);
       blockData.zsd_minted_for_yield = zsd_auto_minted;

@@ -41,7 +41,8 @@ SYNC_P2P_PORT=18766
 STOP_DAEMON="$SCRIPT_DIR/stop-test-daemon.sh"
 
 # All available target heights (ascending order for sync efficiency)
-ALL_HEIGHTS=(89400 90300 94300 99300 139300 189300)
+# Includes hardfork boundary heights for comprehensive testing
+ALL_HEIGHTS=(89400 90300 94300 99300 139300 189300 295100 360100 481600 536100)
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"

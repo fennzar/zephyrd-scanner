@@ -190,7 +190,7 @@ async function saveBlockRewardInfo(
     reserve_reward_atoms: rewardAtoms ? rewardAtoms.reserve.toString() : undefined,
     yield_reward_atoms: rewardAtoms ? rewardAtoms.yield.toString() : undefined,
     base_reward_atoms: rewardAtoms?.base ? rewardAtoms.base.toString() : undefined,
-    fee_adjustment_atoms: rewardAtoms?.feeAdjustment ? rewardAtoms.feeAdjustment.toString() : undefined,
+    fee_adjustment_atoms: rewardAtoms?.feeAdjustment != null ? rewardAtoms.feeAdjustment.toString() : undefined,
   };
 
   const block_reward_info_json = JSON.stringify(block_reward_info);
@@ -397,12 +397,18 @@ async function processTx(
   const amountBurntAtoms = BigInt(amount_burnt ?? 0);
   const amountMintedAtoms = BigInt(amount_minted ?? 0);
 
+  // Fee asset = input asset type. Only ZEPH/ZPH fees go to the miner's coinbase;
+  // non-ZEPH fees (e.g. from redeem_stable paying in ZEPHUSD) must NOT be
+  // subtracted from the miner payout when reconstructing the base reward.
+  const feeAsset = vin?.[0]?.key?.asset_type ?? "ZEPH";
+  const isMinerFee = feeAsset === "ZEPH" || feeAsset === "ZPH";
+  const txFeeAtoms = BigInt(rct_signatures?.txnFee ?? 0);
+
   if (!(amount_burnt && amount_minted)) {
-    const txFeeAtoms = BigInt(rct_signatures?.txnFee ?? 0);
     const tx_amount = vout[0]?.amount || 0;
     if (tx_amount === 0) {
       if (verbose_logs) console.log("\t\tSKIP -> Not a conversion transaction or block reward transaction");
-      return { incr_totals, feeAtoms: txFeeAtoms };
+      return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
     }
 
     // Miner reward transaction!
@@ -469,9 +475,19 @@ async function processTx(
 
   let conversion_type = determineConversionType(input_asset_type, output_asset_types);
 
+  // Audit/migration transactions (e.g. ZEPH→ZPH) have amount_burnt == amount_minted
+  // and pricing_record_height == 0. They are NOT economic conversions — just asset type
+  // renames introduced at the AUDIT hardfork. They don't affect reserve or circulation,
+  // but their ZEPH fees DO go to the miner's coinbase and must be accounted for.
+  const isAuditTx = conversion_type.startsWith("audit_") || (pricing_record_height === 0 && amountBurntAtoms === amountMintedAtoms);
+  if (isAuditTx) {
+    if (verbose_logs) console.log("\t\tAudit/migration transaction, skipping conversion processing");
+    return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
+  }
+
   if (conversion_type === "na") {
     console.log("Error - Can't determine conversion type");
-    return { incr_totals };
+    return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
   }
 
   // pipeline.hincrbyfloat("totals", "conversion_transactions", 1);
@@ -479,13 +495,11 @@ async function processTx(
 
   if (pricing_record_height === 0) {
     console.error(
-      "Tx - REALLY MESSED UP DATA? - pricing_record_height is 0 from await readTx() and should be here in conversion (or miner?) transaction"
+      "Tx - pricing_record_height is 0 for non-audit conversion transaction"
     );
-    // Print details for debugging
     console.error("Transaction hash:", hash);
-    console.error("response_data:", response_data);
     console.error("Transaction JSON:", tx_json);
-    return { incr_totals };
+    return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
   }
 
   if (verbose_logs)
@@ -502,7 +516,7 @@ async function processTx(
 
   if (!relevant_pr) {
     console.log(`No pricing record found for height: ${pricing_record_height}`);
-    return { incr_totals };
+    return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
   }
 
   const { spot, moving_average, reserve, reserve_ma, stable, stable_ma, yield_price } = relevant_pr;
@@ -661,8 +675,7 @@ async function processTx(
       break;
   }
 
-  const tx_fee_atoms = BigInt(rct_signatures?.txnFee ?? 0);
-  const tx_fee_amount = Number(tx_fee_atoms) * DEATOMIZE;
+  const tx_fee_amount = Number(txFeeAtoms) * DEATOMIZE;
 
   const tx_info = {
     hash,
@@ -680,12 +693,12 @@ async function processTx(
     conversion_fee_amount,
     tx_fee_asset,
     tx_fee_amount,
-    tx_fee_atoms: tx_fee_atoms.toString(),
+    tx_fee_atoms: txFeeAtoms.toString(),
   };
 
   if (verbose_logs) console.log(tx_info);
 
-  return { incr_totals, tx_info, feeAtoms: tx_fee_atoms };
+  return { incr_totals, tx_info, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
 }
 
 function determineConversionType(input: string, outputs: string[]): string {
