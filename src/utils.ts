@@ -35,7 +35,7 @@ import { queryTransactions, type ConversionTransactionRecord } from "./db/transa
 import { fetchBlockProtocolStats, fetchAggregatedProtocolStats, fetchLatestProtocolStats } from "./db/protocolStats";
 import { getBlockReward, queryBlockRewardsRange } from "./db/blockRewards";
 import { queryPricingRecords } from "./db/pricingRecords";
-const RPC_URL = "http://127.0.0.1:17767";
+const RPC_URL = process.env.ZEPHYR_RPC_URL || "http://127.0.0.1:17767";
 const HEADERS = {
   "Content-Type": "application/json",
 };
