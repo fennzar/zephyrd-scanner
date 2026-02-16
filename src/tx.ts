@@ -735,7 +735,14 @@ export async function scanTransactions(reset = false) {
   const configStartBlock = getStartBlock();
   const configEndBlock = getEndBlock();
   const effectiveHfHeight = configStartBlock > 0 ? configStartBlock : hfHeight;
-  const effectiveEndHeight = configEndBlock > 0 ? Math.min(configEndBlock, rpcHeight - 1) : rpcHeight - 1;
+
+  // Cap tx scan to the pricing scan's height so we never process blocks whose
+  // pricing_record_height hasn't been stored yet (the daemon can advance between
+  // the pricing scan and tx scan, creating a window of missing pricing records).
+  const pricingHeight = await stores.pricing.getLatestHeight();
+  const endCandidates = [rpcHeight - 1, pricingHeight];
+  if (configEndBlock > 0) endCandidates.push(configEndBlock);
+  const effectiveEndHeight = Math.min(...endCandidates);
 
   let startingHeight = Math.max(redisHeight + 1, effectiveHfHeight);
   if (reset) {
@@ -761,7 +768,8 @@ export async function scanTransactions(reset = false) {
   }
 
   console.log("Fired tx scanner...");
-  console.log(`Starting height: ${startingHeight} | Ending height: ${effectiveEndHeight}${configEndBlock > 0 ? ` (capped by END_BLOCK)` : ''}`);
+  const cappedByPricing = effectiveEndHeight < rpcHeight - 1 && effectiveEndHeight === pricingHeight;
+  console.log(`Starting height: ${startingHeight} | Ending height: ${effectiveEndHeight}${configEndBlock > 0 ? ` (capped by END_BLOCK)` : ''}${cappedByPricing ? ` (capped by pricing height)` : ''}`);
 
   if (process.env.WALKTHROUGH_MODE === "true") {
     await fs.writeFile(WALKTHROUGH_DEBUG_LOG, "");
