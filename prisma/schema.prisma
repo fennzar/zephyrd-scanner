@@ -135,6 +135,7 @@ model ProtocolStatsBlock {
   feesZyield                       Float    @map("fees_zyield")
   createdAt                        DateTime @default(now()) @map("created_at")
 
+  @@index([blockTimestamp], map: "idx_ps_block_timestamp")
   @@map("protocol_stats")
 }
 

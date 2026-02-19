@@ -5,7 +5,7 @@ import {
   getLastReserveSnapshotPreviousHeight,
   getLatestReserveSnapshot,
   getLatestProtocolStats,
-  getTotalsFromRedis,
+  getTotalsSummaryData,
   getBlockProtocolStatsFromRedis,
   getAggregatedProtocolStatsFromRedis,
   getPricingRecordFromStore,
@@ -60,9 +60,11 @@ describe("redis gating — DATA_STORE=postgres", () => {
     assertRedisIdle();
   });
 
-  test("getTotalsFromRedis() returns null, redis untouched", async () => {
-    const result = await getTotalsFromRedis();
-    expect(result).toBeNull();
+  test("getTotalsSummaryData() returns zeros from empty DB, redis untouched", async () => {
+    const result = await getTotalsSummaryData();
+    expect(result).not.toBeNull();
+    expect(result!.conversion_transactions).toBe(0);
+    expect(result!.mint_stable_volume).toBe(0);
     assertRedisIdle();
   });
 

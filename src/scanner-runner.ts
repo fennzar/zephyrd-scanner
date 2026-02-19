@@ -6,13 +6,14 @@ import dotenv from "dotenv";
 import { aggregate } from "./aggregator";
 import { getZYSPriceHistoryFromRedis, processZYSPriceHistory, scanPricingRecords } from "./pr";
 import { scanTransactions } from "./tx";
+import { scanBlocksUnified } from "./scan-unified";
 import {
   getCurrentBlockHeight,
   getPricingRecordHeight,
   getScannerHeight,
   getLatestProtocolStats,
   getLatestReserveSnapshot,
-  getTotalsFromRedis,
+  getTotalsSummaryData,
   getTransactionHeight,
   refreshLiveStatsCache,
 } from "./utils";
@@ -46,6 +47,7 @@ const EXPORT_SCRIPT_PATH = path.join(__dirname, "scripts", "exportRedisData.ts")
 const BACKUP_SCRIPT_PATH = path.join(__dirname, "scripts", "backupPostgres.ts");
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
+const UNIFIED_SCAN = process.env.UNIFIED_SCAN === "true";
 const WALKTHROUGH_MODE = process.env.WALKTHROUGH_MODE === "true";
 const MAIN_SLEEP_MS = process.env.MAIN_SLEEP_MS ? parseInt(process.env.MAIN_SLEEP_MS, 10) : 120000;
 const MAIN_PAUSE_MS = process.env.MAIN_PAUSE_MS ? parseInt(process.env.MAIN_PAUSE_MS, 10) : 5000;
@@ -102,9 +104,13 @@ export async function runScannerCycle(): Promise<void> {
     console.log("---------| MAIN |-----------");
     await aggregate();
     console.log("---------| MAIN |-----------");
-    await scanPricingRecords();
-    console.log("---------| MAIN |-----------");
-    await scanTransactions();
+    if (UNIFIED_SCAN) {
+      await scanBlocksUnified();
+    } else {
+      await scanPricingRecords();
+      console.log("---------| MAIN |-----------");
+      await scanTransactions();
+    }
     console.log("---------| MAIN |-----------");
     await aggregate();
     console.log("---------| MAIN |-----------");
@@ -125,11 +131,6 @@ export async function runScannerCycle(): Promise<void> {
       console.log("---------| MAIN |-----------");
     }
 
-    const totals = await getTotalsFromRedis();
-    let totalsSummary: TotalsSummary | null = null;
-    if (totals) {
-      totalsSummary = logTotals(totals);
-    }
     const latestScannerHeight = await getScannerHeight();
     const latestPricingHeight = await getPricingRecordHeight();
     const latestTxHeight = await getTransactionHeight();
@@ -138,6 +139,12 @@ export async function runScannerCycle(): Promise<void> {
         "en-US"
       )} | tx=${latestTxHeight.toLocaleString("en-US")}`
     );
+
+    const totals = await getTotalsSummaryData();
+    let totalsSummary: TotalsSummary | null = null;
+    if (totals) {
+      totalsSummary = logTotals(totals, latestScannerHeight);
+    }
     const [latestStats, latestSnapshot] = await Promise.all([
       getLatestProtocolStats(),
       getLatestReserveSnapshot(),

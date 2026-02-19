@@ -176,9 +176,6 @@ export async function getTotals(): Promise<TotalsRecord | null> {
   };
 }
 
-export const LEGACY_MINER_REWARD_BASELINE = 1391857.1317692809;
-export const LEGACY_GOVERNANCE_REWARD_BASELINE = 73255.6385141733;
-
 function toNumber(value: Prisma.Decimal | number | null | undefined): number {
   if (value == null) {
     return 0;
@@ -245,8 +242,8 @@ export async function calculateTotalsFromPostgres(): Promise<TotalsRecord> {
     redeemYieldCount: toNumber(stats.redeemYieldCount),
     redeemYieldVolume: toNumber(stats.redeemYieldVolume),
     feesZephusdYield: toNumber(stats.feesZephusdYield),
-    minerReward: LEGACY_MINER_REWARD_BASELINE + toNumber(rewards.minerReward),
-    governanceReward: LEGACY_GOVERNANCE_REWARD_BASELINE + toNumber(rewards.governanceReward),
+    minerReward: toNumber(rewards.minerReward),
+    governanceReward: toNumber(rewards.governanceReward),
     reserveReward: toNumber(rewards.reserveReward),
     yieldReward: toNumber(rewards.yieldReward),
   };

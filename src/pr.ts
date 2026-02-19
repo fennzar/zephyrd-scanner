@@ -3,9 +3,13 @@ import redis from "./redis";
 import { stores } from "./storage/factory";
 import { usePostgres, useRedis, getStartBlock, getEndBlock } from "./config";
 import { appendZysPriceHistory, fetchZysPriceHistory as fetchZysPriceHistorySql } from "./db/yieldAnalytics";
+import type { PricingRecordInput } from "./storage/types";
+import { processHeightRange, RPC_CHUNK_SIZE, RPC_CONCURRENCY } from "./rpc-pool";
+import { HF_V1_BLOCK_HEIGHT } from "./constants";
 
 const DEATOMIZE = 10 ** -12;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
+const PRICING_BATCH_SIZE = Number(process.env.PRICING_BATCH_SIZE ?? "500");
 
 export interface ZysPriceHistoryEntry {
   timestamp: number;
@@ -28,7 +32,9 @@ async function getStoredHeight() {
 }
 
 export async function scanPricingRecords() {
-  const hfHeight = 89300;
+  // Pre-V1 pricing records (all zeros) are handled by the TX scanner's fast path,
+  // so the PR scanner starts from HF_V1_BLOCK_HEIGHT to avoid redundant RPC calls.
+  const hfHeight = HF_V1_BLOCK_HEIGHT;
   const rpcHeight = await getCurrentBlockHeight();
   // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
   const redisHeight = await getStoredHeight();
@@ -47,76 +53,84 @@ export async function scanPricingRecords() {
   const totalBlocks = effectiveEndHeight - startingHeight;
   const logInterval = Math.max(1, Math.floor(totalBlocks / 100));
 
-  for (let height = startingHeight; height <= effectiveEndHeight; height++) {
-    const block = await getBlock(height);
-    if (!block) {
-      console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
-      return;
-    }
-    if (useRedis()) {
-      await redis.hset("block_hashes", height, block.result.block_header.hash);
-    }
-    const pricingRecord = block.result.block_header.pricing_record;
-    if (!pricingRecord) {
-      if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
-        const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
-        console.log(`PRs SCANNING BLOCK(s): ${height}/${effectiveEndHeight}  | ${percentComplete.toFixed(2)}%`);
+  const canBatch = typeof stores.pricing.saveBatch === "function";
+  const buffer: PricingRecordInput[] = [];
+  const redisEnabled = useRedis();
+
+  const flushBuffer = async () => {
+    if (buffer.length === 0) return;
+    if (canBatch) {
+      await stores.pricing.saveBatch!(buffer);
+    } else {
+      for (const record of buffer) {
+        await stores.pricing.save(record);
       }
-      await stores.pricing.save({
-        blockHeight: height,
-        timestamp: 0,
-        spot: 0,
-        movingAverage: 0,
-        reserve: 0,
-        reserveMa: 0,
-        stable: 0,
-        stableMa: 0,
-        yieldPrice: 0,
-      });
-      continue;
     }
+    buffer.length = 0;
+  };
 
-    if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
-      const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
-      console.log(`PRs SCANNING BLOCK: ${height}/${effectiveEndHeight}  | ${percentComplete.toFixed(2)}%`);
-    }
+  const completed = await processHeightRange(
+    startingHeight,
+    effectiveEndHeight,
+    (height) => getBlock(height),
+    async (height, block) => {
+      if (!block) {
+        console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
+        await flushBuffer();
+        return false;
+      }
+      if (redisEnabled) {
+        await redis.hset("block_hashes", height, block.result.block_header.hash);
+      }
+      const pricingRecord = block.result.block_header.pricing_record;
 
-    const timestamp = pricingRecord.timestamp;
-    const spot = pricingRecord.spot * DEATOMIZE;
-    const moving_average = pricingRecord.moving_average * DEATOMIZE;
-    const reserve = pricingRecord.reserve * DEATOMIZE;
-    const reserve_ma = pricingRecord.reserve_ma * DEATOMIZE;
-    const stable = pricingRecord.stable * DEATOMIZE;
-    const stable_ma = pricingRecord.stable_ma * DEATOMIZE;
-    const yield_price = pricingRecord.yield_price ? pricingRecord.yield_price * DEATOMIZE : 0;
+      let record: PricingRecordInput;
+      if (!pricingRecord) {
+        if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
+          const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
+          console.log(`PRs SCANNING BLOCK(s): ${height}/${effectiveEndHeight}  | ${percentComplete.toFixed(2)}%`);
+        }
+        record = {
+          blockHeight: height,
+          timestamp: block.result.block_header.timestamp,
+          spot: 0,
+          movingAverage: 0,
+          reserve: 0,
+          reserveMa: 0,
+          stable: 0,
+          stableMa: 0,
+          yieldPrice: 0,
+        };
+      } else {
+        if (height === startingHeight || height === effectiveEndHeight || (height - startingHeight) % logInterval === 0) {
+          const percentComplete = ((height - startingHeight) / totalBlocks) * 100;
+          console.log(`PRs SCANNING BLOCK: ${height}/${effectiveEndHeight}  | ${percentComplete.toFixed(2)}%`);
+        }
 
-    let pr_to_save = {
-      height: height,
-      timestamp: timestamp,
-      spot: spot,
-      moving_average: moving_average,
-      reserve: reserve,
-      reserve_ma: reserve_ma,
-      stable: stable,
-      stable_ma: stable_ma,
-      yield_price: yield_price,
-    };
+        record = {
+          blockHeight: height,
+          timestamp: pricingRecord.timestamp,
+          spot: pricingRecord.spot * DEATOMIZE,
+          movingAverage: pricingRecord.moving_average * DEATOMIZE,
+          reserve: pricingRecord.reserve * DEATOMIZE,
+          reserveMa: pricingRecord.reserve_ma * DEATOMIZE,
+          stable: pricingRecord.stable * DEATOMIZE,
+          stableMa: pricingRecord.stable_ma * DEATOMIZE,
+          yieldPrice: pricingRecord.yield_price ? pricingRecord.yield_price * DEATOMIZE : 0,
+        };
+      }
 
-    await stores.pricing.save({
-      blockHeight: pr_to_save.height,
-      timestamp: pr_to_save.timestamp,
-      spot: pr_to_save.spot,
-      movingAverage: pr_to_save.moving_average,
-      reserve: pr_to_save.reserve,
-      reserveMa: pr_to_save.reserve_ma,
-      stable: pr_to_save.stable,
-      stableMa: pr_to_save.stable_ma,
-      yieldPrice: pr_to_save.yield_price,
-    });
+      buffer.push(record);
+      if (buffer.length >= PRICING_BATCH_SIZE) {
+        await flushBuffer();
+      }
+    },
+    RPC_CHUNK_SIZE,
+    RPC_CONCURRENCY,
+  );
 
-    // (no longer log every block)
-    // console.log(`Saved pricing record for height ${height}`);
-  }
+  // Flush remaining records
+  await flushBuffer();
   return;
 }
 

@@ -14,6 +14,7 @@ export interface PricingRecordResult extends PricingRecordInput {}
 
 export interface PricingStore {
   save(record: PricingRecordInput): Promise<void>;
+  saveBatch?(records: PricingRecordInput[]): Promise<void>;
   get(blockHeight: number): Promise<PricingRecordResult | null>;
   getLatestHeight(): Promise<number>;
 }

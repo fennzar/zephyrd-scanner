@@ -85,11 +85,11 @@ describe("storage — pricing round-trips", () => {
     assertRedisIdle();
   });
 
-  test("getLatestHeight returns 0 for empty table", async () => {
+  test("getLatestHeight returns -1 for empty table", async () => {
     // Reset data to clear all pricing records
     await resetTestData();
     const latestHeight = await stores.pricing.getLatestHeight();
-    expect(latestHeight).toBe(0);
+    expect(latestHeight).toBe(-1);
     assertRedisIdle();
   });
 });

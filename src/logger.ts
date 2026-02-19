@@ -6,7 +6,7 @@ import {
   getCirculatingSupplyFromDaemon,
   getReserveInfo,
 } from "./utils";
-import { UNAUDITABLE_ZEPH_MINT, INITIAL_TREASURY_ZEPH } from "./constants";
+import { UNAUDITABLE_ZEPH_MINT, INITIAL_TREASURY_ZEPH, HF_V11_BLOCK_HEIGHT } from "./constants";
 
 type WindowType = "hourly" | "daily";
 type MetricSuffix = "open" | "close" | "high" | "low";
@@ -210,7 +210,7 @@ export function summarizeTotals(totals: Record<string, unknown>): TotalsSummary 
   return { numeric, other };
 }
 
-export function logTotals(totals: Record<string, unknown>): TotalsSummary {
+export function logTotals(totals: Record<string, unknown>, currentHeight?: number): TotalsSummary {
   const summary = summarizeTotals(totals);
   const numericTotals = summary.numeric;
   const minedTotal =
@@ -218,7 +218,10 @@ export function logTotals(totals: Record<string, unknown>): TotalsSummary {
     (numericTotals.governance_reward ?? 0) +
     (numericTotals.reserve_reward ?? 0) +
     (numericTotals.yield_reward ?? 0);
-  const totalAll = minedTotal + INITIAL_TREASURY_ZEPH + UNAUDITABLE_ZEPH_MINT;
+  // UNAUDITABLE_ZEPH_MINT only applies at V11+ (block 536,000) — it hasn't been minted before then
+  const includeUnauditable = currentHeight === undefined || currentHeight >= HF_V11_BLOCK_HEIGHT;
+  const unauditableMint = includeUnauditable ? UNAUDITABLE_ZEPH_MINT : 0;
+  const totalAll = minedTotal + INITIAL_TREASURY_ZEPH + unauditableMint;
   summary.numeric.total_mined = minedTotal;
   summary.numeric.total_all = totalAll;
 
@@ -247,10 +250,10 @@ export function logTotals(totals: Record<string, unknown>): TotalsSummary {
       type: "initial_treasury",
       amount: formatNumber(INITIAL_TREASURY_ZEPH, 4),
     },
-    {
+    ...(includeUnauditable ? [{
       type: "unauditable_mint",
       amount: formatNumber(UNAUDITABLE_ZEPH_MINT, 4),
-    },
+    }] : []),
     {
       type: "total_all",
       amount: formatNumber(totalAll, 4),
@@ -515,7 +518,9 @@ export async function logScannerHealth(
   const reserveResult = reserveInfoResponse?.result;
 
   const scannerHeightNum = stats?.block_height;
-  const daemonHeightNum = reserveResult?.height;
+  // Daemon's get_reserve_info returns height as top_block + 1 (next block to be mined)
+  const daemonRawHeight = reserveResult?.height;
+  const daemonHeightNum = daemonRawHeight !== undefined ? daemonRawHeight - 1 : undefined;
   const heightsAligned = scannerHeightNum !== undefined && daemonHeightNum !== undefined && scannerHeightNum === daemonHeightNum;
   const scannerHeightStr = scannerHeightNum?.toLocaleString("en-US") ?? "?";
   const daemonHeightStr = daemonHeightNum?.toLocaleString("en-US") ?? "?";
@@ -538,6 +543,20 @@ export async function logScannerHealth(
   const snapshotOnChain = snapshot?.on_chain;
   const numericTotals = totalsSummary?.numeric ?? {};
 
+  // Pre-V11 daemons use old currency keys
+  if (!supplyMap.has("ZPH") && supplyMap.has("ZEPH")) {
+    supplyMap.set("ZPH", supplyMap.get("ZEPH")!);
+  }
+  if (!supplyMap.has("ZSD") && supplyMap.has("ZEPHUSD")) {
+    supplyMap.set("ZSD", supplyMap.get("ZEPHUSD")!);
+  }
+  if (!supplyMap.has("ZRS") && supplyMap.has("ZEPHRSV")) {
+    supplyMap.set("ZRS", supplyMap.get("ZEPHRSV")!);
+  }
+  if (!supplyMap.has("ZYS") && supplyMap.has("ZYIELD")) {
+    supplyMap.set("ZYS", supplyMap.get("ZYIELD")!);
+  }
+
   const resolveSupply = (symbol: "ZPH" | "ZSD" | "ZRS" | "ZYS"): number | undefined => {
     const upper = symbol.toUpperCase();
     const fromSupply = supplyMap.get(upper);
@@ -552,7 +571,7 @@ export async function logScannerHealth(
       case "ZYS":
         return pickDefined(parseAtomValue(reserveResult?.num_zyield), snapshotOnChain?.zyield_circ);
       case "ZPH":
-        return numericTotals.total_all;
+        return stats?.zeph_circ ?? numericTotals.total_all;
       default:
         return undefined;
     }
@@ -581,7 +600,9 @@ export async function logScannerHealth(
     on_chain: daemonHeightStr,
     diff: heightsAligned ? "aligned" : "(misaligned)",
   });
-  rows.push({ metric: "----", scanner: "-", on_chain: "-", diff: "-" });
+  const sectionHeader = (label: string) => {
+    rows.push({ metric: `── ${label} ──`, scanner: "", on_chain: "", diff: "" });
+  };
 
   const pushRow = (metric: string, aggregatorValue: number | undefined, onChainValue: number | undefined, decimals: number) => {
     const diff = computeDiff(aggregatorValue, onChainValue);
@@ -595,24 +616,48 @@ export async function logScannerHealth(
 
   if (totalsSummary) {
     const zepTotal = numericTotals.total_all;
-    const zsdTotal = (numericTotals.mint_stable_volume ?? 0) - (numericTotals.redeem_stable_volume ?? 0);
-    const zrsTotal = (numericTotals.mint_reserve_volume ?? 0) - (numericTotals.redeem_reserve_volume ?? 0);
-    const zysTotal = (numericTotals.mint_yield_volume ?? 0) - (numericTotals.redeem_yield_volume ?? 0);
+    const zepMined = numericTotals.total_mined ?? 0;
+    const zsdMinted = numericTotals.mint_stable_volume ?? 0;
+    const zsdRedeemed = numericTotals.redeem_stable_volume ?? 0;
+    const zrsMinted = numericTotals.mint_reserve_volume ?? 0;
+    const zrsRedeemed = numericTotals.redeem_reserve_volume ?? 0;
+    const zysMinted = numericTotals.mint_yield_volume ?? 0;
+    const zysRedeemed = numericTotals.redeem_yield_volume ?? 0;
 
-    pushRow("ZEPH circ (totals)", zepTotal, zephCircOnChain, 2);
-    pushRow("ZSD circ (totals)", zsdTotal, zsdCircOnChain, 2);
-    pushRow("ZRS circ (totals)", zrsTotal, zrsCircOnChain, 2);
-    pushRow("ZYS circ (totals)", zysTotal, zysCircOnChain, 2);
-    rows.push({ metric: "----", scanner: "-", on_chain: "-", diff: "-" });
+    sectionHeader("Circulating (net totals)");
+    // Use running state circ from the aggregator when available — it correctly
+    // handles the V11 audit reset. Counter sums (mint-redeem) don't account for
+    // the V11 circ reset, so the running state is authoritative.
+    pushRow("ZEPH circ", stats?.zeph_circ ?? zepTotal, zephCircOnChain, 2);
+    pushRow("  mined", zepMined, undefined, 2);
+    pushRow("  treasury", INITIAL_TREASURY_ZEPH, undefined, 2);
+    if (!scannerHeightNum || scannerHeightNum >= HF_V11_BLOCK_HEIGHT) {
+      pushRow("  unauditable mint", UNAUDITABLE_ZEPH_MINT, undefined, 2);
+    }
+    const yieldAutoMintedZsd = stats?.zsd_accrued_in_yield_reserve_from_yield_reward ?? 0;
+    const zsdCircComputed = zsdMinted - zsdRedeemed + yieldAutoMintedZsd;
+    pushRow("ZSD circ", stats?.zephusd_circ ?? zsdCircComputed, zsdCircOnChain, 2);
+    pushRow("  minted", zsdMinted, undefined, 2);
+    pushRow("  redeemed", zsdRedeemed, undefined, 2);
+    pushRow("  yield auto-minted", yieldAutoMintedZsd, undefined, 2);
+    const zrsCircComputed = zrsMinted - zrsRedeemed;
+    pushRow("ZRS circ", stats?.zephrsv_circ ?? zrsCircComputed, zrsCircOnChain, 2);
+    pushRow("  minted", zrsMinted, undefined, 2);
+    pushRow("  redeemed", zrsRedeemed, undefined, 2);
+    const zysCircComputed = zysMinted - zysRedeemed;
+    pushRow("ZYS circ", stats?.zyield_circ ?? zysCircComputed, zysCircOnChain, 2);
+    pushRow("  minted", zysMinted, undefined, 2);
+    pushRow("  redeemed", zysRedeemed, undefined, 2);
   }
 
   if (stats) {
-    pushRow("Zeph circ (stats)", stats.zeph_circ, zephCircOnChain, 2);
-    pushRow("Zeph reserve (stats)", stats.zeph_in_reserve, zephReserveOnChain, 2);
-    pushRow("ZSD yield reserve (stats)", stats.zsd_in_yield_reserve, zsdYieldReserveOnChain, 2);
-    pushRow("ZSD circ (stats)", stats.zephusd_circ, zsdCircOnChain, 2);
-    pushRow("ZRS circ (stats)", stats.zephrsv_circ, zrsCircOnChain, 2);
-    pushRow("ZYS circ (stats)", stats.zyield_circ, zysCircOnChain, 2);
+    sectionHeader("Protocol State (per-block)");
+    pushRow("ZEPH circ", stats.zeph_circ, zephCircOnChain, 2);
+    pushRow("ZEPH in reserve", stats.zeph_in_reserve, zephReserveOnChain, 2);
+    pushRow("ZSD circ", stats.zephusd_circ, zsdCircOnChain, 2);
+    pushRow("ZSD in yield reserve", stats.zsd_in_yield_reserve, zsdYieldReserveOnChain, 2);
+    pushRow("ZRS circ", stats.zephrsv_circ, zrsCircOnChain, 2);
+    pushRow("ZYS circ", stats.zyield_circ, zysCircOnChain, 2);
     pushRow("Reserve ratio", stats.reserve_ratio ?? undefined, reserveRatioOnChain, 4);
   }
 

@@ -1,13 +1,16 @@
 import fs from "node:fs/promises";
 import { Pipeline } from "ioredis";
 
-import { getCurrentBlockHeight, getBlock, readTx } from "./utils";
+import { getCurrentBlockHeight, getBlock, readTx, readTxBatch } from "./utils";
+import { fetchConcurrent, RPC_CHUNK_SIZE, RPC_CONCURRENCY } from "./rpc-pool";
 import redis from "./redis";
 import { usePostgres, useRedis, getStartBlock, getEndBlock } from "./config";
 import { stores } from "./storage/factory";
-import { deleteAllBlockRewards, upsertBlockReward } from "./db/blockRewards";
+import { deleteAllBlockRewards, upsertBlockReward, upsertBlockRewardBatch, type BlockRewardRecord } from "./db/blockRewards";
 import { insertTransactions, ConversionTransactionRecord, deleteAllTransactions } from "./db/transactions";
 import { defaultTotals, getTotals as getTotalsRow, incrementTotals, setTotals } from "./db/totals";
+import type { PricingRecordInput } from "./storage/types";
+import { HF_V1_BLOCK_HEIGHT } from "./constants";
 
 interface IncrTotals {
   miner_reward: number;
@@ -54,16 +57,14 @@ interface TxInfoType {
 }
 
 const DEATOMIZE = 10 ** -12;
-const HF_V1_BLOCK_HEIGHT = 89300;
 const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 const ATOMIC_UNITS = 1_000_000_000_000n;
 const ATOMIC_UNITS_NUMBER = Number(ATOMIC_UNITS);
 const WALKTHROUGH_DEBUG_LOG = process.env.WALKTHROUGH_DEBUG_LOG ?? "walkthrough_debug.log";
-
-const MINER_REWARD_BASELINE = 1391857.1317692809;
-const GOVERNANCE_REWARD_BASELINE = 73255.6385141733;
+const BLOCK_REWARD_BATCH_SIZE = Number(process.env.BLOCK_REWARD_BATCH_SIZE ?? "500");
+const PRICING_BATCH_SIZE = Number(process.env.PRICING_BATCH_SIZE ?? "500");
 
 function toPostgresTransactionRecord(tx: TxInfoType): ConversionTransactionRecord {
   return {
@@ -90,40 +91,14 @@ async function ensureTotalsBaseline() {
   if (usePostgres()) {
     const totals = await getTotalsRow();
     if (!totals) {
-      await setTotals({
-        ...defaultTotals,
-        minerReward: MINER_REWARD_BASELINE,
-        governanceReward: GOVERNANCE_REWARD_BASELINE,
-      });
-    } else {
-      const updates: Partial<typeof defaultTotals> = {};
-      if (totals.minerReward <= 0) {
-        updates.minerReward = MINER_REWARD_BASELINE;
-      }
-      if (totals.governanceReward <= 0) {
-        updates.governanceReward = GOVERNANCE_REWARD_BASELINE;
-      }
-      if (Object.keys(updates).length > 0) {
-        await incrementTotals(updates);
-      }
+      await setTotals(defaultTotals);
     }
   }
 
   if (useRedis()) {
     const totalsExists = await redis.exists("totals");
     if (!totalsExists) {
-      await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE, "governance_reward", GOVERNANCE_REWARD_BASELINE);
-      return;
-    }
-
-    const [minerReward, governanceReward] = await redis.hmget("totals", "miner_reward", "governance_reward");
-
-    if (minerReward === null) {
-      await redis.hset("totals", "miner_reward", MINER_REWARD_BASELINE);
-    }
-
-    if (governanceReward === null) {
-      await redis.hset("totals", "governance_reward", GOVERNANCE_REWARD_BASELINE);
+      await redis.hset("totals", "miner_reward", 0, "governance_reward", 0);
     }
   }
 }
@@ -131,10 +106,10 @@ async function ensureTotalsBaseline() {
 async function getStoredTxHeight() {
   const height = await stores.scannerState.get("height_txs");
   if (!height) {
-    return 0;
+    return -1;
   }
   const parsed = Number(height);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : -1;
 }
 
 async function setStoredTxHeight(height: number) {
@@ -163,6 +138,50 @@ async function getRedisPricingRecord(height: number) {
   return null;
 }
 
+function buildBlockRewardRecord(
+  height: number,
+  miner_reward: number,
+  governance_reward: number,
+  reserve_reward: number,
+  yield_reward: number,
+  rewardAtoms?: {
+    miner: bigint;
+    governance: bigint;
+    reserve: bigint;
+    yield: bigint;
+    base?: bigint;
+    feeAdjustment?: bigint;
+  }
+): { info: Record<string, any>; dbRecord: BlockRewardRecord } {
+  const info = {
+    height,
+    miner_reward,
+    governance_reward,
+    reserve_reward,
+    yield_reward,
+    miner_reward_atoms: rewardAtoms ? rewardAtoms.miner.toString() : undefined,
+    governance_reward_atoms: rewardAtoms ? rewardAtoms.governance.toString() : undefined,
+    reserve_reward_atoms: rewardAtoms ? rewardAtoms.reserve.toString() : undefined,
+    yield_reward_atoms: rewardAtoms ? rewardAtoms.yield.toString() : undefined,
+    base_reward_atoms: rewardAtoms?.base ? rewardAtoms.base.toString() : undefined,
+    fee_adjustment_atoms: rewardAtoms?.feeAdjustment != null ? rewardAtoms.feeAdjustment.toString() : undefined,
+  };
+  const dbRecord: BlockRewardRecord = {
+    blockHeight: height,
+    minerReward: miner_reward,
+    governanceReward: governance_reward,
+    reserveReward: reserve_reward,
+    yieldReward: yield_reward,
+    minerRewardAtoms: info.miner_reward_atoms,
+    governanceRewardAtoms: info.governance_reward_atoms,
+    reserveRewardAtoms: info.reserve_reward_atoms,
+    yieldRewardAtoms: info.yield_reward_atoms,
+    baseRewardAtoms: info.base_reward_atoms,
+    feeAdjustmentAtoms: info.fee_adjustment_atoms,
+  };
+  return { info, dbRecord };
+}
+
 async function saveBlockRewardInfo(
   height: number,
   miner_reward: number,
@@ -177,48 +196,22 @@ async function saveBlockRewardInfo(
     yield: bigint;
     base?: bigint;
     feeAdjustment?: bigint;
-  }
+  },
+  blockRewardBuffer?: BlockRewardRecord[],
 ) {
-  let block_reward_info = {
-    height: height,
-    miner_reward: miner_reward,
-    governance_reward: governance_reward,
-    reserve_reward: reserve_reward,
-    yield_reward: yield_reward,
-    miner_reward_atoms: rewardAtoms ? rewardAtoms.miner.toString() : undefined,
-    governance_reward_atoms: rewardAtoms ? rewardAtoms.governance.toString() : undefined,
-    reserve_reward_atoms: rewardAtoms ? rewardAtoms.reserve.toString() : undefined,
-    yield_reward_atoms: rewardAtoms ? rewardAtoms.yield.toString() : undefined,
-    base_reward_atoms: rewardAtoms?.base ? rewardAtoms.base.toString() : undefined,
-    fee_adjustment_atoms: rewardAtoms?.feeAdjustment != null ? rewardAtoms.feeAdjustment.toString() : undefined,
-  };
+  const { info, dbRecord } = buildBlockRewardRecord(height, miner_reward, governance_reward, reserve_reward, yield_reward, rewardAtoms);
 
-  const block_reward_info_json = JSON.stringify(block_reward_info);
   if (pipeline) {
-    pipeline.hset("block_rewards", height, block_reward_info_json);
+    pipeline.hset("block_rewards", height, JSON.stringify(info));
   }
 
   if (usePostgres()) {
-    await upsertBlockReward({
-      blockHeight: height,
-      minerReward: miner_reward,
-      governanceReward: governance_reward,
-      reserveReward: reserve_reward,
-      yieldReward: yield_reward,
-      minerRewardAtoms: block_reward_info.miner_reward_atoms,
-      governanceRewardAtoms: block_reward_info.governance_reward_atoms,
-      reserveRewardAtoms: block_reward_info.reserve_reward_atoms,
-      yieldRewardAtoms: block_reward_info.yield_reward_atoms,
-      baseRewardAtoms: block_reward_info.base_reward_atoms,
-      feeAdjustmentAtoms: block_reward_info.fee_adjustment_atoms,
-    });
+    if (blockRewardBuffer) {
+      blockRewardBuffer.push(dbRecord);
+    } else {
+      await upsertBlockReward(dbRecord);
+    }
   }
-
-  // increment totals - doing at an upper level now to avoid multiple calls
-  // pipeline.hincrbyfloat("totals", "miner_reward", miner_reward);
-  // pipeline.hincrbyfloat("totals", "governance_reward", governance_reward);
-  // pipeline.hincrbyfloat("totals", "reserve_reward", reserve_reward);
-  // pipeline.hincrbyfloat("totals", "yield_reward", yield_reward);
 }
 
 function atomsToDecimal(atoms: bigint): number {
@@ -350,6 +343,8 @@ function mapTotalsDelta(delta: IncrTotals) {
 
 interface ProcessTxOptions {
   minerFeeAdjustmentAtoms?: bigint;
+  prefetchedTxData?: any;
+  blockRewardBuffer?: BlockRewardRecord[];
 }
 
 interface ProcessTxResult {
@@ -375,7 +370,7 @@ async function processTx(
   // increment totals object for this transaction
   const incr_totals: IncrTotals = blankIncrTotals();
 
-  const response_data: any = await readTx(hash);
+  const response_data: any = options.prefetchedTxData ?? await readTx(hash);
   if (!response_data) {
     console.error("Failed to retrieve transaction data.");
     return { incr_totals };
@@ -409,6 +404,16 @@ async function processTx(
     if (tx_amount === 0) {
       if (verbose_logs) console.log("\t\tSKIP -> Not a conversion transaction or block reward transaction");
       return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
+    }
+
+    // Genesis block (block 0): the 500K ZEPH treasury is a flat pre-mine,
+    // NOT a mining reward. Save an all-zero BlockReward so the aggregator
+    // finds a valid record. The aggregator handles the treasury separately.
+    if (blockHeightNumber === 0) {
+      await saveBlockRewardInfo(0, 0, 0, 0, 0, pipeline, {
+        miner: 0n, governance: 0n, reserve: 0n, yield: 0n, base: 0n, feeAdjustment: 0n,
+      }, options.blockRewardBuffer);
+      return { incr_totals, feeAtoms: 0n };
     }
 
     // Miner reward transaction!
@@ -446,7 +451,8 @@ async function processTx(
         yield: splits.yieldRewardAtoms,
         base: baseRewardAtoms,
         feeAdjustment: feeAdjustmentAtoms,
-      }
+      },
+      options.blockRewardBuffer,
     );
 
     incr_totals.miner_reward += miner_reward;
@@ -476,13 +482,39 @@ async function processTx(
   let conversion_type = determineConversionType(input_asset_type, output_asset_types);
 
   // Audit/migration transactions (e.g. ZEPH→ZPH) have amount_burnt == amount_minted
-  // and pricing_record_height == 0. They are NOT economic conversions — just asset type
-  // renames introduced at the AUDIT hardfork. They don't affect reserve or circulation,
+  // and pricing_record_height == 0. They are 1:1 asset type renames introduced at the
+  // AUDIT hardfork. They don't affect reserve or circulation (no incr_totals changes),
   // but their ZEPH fees DO go to the miner's coinbase and must be accounted for.
+  // We save them to ConversionTransaction so the aggregator can derive V11 circ values.
   const isAuditTx = conversion_type.startsWith("audit_") || (pricing_record_height === 0 && amountBurntAtoms === amountMintedAtoms);
   if (isAuditTx) {
-    if (verbose_logs) console.log("\t\tAudit/migration transaction, skipping conversion processing");
-    return { incr_totals, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
+    if (verbose_logs) console.log("\t\tAudit/migration transaction");
+    const auditAssets: Record<string, { from: string; to: string }> = {
+      audit_zeph: { from: "ZEPH", to: "ZPH" },
+      audit_zsd: { from: "ZEPHUSD", to: "ZSD" },
+      audit_zrs: { from: "ZEPHRSV", to: "ZRS" },
+      audit_zys: { from: "ZYIELD", to: "ZYS" },
+    };
+    const assets = auditAssets[conversion_type] ?? { from: input_asset_type ?? "UNKNOWN", to: output_asset_types[0] ?? "UNKNOWN" };
+    const tx_info: TxInfoType = {
+      hash,
+      block_height,
+      block_timestamp,
+      conversion_type,
+      conversion_rate: 1,
+      from_asset: assets.from,
+      from_amount: amount_burnt * DEATOMIZE,
+      from_amount_atoms: amountBurntAtoms.toString(),
+      to_asset: assets.to,
+      to_amount: amount_minted * DEATOMIZE,
+      to_amount_atoms: amountMintedAtoms.toString(),
+      conversion_fee_asset: assets.to,
+      conversion_fee_amount: 0,
+      tx_fee_asset: feeAsset,
+      tx_fee_amount: Number(txFeeAtoms) * DEATOMIZE,
+      tx_fee_atoms: txFeeAtoms.toString(),
+    };
+    return { incr_totals, tx_info, feeAtoms: isMinerFee ? txFeeAtoms : 0n };
   }
 
   if (conversion_type === "na") {
@@ -577,7 +609,7 @@ async function processTx(
       // pipeline.hincrbyfloat("totals", "redeem_stable_volume", to_amount);
       // pipeline.hincrbyfloat("totals", "fees_zeph", conversion_fee_amount);
       incr_totals.redeem_stable_count += 1;
-      incr_totals.redeem_stable_volume += to_amount;
+      incr_totals.redeem_stable_volume += from_amount;
       incr_totals.fees_zeph += conversion_fee_amount;
       break;
 
@@ -624,7 +656,7 @@ async function processTx(
       // pipeline.hincrbyfloat("totals", "redeem_reserve_volume", to_amount);
       // pipeline.hincrbyfloat("totals", "fees_zeph", conversion_fee_amount);
       incr_totals.redeem_reserve_count += 1;
-      incr_totals.redeem_reserve_volume += to_amount;
+      incr_totals.redeem_reserve_volume += from_amount;
       incr_totals.fees_zeph += conversion_fee_amount;
       break;
 
@@ -670,7 +702,7 @@ async function processTx(
       // pipeline.hincrbyfloat("totals", "redeem_yield_volume", to_amount); // ZEPHUSD
       // pipeline.hincrbyfloat("totals", "fees_zephusd_yield", conversion_fee_amount); // effective loss in ZEPHUSD for redeeming ZYIELD
       incr_totals.redeem_yield_count += 1;
-      incr_totals.redeem_yield_volume += to_amount; // ZEPHUSD
+      incr_totals.redeem_yield_volume += from_amount; // ZYS burned
       incr_totals.fees_zephusd_yield += conversion_fee_amount; // effective loss in ZEPHUSD for redeeming ZYIELD
       break;
   }
@@ -719,12 +751,12 @@ function determineConversionType(input: string, outputs: string[]): string {
   if (input === "ZEPH" && outputs.includes("ZPH")) return "audit_zeph";
   if (input === "ZEPHUSD" && outputs.includes("ZSD")) return "audit_zsd";
   if (input === "ZEPHRSV" && outputs.includes("ZRS")) return "audit_zrs";
-  if (input === "YZIELD" && outputs.includes("ZYS")) return "audit_zys";
+  if (input === "ZYIELD" && outputs.includes("ZYS")) return "audit_zys";
   return "na";
 }
 
 export async function scanTransactions(reset = false) {
-  const hfHeight = 89300; // if we just want to scan from the v1.0.0 HF block
+  const hfHeight = 0;
   const rpcHeight = await getCurrentBlockHeight();
   // const rpcHeight = 89303; // TEMP OVERRIDE FOR TESTING
   const redisHeight = await getStoredTxHeight();
@@ -739,8 +771,11 @@ export async function scanTransactions(reset = false) {
   // Cap tx scan to the pricing scan's height so we never process blocks whose
   // pricing_record_height hasn't been stored yet (the daemon can advance between
   // the pricing scan and tx scan, creating a window of missing pricing records).
+  // Pre-V1 blocks don't reference pricing_record_height, so they can proceed
+  // without the PR scanner. The TX scanner saves their pricing records directly.
   const pricingHeight = await stores.pricing.getLatestHeight();
-  const endCandidates = [rpcHeight - 1, pricingHeight];
+  const txPricingCap = Math.max(pricingHeight, HF_V1_BLOCK_HEIGHT - 1);
+  const endCandidates = [rpcHeight - 1, txPricingCap];
   if (configEndBlock > 0) endCandidates.push(configEndBlock);
   const effectiveEndHeight = Math.min(...endCandidates);
 
@@ -759,17 +794,13 @@ export async function scanTransactions(reset = false) {
     if (postgresEnabled) {
       await deleteAllTransactions();
       await deleteAllBlockRewards();
-      await setTotals({
-        ...defaultTotals,
-        minerReward: MINER_REWARD_BASELINE,
-        governanceReward: GOVERNANCE_REWARD_BASELINE,
-      });
+      await setTotals(defaultTotals);
     }
   }
 
   console.log("Fired tx scanner...");
-  const cappedByPricing = effectiveEndHeight < rpcHeight - 1 && effectiveEndHeight === pricingHeight;
-  console.log(`Starting height: ${startingHeight} | Ending height: ${effectiveEndHeight}${configEndBlock > 0 ? ` (capped by END_BLOCK)` : ''}${cappedByPricing ? ` (capped by pricing height)` : ''}`);
+  const cappedByPricing = effectiveEndHeight < rpcHeight - 1 && effectiveEndHeight === txPricingCap;
+  console.log(`Starting height: ${startingHeight} | Ending height: ${effectiveEndHeight}${configEndBlock > 0 ? ` (capped by END_BLOCK)` : ''}${cappedByPricing ? (pricingHeight < HF_V1_BLOCK_HEIGHT ? ` (pre-V1 boundary)` : ` (capped by pricing height)`) : ''}`);
 
   if (process.env.WALKTHROUGH_MODE === "true") {
     await fs.writeFile(WALKTHROUGH_DEBUG_LOG, "");
@@ -786,85 +817,182 @@ export async function scanTransactions(reset = false) {
   const redisEnabled = useRedis();
   const pipeline = redisEnabled ? redis.pipeline() as Pipeline : null;
 
-  for (let height = startingHeight; height <= effectiveEndHeight; height++) {
-    const blockHashes: string[] = [];
-    const postgresBlockTransactions: ConversionTransactionRecord[] = [];
-    const block: any = await getBlock(height);
-    if (!block) {
-      console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
-      await setStoredTxHeight(height);
-      return;
-    }
+  // Block reward batching buffer (postgres only)
+  const blockRewardBuffer: BlockRewardRecord[] = [];
 
-    if (height % progressStep === 0 || height === effectiveEndHeight - 1) {
-      const percentComplete = (((height - startingHeight) / (effectiveEndHeight - startingHeight)) * 100).toFixed(2);
-      console.log(`TXs SCANNING BLOCK: [${height + 1}/${effectiveEndHeight}] Processed (${percentComplete}%)`);
-    }
+  // Pricing record buffer for pre-V1 blocks (replaces PR scanner for pre-V1)
+  const pricingBuffer: PricingRecordInput[] = [];
+  const canBatchPricing = typeof stores.pricing.saveBatch === "function";
 
-    // console.log(`TXs SCANNING BLOCK: ${height}/${rpcHeight - 1} \t | ${percentComplete}%`);
-
-    const txs: string[] = block.result.tx_hashes || [];
-    const miner_tx = block.result.miner_tx_hash;
-    let totalBlockFeeAtoms = 0n;
-
-    for (const hash of txs) {
-      const { incr_totals, tx_info, feeAtoms } = await processTx(hash, verbose_logs, pipeline);
-      if (incr_totals) {
-        // increment totals
-        for (const key of Object.keys(incr_totals) as (keyof IncrTotals)[]) {
-          total_of_total_increments[key] += incr_totals[key];
-        }
-      }
-      if (tx_info) {
-        blockHashes.push(hash);
-        if (pipeline) {
-          pipeline.hset("txs", hash, JSON.stringify(tx_info));
-        }
-        if (postgresEnabled) {
-          postgresBlockTransactions.push(toPostgresTransactionRecord(tx_info));
-        }
-      }
-      if (typeof feeAtoms === "bigint") {
-        totalBlockFeeAtoms += feeAtoms;
+  const flushPricing = async () => {
+    if (pricingBuffer.length === 0) return;
+    if (canBatchPricing) {
+      await stores.pricing.saveBatch!(pricingBuffer);
+    } else {
+      for (const record of pricingBuffer) {
+        await stores.pricing.save(record);
       }
     }
+    pricingBuffer.length = 0;
+  };
 
-    const { incr_totals: miner_tx_incr_totals, debug: minerDebug } = await processTx(miner_tx, verbose_logs, pipeline, {
-      minerFeeAdjustmentAtoms: totalBlockFeeAtoms,
-    });
-
-    if (process.env.WALKTHROUGH_MODE === "true" && minerDebug) {
-      const headerRewardAtoms = BigInt(block.result?.block_header?.reward ?? 0);
-      const debugLine = {
-        block_height: height,
-        header_reward_atoms: headerRewardAtoms.toString(),
-        fee_atoms: minerDebug.feeAdjustmentAtoms.toString(),
-        reconstructed_base_atoms: minerDebug.baseRewardAtoms.toString(),
-        reserve_reward_atoms: minerDebug.reserveRewardAtoms.toString(),
-        miner_share_atoms: minerDebug.minerRewardAtoms.toString(),
-      };
-      await fs.appendFile(WALKTHROUGH_DEBUG_LOG, `${JSON.stringify(debugLine)}\n`);
+  const flushBlockRewards = async (upToHeight: number) => {
+    if (pricingBuffer.length > 0) await flushPricing();
+    if (postgresEnabled && blockRewardBuffer.length > 0) {
+      await upsertBlockRewardBatch(blockRewardBuffer);
+      blockRewardBuffer.length = 0;
     }
-
-    for (const key of Object.keys(miner_tx_incr_totals) as (keyof IncrTotals)[]) {
-      total_of_total_increments[key] += miner_tx_incr_totals[key];
-    }
-
-    if (pipeline) {
-      pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
-    }
-
-    if (postgresEnabled && postgresBlockTransactions.length > 0) {
-      await insertTransactions(postgresBlockTransactions);
-    }
-
-    // In postgres mode, advance height per-block so a crash doesn't leave
-    // height_txs behind height_prs (which causes "No block reward info" spam).
-    // In redis mode, height is set once after the pipeline executes.
     if (postgresEnabled && !redisEnabled) {
-      await setStoredTxHeight(height);
+      await setStoredTxHeight(upToHeight);
+    }
+  };
+
+  // Process blocks in chunks with concurrent RPC fetching
+  let aborted = false;
+  for (let chunkStart = startingHeight; chunkStart <= effectiveEndHeight && !aborted; chunkStart += RPC_CHUNK_SIZE) {
+    const chunkEnd = Math.min(chunkStart + RPC_CHUNK_SIZE - 1, effectiveEndHeight);
+    const heights = Array.from({ length: chunkEnd - chunkStart + 1 }, (_, i) => chunkStart + i);
+
+    // Fetch all blocks in this chunk concurrently
+    const blocks = await fetchConcurrent(heights, (h) => getBlock(h), RPC_CONCURRENCY);
+
+    // Process each block sequentially
+    for (let i = 0; i < heights.length; i++) {
+      const height = heights[i];
+      const block = blocks[i];
+      const blockHashes: string[] = [];
+      const postgresBlockTransactions: ConversionTransactionRecord[] = [];
+
+      if (!block) {
+        console.log(`${height}/${effectiveEndHeight} - No block info found, exiting try later`);
+        await flushBlockRewards(height);
+        aborted = true;
+        return;
+      }
+
+      if (height % progressStep === 0 || height === effectiveEndHeight - 1) {
+        const percentComplete = (((height - startingHeight) / (effectiveEndHeight - startingHeight)) * 100).toFixed(2);
+        console.log(`TXs SCANNING BLOCK: [${height + 1}/${effectiveEndHeight}] Processed (${percentComplete}%)`);
+      }
+
+      // Pre-V1 fast path: handles all pre-V1 blocks (including genesis).
+      // Saves pricing record (zeros + timestamp) and block reward directly,
+      // eliminating the PR scanner and get_transactions RPC for pre-V1 blocks.
+      if (height < HF_V1_BLOCK_HEIGHT) {
+        // Save zero-value pricing record (replaces PR scanner for pre-V1)
+        pricingBuffer.push({
+          blockHeight: height,
+          timestamp: block.result.block_header.timestamp,
+          spot: 0, movingAverage: 0, reserve: 0, reserveMa: 0,
+          stable: 0, stableMa: 0, yieldPrice: 0,
+        });
+
+        // Store block hash for reorg detection (Redis only)
+        if (pipeline) pipeline.hset("block_hashes", height, block.result.block_header.hash);
+
+        if (height === 0) {
+          // Genesis: save all-zero block reward (aggregator handles 500K treasury)
+          await saveBlockRewardInfo(0, 0, 0, 0, 0, pipeline, {
+            miner: 0n, governance: 0n, reserve: 0n, yield: 0n, base: 0n, feeAdjustment: 0n,
+          }, blockRewardBuffer);
+        } else {
+          // Extract reward from block.result.json
+          const blockJson = JSON.parse(block.result.json);
+          const vout = blockJson.miner_tx?.vout;
+          const governanceAtoms = BigInt(vout[1].amount);
+          const minerShareAtoms = BigInt(vout[0].amount);
+          const baseRewardAtoms = governanceAtoms * 20n;
+          const minerRewardAtoms = baseRewardAtoms - governanceAtoms;
+          const feeAdjustmentAtoms = minerShareAtoms - minerRewardAtoms;
+
+          await saveBlockRewardInfo(height, atomsToDecimal(minerShareAtoms), atomsToDecimal(governanceAtoms), 0, 0, pipeline, {
+            miner: minerShareAtoms, governance: governanceAtoms,
+            reserve: 0n, yield: 0n, base: baseRewardAtoms, feeAdjustment: feeAdjustmentAtoms,
+          }, blockRewardBuffer);
+
+          total_of_total_increments.miner_reward += atomsToDecimal(minerShareAtoms);
+          total_of_total_increments.governance_reward += atomsToDecimal(governanceAtoms);
+        }
+
+        if (pipeline) pipeline.hset("txs_by_block", height.toString(), JSON.stringify([]));
+
+        if (blockRewardBuffer.length >= BLOCK_REWARD_BATCH_SIZE || pricingBuffer.length >= PRICING_BATCH_SIZE) {
+          await flushBlockRewards(height);
+        }
+        continue;
+      }
+
+      const txs: string[] = block.result.tx_hashes || [];
+      const miner_tx = block.result.miner_tx_hash;
+      let totalBlockFeeAtoms = 0n;
+
+      // Batch-fetch all transactions (regular txs + miner_tx) in a single RPC call
+      const allHashes = [...txs, miner_tx];
+      const batchData = await readTxBatch(allHashes);
+
+      for (const hash of txs) {
+        const prefetchedTxData = batchData?.get(hash) ?? null;
+        const { incr_totals, tx_info, feeAtoms } = await processTx(hash, verbose_logs, pipeline, { prefetchedTxData, blockRewardBuffer });
+        if (incr_totals) {
+          for (const key of Object.keys(incr_totals) as (keyof IncrTotals)[]) {
+            total_of_total_increments[key] += incr_totals[key];
+          }
+        }
+        if (tx_info) {
+          blockHashes.push(hash);
+          if (pipeline) {
+            pipeline.hset("txs", hash, JSON.stringify(tx_info));
+          }
+          if (postgresEnabled) {
+            postgresBlockTransactions.push(toPostgresTransactionRecord(tx_info));
+          }
+        }
+        if (typeof feeAtoms === "bigint") {
+          totalBlockFeeAtoms += feeAtoms;
+        }
+      }
+
+      const minerPrefetchedData = batchData?.get(miner_tx) ?? null;
+      const { incr_totals: miner_tx_incr_totals, debug: minerDebug } = await processTx(miner_tx, verbose_logs, pipeline, {
+        minerFeeAdjustmentAtoms: totalBlockFeeAtoms,
+        prefetchedTxData: minerPrefetchedData,
+        blockRewardBuffer,
+      });
+
+      if (process.env.WALKTHROUGH_MODE === "true" && minerDebug) {
+        const headerRewardAtoms = BigInt(block.result?.block_header?.reward ?? 0);
+        const debugLine = {
+          block_height: height,
+          header_reward_atoms: headerRewardAtoms.toString(),
+          fee_atoms: minerDebug.feeAdjustmentAtoms.toString(),
+          reconstructed_base_atoms: minerDebug.baseRewardAtoms.toString(),
+          reserve_reward_atoms: minerDebug.reserveRewardAtoms.toString(),
+          miner_share_atoms: minerDebug.minerRewardAtoms.toString(),
+        };
+        await fs.appendFile(WALKTHROUGH_DEBUG_LOG, `${JSON.stringify(debugLine)}\n`);
+      }
+
+      for (const key of Object.keys(miner_tx_incr_totals) as (keyof IncrTotals)[]) {
+        total_of_total_increments[key] += miner_tx_incr_totals[key];
+      }
+
+      if (pipeline) {
+        pipeline.hset("txs_by_block", height.toString(), JSON.stringify(blockHashes));
+      }
+
+      if (postgresEnabled && postgresBlockTransactions.length > 0) {
+        await insertTransactions(postgresBlockTransactions);
+      }
+
+      // Flush block rewards in batches
+      if (blockRewardBuffer.length >= BLOCK_REWARD_BATCH_SIZE) {
+        await flushBlockRewards(height);
+      }
     }
   }
+
+  // Flush remaining block rewards
+  await flushBlockRewards(effectiveEndHeight);
 
   if (pipeline) {
     for (const key of Object.keys(total_of_total_increments) as (keyof IncrTotals)[]) {

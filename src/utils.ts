@@ -21,7 +21,7 @@ import {
   setDailyTimestamp,
   setHourlyTimestamp,
 } from "./scannerState";
-import { getTotals as getTotalsRow } from "./db/totals";
+import { calculateTotalsFromPostgres } from "./db/totals";
 import {
   upsertReserveSnapshot,
   getLatestReserveSnapshotRow,
@@ -765,36 +765,71 @@ export async function readTx(hash: string) {
   }
 }
 
-export async function getTotalsFromRedis() {
-  if (usePostgres()) {
-    const totalsRow = await getTotalsRow();
-    if (totalsRow) {
-      return {
-        conversion_transactions: totalsRow.conversionTransactions,
-        yield_conversion_transactions: totalsRow.yieldConversionTransactions,
-        mint_reserve_count: totalsRow.mintReserveCount,
-        mint_reserve_volume: totalsRow.mintReserveVolume,
-        fees_zephrsv: totalsRow.feesZephrsv,
-        redeem_reserve_count: totalsRow.redeemReserveCount,
-        redeem_reserve_volume: totalsRow.redeemReserveVolume,
-        fees_zephusd: totalsRow.feesZephusd,
-        mint_stable_count: totalsRow.mintStableCount,
-        mint_stable_volume: totalsRow.mintStableVolume,
-        redeem_stable_count: totalsRow.redeemStableCount,
-        redeem_stable_volume: totalsRow.redeemStableVolume,
-        fees_zeph: totalsRow.feesZeph,
-        mint_yield_count: totalsRow.mintYieldCount,
-        mint_yield_volume: totalsRow.mintYieldVolume,
-        fees_zyield: totalsRow.feesZyield,
-        redeem_yield_count: totalsRow.redeemYieldCount,
-        redeem_yield_volume: totalsRow.redeemYieldVolume,
-        fees_zephusd_yield: totalsRow.feesZephusdYield,
-        miner_reward: totalsRow.minerReward,
-        governance_reward: totalsRow.governanceReward,
-        reserve_reward: totalsRow.reserveReward,
-        yield_reward: totalsRow.yieldReward,
-      };
+export async function readTxBatch(hashes: string[]): Promise<Map<string, any> | null> {
+  if (hashes.length === 0) return new Map();
+  try {
+    const response = await fetch(`${RPC_URL}/get_transactions`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        txs_hashes: hashes,
+        decode_as_json: true,
+      }),
+      agent,
+    });
+
+    if (!response.ok) {
+      console.error(`readTxBatch: HTTP error! status: ${response.status}`);
+      return null;
     }
+
+    const data: any = await response.json();
+    const result = new Map<string, any>();
+
+    // Map each tx by its hash. The daemon returns txs in the same order as requested.
+    const txs: any[] = data?.txs ?? [];
+    for (const tx of txs) {
+      const txHash = tx?.tx_hash;
+      if (txHash) {
+        result.set(txHash, { txs: [tx] });
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error("readTxBatch: Error fetching transactions:", error);
+    return null;
+  }
+}
+
+export async function getTotalsSummaryData() {
+  if (usePostgres()) {
+    const totals = await calculateTotalsFromPostgres();
+    return {
+      conversion_transactions: totals.conversionTransactions,
+      yield_conversion_transactions: totals.yieldConversionTransactions,
+      mint_reserve_count: totals.mintReserveCount,
+      mint_reserve_volume: totals.mintReserveVolume,
+      fees_zephrsv: totals.feesZephrsv,
+      redeem_reserve_count: totals.redeemReserveCount,
+      redeem_reserve_volume: totals.redeemReserveVolume,
+      fees_zephusd: totals.feesZephusd,
+      mint_stable_count: totals.mintStableCount,
+      mint_stable_volume: totals.mintStableVolume,
+      redeem_stable_count: totals.redeemStableCount,
+      redeem_stable_volume: totals.redeemStableVolume,
+      fees_zeph: totals.feesZeph,
+      mint_yield_count: totals.mintYieldCount,
+      mint_yield_volume: totals.mintYieldVolume,
+      fees_zyield: totals.feesZyield,
+      redeem_yield_count: totals.redeemYieldCount,
+      redeem_yield_volume: totals.redeemYieldVolume,
+      fees_zephusd_yield: totals.feesZephusdYield,
+      miner_reward: totals.minerReward,
+      governance_reward: totals.governanceReward,
+      reserve_reward: totals.reserveReward,
+      yield_reward: totals.yieldReward,
+    };
   }
   if (!useRedis()) return null;
   const totals = await redis.hgetall("totals");

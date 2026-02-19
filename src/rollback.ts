@@ -25,8 +25,6 @@ import { deleteBlockStatsAboveHeight, deleteAggregatesFromTimestamp } from "./db
 import { getPrismaClient } from "./db";
 import { clearPostgresAggregationState, truncatePostgresData } from "./db/admin";
 import {
-  LEGACY_GOVERNANCE_REWARD_BASELINE,
-  LEGACY_MINER_REWARD_BASELINE,
   calculateTotalsFromPostgres,
   setTotals as setSqlTotals,
   TotalsRecord,
@@ -36,8 +34,6 @@ import {
 function writeLogToFile(logContent: string) {
   fs.appendFileSync('totals_log.txt', logContent + '\n', 'utf8');
 }
-
-const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 
 interface RedisTotals {
   conversion_transactions: number;
@@ -328,7 +324,7 @@ async function setBlockHashesIfEmpty() {
   }
 
   console.log("block_hashes does not exist, setting block hashes...");
-  const starting_height = 89300;
+  const starting_height = 0;
   const ending_height = Number(await redis.get("height_prs"));
   if (!ending_height) {
     console.log("height_prs not found, skipping...");
@@ -416,8 +412,8 @@ export async function retallyTotals() {
     redeem_yield_count: 0,
     redeem_yield_volume: 0,
     fees_zephusd_yield: 0,
-    miner_reward: LEGACY_MINER_REWARD_BASELINE,
-    governance_reward: LEGACY_GOVERNANCE_REWARD_BASELINE,
+    miner_reward: 0,
+    governance_reward: 0,
     reserve_reward: 0,
     yield_reward: 0,
   };
@@ -641,7 +637,7 @@ export async function retallyTotals() {
     _______________________________________________________`)
 
   // Populate the totals with the rewards from block reward info
-  const starting_height = 89300;
+  const starting_height = 0;
   for (let height = starting_height; height <= currentBlockHeight; height++) {
     try {
       const bri = await getRedisBlockRewardInfo(height);

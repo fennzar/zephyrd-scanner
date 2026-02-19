@@ -229,6 +229,61 @@ export async function saveBlockProtocolStats(stats: ProtocolStats): Promise<void
   });
 }
 
+export async function saveBlockProtocolStatsBatch(statsBatch: ProtocolStats[]): Promise<void> {
+  if (statsBatch.length === 0) return;
+  const prisma = getPrismaClient();
+
+  const cols = [
+    "block_height", "block_timestamp", "spot", "moving_average", "reserve", "reserve_ma",
+    "stable", "stable_ma", "yield_price", "zeph_in_reserve", "zeph_in_reserve_atoms",
+    "zsd_in_yield_reserve", "zeph_circ", "zephusd_circ", "zephrsv_circ", "zyield_circ",
+    "assets", "assets_ma", "liabilities", "equity", "equity_ma", "reserve_ratio", "reserve_ratio_ma",
+    "zsd_accrued_in_yield_reserve_from_yield_reward", "zsd_minted_for_yield",
+    "conversion_transactions_count", "yield_conversion_transactions_count",
+    "mint_reserve_count", "mint_reserve_volume", "fees_zephrsv",
+    "redeem_reserve_count", "redeem_reserve_volume", "fees_zephusd",
+    "mint_stable_count", "mint_stable_volume", "redeem_stable_count", "redeem_stable_volume",
+    "fees_zeph", "mint_yield_count", "mint_yield_volume", "redeem_yield_count", "redeem_yield_volume",
+    "fees_zephusd_yield", "fees_zyield",
+  ];
+  const colCount = cols.length;
+
+  const placeholders: string[] = [];
+  const values: (number | string | null)[] = [];
+  let idx = 1;
+
+  for (const s of statsBatch) {
+    const rr = finiteOrNull(s.reserve_ratio ?? null);
+    const rrma = finiteOrNull(s.reserve_ratio_ma ?? null);
+    const phArr: string[] = [];
+    for (let c = 0; c < colCount; c++) {
+      phArr.push(`$${idx++}`);
+    }
+    placeholders.push(`(${phArr.join(", ")})`);
+    values.push(
+      s.block_height, s.block_timestamp, s.spot, s.moving_average, s.reserve, s.reserve_ma,
+      s.stable, s.stable_ma, s.yield_price, s.zeph_in_reserve, s.zeph_in_reserve_atoms ?? null,
+      s.zsd_in_yield_reserve, s.zeph_circ, s.zephusd_circ, s.zephrsv_circ, s.zyield_circ,
+      s.assets, s.assets_ma, s.liabilities, s.equity, s.equity_ma, rr, rrma,
+      s.zsd_accrued_in_yield_reserve_from_yield_reward, s.zsd_minted_for_yield,
+      s.conversion_transactions_count, s.yield_conversion_transactions_count,
+      s.mint_reserve_count, s.mint_reserve_volume, s.fees_zephrsv,
+      s.redeem_reserve_count, s.redeem_reserve_volume, s.fees_zephusd,
+      s.mint_stable_count, s.mint_stable_volume, s.redeem_stable_count, s.redeem_stable_volume,
+      s.fees_zeph, s.mint_yield_count, s.mint_yield_volume, s.redeem_yield_count, s.redeem_yield_volume,
+      s.fees_zephusd_yield, s.fees_zyield,
+    );
+  }
+
+  const updateCols = cols.slice(1).map(c => `${c} = EXCLUDED.${c}`).join(", ");
+
+  const sql = `INSERT INTO protocol_stats (${cols.join(", ")})
+VALUES ${placeholders.join(", ")}
+ON CONFLICT (block_height) DO UPDATE SET ${updateCols}`;
+
+  await prisma.$executeRawUnsafe(sql, ...values);
+}
+
 export async function saveAggregatedProtocolStats(
   scale: "hour" | "day",
   windowStart: number,
@@ -252,6 +307,103 @@ export async function saveAggregatedProtocolStats(
       create: payload,
     });
   }
+}
+
+interface AggregatedBatchEntry {
+  windowStart: number;
+  windowEnd: number | undefined;
+  data: AggregatedData;
+  pending: boolean;
+}
+
+export async function saveAggregatedProtocolStatsBatch(
+  scale: "hour" | "day",
+  entries: AggregatedBatchEntry[]
+): Promise<void> {
+  if (entries.length === 0) return;
+  const prisma = getPrismaClient();
+  const tableName = scale === "hour" ? "protocol_stats_hourly" : "protocol_stats_daily";
+
+  const cols = [
+    "window_start", "window_end", "pending",
+    "spot_open", "spot_close", "spot_high", "spot_low",
+    "moving_average_open", "moving_average_close", "moving_average_high", "moving_average_low",
+    "reserve_open", "reserve_close", "reserve_high", "reserve_low",
+    "reserve_ma_open", "reserve_ma_close", "reserve_ma_high", "reserve_ma_low",
+    "stable_open", "stable_close", "stable_high", "stable_low",
+    "stable_ma_open", "stable_ma_close", "stable_ma_high", "stable_ma_low",
+    "zyield_price_open", "zyield_price_close", "zyield_price_high", "zyield_price_low",
+    "zeph_in_reserve_open", "zeph_in_reserve_close", "zeph_in_reserve_high", "zeph_in_reserve_low",
+    "zsd_in_yield_reserve_open", "zsd_in_yield_reserve_close", "zsd_in_yield_reserve_high", "zsd_in_yield_reserve_low",
+    "zeph_circ_open", "zeph_circ_close", "zeph_circ_high", "zeph_circ_low",
+    "zephusd_circ_open", "zephusd_circ_close", "zephusd_circ_high", "zephusd_circ_low",
+    "zephrsv_circ_open", "zephrsv_circ_close", "zephrsv_circ_high", "zephrsv_circ_low",
+    "zyield_circ_open", "zyield_circ_close", "zyield_circ_high", "zyield_circ_low",
+    "assets_open", "assets_close", "assets_high", "assets_low",
+    "assets_ma_open", "assets_ma_close", "assets_ma_high", "assets_ma_low",
+    "liabilities_open", "liabilities_close", "liabilities_high", "liabilities_low",
+    "equity_open", "equity_close", "equity_high", "equity_low",
+    "equity_ma_open", "equity_ma_close", "equity_ma_high", "equity_ma_low",
+    "reserve_ratio_open", "reserve_ratio_close", "reserve_ratio_high", "reserve_ratio_low",
+    "reserve_ratio_ma_open", "reserve_ratio_ma_close", "reserve_ratio_ma_high", "reserve_ratio_ma_low",
+    "conversion_transactions_count", "yield_conversion_transactions_count",
+    "mint_reserve_count", "mint_reserve_volume", "fees_zephrsv",
+    "redeem_reserve_count", "redeem_reserve_volume", "fees_zephusd",
+    "mint_stable_count", "mint_stable_volume", "redeem_stable_count", "redeem_stable_volume",
+    "fees_zeph", "mint_yield_count", "mint_yield_volume",
+    "fees_zyield", "redeem_yield_count", "redeem_yield_volume", "fees_zephusd_yield",
+  ];
+  const colCount = cols.length;
+
+  const placeholders: string[] = [];
+  const values: (number | string | boolean | null)[] = [];
+  let idx = 1;
+
+  for (const entry of entries) {
+    const d = entry.data;
+    const phArr: string[] = [];
+    for (let c = 0; c < colCount; c++) {
+      phArr.push(`$${idx++}`);
+    }
+    placeholders.push(`(${phArr.join(", ")})`);
+    values.push(
+      entry.windowStart, entry.windowEnd ?? null, entry.pending,
+      d.spot_open, d.spot_close, d.spot_high, d.spot_low,
+      d.moving_average_open, d.moving_average_close, d.moving_average_high, d.moving_average_low,
+      d.reserve_open, d.reserve_close, d.reserve_high, d.reserve_low,
+      d.reserve_ma_open, d.reserve_ma_close, d.reserve_ma_high, d.reserve_ma_low,
+      d.stable_open, d.stable_close, d.stable_high, d.stable_low,
+      d.stable_ma_open, d.stable_ma_close, d.stable_ma_high, d.stable_ma_low,
+      d.zyield_price_open, d.zyield_price_close, d.zyield_price_high, d.zyield_price_low,
+      d.zeph_in_reserve_open, d.zeph_in_reserve_close, d.zeph_in_reserve_high, d.zeph_in_reserve_low,
+      d.zsd_in_yield_reserve_open, d.zsd_in_yield_reserve_close, d.zsd_in_yield_reserve_high, d.zsd_in_yield_reserve_low,
+      d.zeph_circ_open, d.zeph_circ_close, d.zeph_circ_high, d.zeph_circ_low,
+      d.zephusd_circ_open, d.zephusd_circ_close, d.zephusd_circ_high, d.zephusd_circ_low,
+      d.zephrsv_circ_open, d.zephrsv_circ_close, d.zephrsv_circ_high, d.zephrsv_circ_low,
+      d.zyield_circ_open, d.zyield_circ_close, d.zyield_circ_high, d.zyield_circ_low,
+      d.assets_open, d.assets_close, d.assets_high, d.assets_low,
+      d.assets_ma_open, d.assets_ma_close, d.assets_ma_high, d.assets_ma_low,
+      d.liabilities_open, d.liabilities_close, d.liabilities_high, d.liabilities_low,
+      d.equity_open, d.equity_close, d.equity_high, d.equity_low,
+      d.equity_ma_open, d.equity_ma_close, d.equity_ma_high, d.equity_ma_low,
+      d.reserve_ratio_open, d.reserve_ratio_close, d.reserve_ratio_high, d.reserve_ratio_low,
+      d.reserve_ratio_ma_open, d.reserve_ratio_ma_close, d.reserve_ratio_ma_high, d.reserve_ratio_ma_low,
+      d.conversion_transactions_count, d.yield_conversion_transactions_count,
+      d.mint_reserve_count, d.mint_reserve_volume, d.fees_zephrsv,
+      d.redeem_reserve_count, d.redeem_reserve_volume, d.fees_zephusd,
+      d.mint_stable_count, d.mint_stable_volume, d.redeem_stable_count, d.redeem_stable_volume,
+      d.fees_zeph, d.mint_yield_count, d.mint_yield_volume,
+      d.fees_zyield, d.redeem_yield_count, d.redeem_yield_volume, d.fees_zephusd_yield,
+    );
+  }
+
+  const updateCols = cols.slice(1).map(c => `${c} = EXCLUDED.${c}`).join(", ");
+
+  const sql = `INSERT INTO ${tableName} (${cols.join(", ")})
+VALUES ${placeholders.join(", ")}
+ON CONFLICT (window_start) DO UPDATE SET ${updateCols}`;
+
+  await prisma.$executeRawUnsafe(sql, ...values);
 }
 
 export async function fetchBlockProtocolStats(

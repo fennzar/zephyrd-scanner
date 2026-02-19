@@ -174,6 +174,48 @@ export async function getTransactionsByBlock(blockHeight: number): Promise<Conve
   return rows.map(fromPrismaRow);
 }
 
+export async function getTransactionsByBlockRange(fromHeight: number, toHeight: number): Promise<Map<number, ConversionTransactionRecord[]>> {
+  const prisma = getPrismaClient();
+  const rows = await prisma.conversionTransaction.findMany({
+    where: {
+      blockHeight: { gte: fromHeight, lte: toHeight },
+    },
+    orderBy: [
+      { blockHeight: "asc" },
+      { hash: "asc" },
+    ],
+  });
+  const map = new Map<number, ConversionTransactionRecord[]>();
+  for (const row of rows) {
+    const record = fromPrismaRow(row);
+    const existing = map.get(row.blockHeight);
+    if (existing) {
+      existing.push(record);
+    } else {
+      map.set(row.blockHeight, [record]);
+    }
+  }
+  return map;
+}
+
+/**
+ * Returns cumulative to_amount for each audit conversion type (audit_zsd, audit_zrs, etc.).
+ * Used by the aggregator at V11 to derive circ values from chain data instead of hardcoding.
+ */
+export async function getAuditTotals(): Promise<Record<string, number>> {
+  const prisma = getPrismaClient();
+  const results = await prisma.conversionTransaction.groupBy({
+    by: ["conversionType"],
+    _sum: { toAmount: true },
+    where: { conversionType: { startsWith: "audit_" } },
+  });
+  const totals: Record<string, number> = {};
+  for (const row of results) {
+    totals[row.conversionType] = row._sum.toAmount ?? 0;
+  }
+  return totals;
+}
+
 export async function getTransactionsByHashes(hashes: string[]): Promise<ConversionTransactionRecord[]> {
   if (hashes.length === 0) {
     return [];

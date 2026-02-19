@@ -29,30 +29,39 @@ import {
   HOURLY_PENDING_KEY,
   DAILY_PENDING_KEY,
 } from "./utils";
-import { UNAUDITABLE_ZEPH_MINT } from "./constants";
+import { INITIAL_TREASURY_ZEPH, UNAUDITABLE_ZEPH_MINT, HF_V1_BLOCK_HEIGHT } from "./constants";
 import { logAggregatedSummary, logReserveDiffReport, logReserveHeights, logReserveSnapshotStatus } from "./logger";
-import { usePostgres, useRedis } from "./config";
+import { usePostgres, useRedis, getStartBlock } from "./config";
 import {
   saveBlockProtocolStats,
-  saveAggregatedProtocolStats,
+  saveBlockProtocolStatsBatch,
+  saveAggregatedProtocolStatsBatch,
   fetchBlockProtocolStatsByTimestampRange,
   getProtocolStatsBlock,
 } from "./db/protocolStats";
 import {
   getTransactionsByBlock,
-  getTransactionsByHashes,
+  getTransactionsByBlockRange,
+  getAuditTotals,
   type ConversionTransactionRecord,
 } from "./db/transactions";
+import { getBlockRewardRange, type BlockRewardRecord } from "./db/blockRewards";
+import { getPricingRecordRange } from "./storage/postgres";
+import type { PricingRecordResult } from "./storage/types";
 import { setAggregatorHeight, setDailyTimestamp, setHourlyTimestamp, getTransactionHeight } from "./scannerState";
 // const DEATOMIZE = 10 ** -12;
-const HF_VERSION_1_HEIGHT = 89300;
-const HF_VERSION_1_TIMESTAMP = 1696152427;
-
 const ARTEMIS_HF_V5_BLOCK_HEIGHT = 295000;
 
 const VERSION_2_HF_V6_BLOCK_HEIGHT = 360000;
 const VERSION_2_HF_V6_TIMESTAMP = 1728817200; // ESTIMATED. TO BE UPDATED?
 const VERSION_2_3_0_HF_V11_BLOCK_HEIGHT = 536000; // Post Audit, asset type changes.
+
+// Effective start of aggregation data — respects START_BLOCK env var.
+// At this height (and height+1), missing prevBlockData is expected.
+function getEffectiveStart(): number {
+  const configStart = getStartBlock();
+  return configStart > 0 ? configStart : 0;
+}
 
 const RESERVE_SNAPSHOT_INTERVAL = RESERVE_SNAPSHOT_INTERVAL_BLOCKS;
 const ATOMIC_UNITS = 1_000_000_000_000n; // 1 ZEPH/ZSD in atomic units
@@ -135,6 +144,11 @@ interface BlockRewardInfo {
   fee_adjustment_atoms?: string;
 }
 
+function atomStringToDecimal(atomStr: string): number {
+  const atoms = BigInt(atomStr);
+  return Number(atoms / 1_000_000_000_000n) + Number(atoms % 1_000_000_000_000n) / 1e12;
+}
+
 function convertZephToZsd(amountZeph: number, stable: number, stableMA: number, blockHeight: number): number {
   if (!amountZeph || amountZeph <= 0) {
     return 0;
@@ -181,6 +195,33 @@ interface Transaction {
 }
 
 const transactionCache = new Map<number, Transaction[]>();
+
+const AGGREGATOR_CHUNK_SIZE = 500;
+
+interface ChunkCache {
+  fromHeight: number;
+  toHeight: number;
+  pricingRecords: Map<number, PricingRecordResult>;
+  blockRewards: Map<number, BlockRewardRecord>;
+  transactions: Map<number, Transaction[]>;
+}
+
+let chunkCache: ChunkCache | null = null;
+
+async function preloadChunk(fromHeight: number, toHeight: number): Promise<void> {
+  if (usePostgres()) {
+    const [prMap, brMap, txMap] = await Promise.all([
+      getPricingRecordRange(fromHeight, toHeight),
+      getBlockRewardRange(fromHeight, toHeight),
+      getTransactionsByBlockRange(fromHeight, toHeight),
+    ]);
+    const mappedTxs = new Map<number, Transaction[]>();
+    for (const [height, records] of txMap) {
+      mappedTxs.set(height, records.map(mapDbTransaction));
+    }
+    chunkCache = { fromHeight, toHeight, pricingRecords: prMap, blockRewards: brMap, transactions: mappedTxs };
+  }
+}
 
 function mapDbTransaction(record: ConversionTransactionRecord): Transaction {
   return {
@@ -355,7 +396,9 @@ export async function aggregate() {
 
   // by block
   const height_by_block = await getScannerHeight(); // where we are at in the data aggregation
-  const height_to_process = Math.max(height_by_block + 1, HF_VERSION_1_HEIGHT); // only process from HF_VERSION_1_HEIGHT
+  const configStartBlock = getStartBlock();
+  const effectiveStart = configStartBlock > 0 ? configStartBlock : 0;
+  const height_to_process = Math.max(height_by_block + 1, effectiveStart);
 
   // Aggregate only up to the minimum of pricing and tx heights — both inputs are required
   const lastBlockToProcess = Math.min(current_height_prs, current_height_txs);
@@ -372,15 +415,93 @@ export async function aggregate() {
     const progressInterval = Math.max(1, Math.floor(totalBlocks / 20));
 
     let aggregationAborted = false;
-    for (let i = height_to_process; i <= lastBlockToProcess; i++) {
-      const shouldLog = i === lastBlockToProcess || (i - height_to_process) % progressInterval === 0;
-      const ok = await aggregateBlock(i, shouldLog);
-      if (!ok) {
-        console.error(`[aggregate] Block aggregation halted at height ${i}. Skipping remaining blocks.`);
-        aggregationAborted = true;
-        break;
+    let prevBlockStats: ProtocolStats | undefined = undefined;
+    const STATS_FLUSH_SIZE = 200;
+    let statsBatch: ProtocolStats[] = [];
+
+    const flushStatsBatch = async () => {
+      if (statsBatch.length === 0) return;
+      if (usePostgres()) {
+        await saveBlockProtocolStatsBatch(statsBatch);
+        await setAggregatorHeight(statsBatch[statsBatch.length - 1].block_height);
       }
+      statsBatch = [];
+    };
+
+    for (let chunkStart = height_to_process; chunkStart <= lastBlockToProcess; chunkStart += AGGREGATOR_CHUNK_SIZE) {
+      const chunkEnd = Math.min(chunkStart + AGGREGATOR_CHUNK_SIZE - 1, lastBlockToProcess);
+
+      // Preload all data for this chunk in 3 parallel queries
+      if (usePostgres()) {
+        await preloadChunk(chunkStart, chunkEnd);
+      }
+
+      for (let i = chunkStart; i <= chunkEnd; i++) {
+        const shouldLog = i === lastBlockToProcess || (i - height_to_process) % progressInterval === 0;
+
+        // Pre-V1 fast path: no conversions, no reserve, all prices zero.
+        // Read directly from chunk cache, skip aggregateBlock() entirely.
+        if (i < HF_V1_BLOCK_HEIGHT && chunkCache) {
+          const prRaw = chunkCache.pricingRecords.get(i);
+          const brRaw = chunkCache.blockRewards.get(i);
+          if (!brRaw) {
+            console.error(`[aggregate] No block reward at height ${i}, aborting`);
+            aggregationAborted = true;
+            break;
+          }
+
+          const prevZephCirc = prevBlockStats?.zeph_circ ?? 0;
+          // Use base_reward_atoms (fee-excluded emission) to match daemon's already_generated_coins.
+          // minerReward is vout[0] which includes tx fees — fees are transfers, not new coins.
+          const blockReward = brRaw.baseRewardAtoms
+            ? atomStringToDecimal(brRaw.baseRewardAtoms)
+            : (brRaw.minerReward ?? 0) + (brRaw.governanceReward ?? 0);
+          const zephCirc = prevZephCirc + blockReward + (i === 0 ? INITIAL_TREASURY_ZEPH : 0);
+
+          const fastStats: ProtocolStats = {
+            block_height: i,
+            block_timestamp: prRaw?.timestamp ?? 0,
+            spot: 0, moving_average: 0, reserve: 0, reserve_ma: 0,
+            stable: 0, stable_ma: 0, yield_price: 0,
+            zeph_in_reserve: 0, zeph_in_reserve_atoms: "0",
+            zsd_in_yield_reserve: 0,
+            zeph_circ: zephCirc,
+            zephusd_circ: 0, zephrsv_circ: 0, zyield_circ: 0,
+            assets: 0, assets_ma: 0, liabilities: 0,
+            equity: 0, equity_ma: 0,
+            reserve_ratio: null, reserve_ratio_ma: null,
+            zsd_accrued_in_yield_reserve_from_yield_reward: 0,
+            ...BLOCK_COUNTER_DEFAULTS,
+          };
+
+          if (shouldLog) console.log(`\tAggregating block: ${i} (pre-V1 fast)`);
+          prevBlockStats = fastStats;
+          statsBatch.push(fastStats);
+          if (statsBatch.length >= STATS_FLUSH_SIZE) await flushStatsBatch();
+          continue;
+        }
+
+        const result = await aggregateBlock(i, shouldLog, 0, prevBlockStats);
+        if (!result) {
+          console.error(`[aggregate] Block aggregation halted at height ${i}. Skipping remaining blocks.`);
+          aggregationAborted = true;
+          break;
+        }
+        prevBlockStats = result;
+        statsBatch.push(result);
+        if (statsBatch.length >= STATS_FLUSH_SIZE) {
+          await flushStatsBatch();
+        }
+      }
+
+      // Clear chunk cache after processing
+      chunkCache = null;
+
+      if (aggregationAborted) break;
     }
+
+    // Flush any remaining buffered stats
+    await flushStatsBatch();
 
     if (aggregationAborted) {
       console.log(`Finished aggregation (aborted early)`);
@@ -393,8 +514,16 @@ export async function aggregate() {
   const timestamp_hourly = await getScannerTimestampHourly();
   const timestamp_daily = await getScannerTimestampDaily();
 
-  await aggregateByTimestamp(Math.max(timestamp_hourly, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "hourly");
-  await aggregateByTimestamp(Math.max(timestamp_daily, HF_VERSION_1_TIMESTAMP), current_pr.timestamp, "daily");
+  // On a fresh scan, stored timestamps are 0. Use the effective start block's
+  // timestamp as a floor to avoid iterating billions of empty windows.
+  let timestampFloor = 0;
+  if (timestamp_hourly === 0 || timestamp_daily === 0) {
+    const startPr = await getPricingRecordFromStore(getEffectiveStart());
+    timestampFloor = startPr?.timestamp ?? 0;
+  }
+
+  await aggregateByTimestamp(Math.max(timestamp_hourly, timestampFloor), current_pr.timestamp, "hourly");
+  await aggregateByTimestamp(Math.max(timestamp_daily, timestampFloor), current_pr.timestamp, "daily");
 
   if (WALKTHROUGH_MODE) {
     await outputWalkthroughDiffReport();
@@ -408,16 +537,76 @@ export async function aggregate() {
 
 const MAX_RECOVERY_DEPTH = 100;
 
-async function loadBlockInputs(height: number, recoveryDepth = 0) {
+async function loadBlockInputs(height: number, recoveryDepth = 0, cachedPrevBlock?: ProtocolStats | null) {
+  const needsPrevBlock = cachedPrevBlock === undefined;
+
+  // Use preloaded chunk cache when available (postgres path)
+  const cc = chunkCache;
+  if (cc && height >= cc.fromHeight && height <= cc.toHeight) {
+    const prRaw = cc.pricingRecords.get(height) ?? null;
+    const pr: PricingRecord | null = prRaw ? {
+      height: prRaw.blockHeight,
+      timestamp: prRaw.timestamp,
+      spot: prRaw.spot,
+      moving_average: prRaw.movingAverage,
+      reserve: prRaw.reserve,
+      reserve_ma: prRaw.reserveMa,
+      stable: prRaw.stable,
+      stable_ma: prRaw.stableMa,
+      yield_price: prRaw.yieldPrice,
+    } : null;
+    const brRecord = cc.blockRewards.get(height) ?? null;
+    const bri: BlockRewardInfo | null = brRecord ? {
+      height: brRecord.blockHeight,
+      miner_reward: brRecord.minerReward,
+      governance_reward: brRecord.governanceReward,
+      reserve_reward: brRecord.reserveReward,
+      yield_reward: brRecord.yieldReward,
+      miner_reward_atoms: brRecord.minerRewardAtoms,
+      governance_reward_atoms: brRecord.governanceRewardAtoms,
+      reserve_reward_atoms: brRecord.reserveRewardAtoms,
+      yield_reward_atoms: brRecord.yieldRewardAtoms,
+      base_reward_atoms: brRecord.baseRewardAtoms,
+      fee_adjustment_atoms: brRecord.feeAdjustmentAtoms,
+    } : null;
+    const txs = cc.transactions.get(height) ?? [];
+    // Populate transactionCache so fetchTransactions() can use it
+    if (txs.length > 0) {
+      transactionCache.set(height, txs);
+    }
+    const txHashes = txs.map(tx => tx.hash);
+    const prevBlockData = needsPrevBlock ? await getProtocolStatsRecord(height - 1) : cachedPrevBlock;
+
+    if (height <= getEffectiveStart() + 1) {
+      return { pr, bri, prevBlockData: prevBlockData ?? null, txHashes };
+    }
+    if (!prevBlockData && height > getEffectiveStart() + 1) {
+      if (recoveryDepth >= MAX_RECOVERY_DEPTH) {
+        console.error(`[loadBlockInputs] FATAL: Recovery depth limit (${MAX_RECOVERY_DEPTH}) reached at height ${height - 1}.`);
+        return { pr, bri, prevBlockData: null, txHashes };
+      }
+      console.warn(`[loadBlockInputs] Missing prevBlockData for height ${height - 1}. Attempting re-aggregation (depth ${recoveryDepth + 1}/${MAX_RECOVERY_DEPTH})...`);
+      await aggregateBlock(height - 1, false, recoveryDepth + 1);
+      const retryData = await getProtocolStatsRecord(height - 1);
+      if (!retryData) {
+        console.error(`[loadBlockInputs] FATAL: Re-aggregation failed for height ${height - 1}.`);
+        return { pr, bri, prevBlockData: null, txHashes };
+      }
+      return { pr, bri, prevBlockData: retryData, txHashes };
+    }
+    return { pr, bri, prevBlockData, txHashes };
+  }
+
+  // Fallback: individual queries (Redis path or cache miss)
   const [pr, bri, prevBlockData, txHashes] = await Promise.all([
     getPricingRecordFromStore(height),
     getRedisBlockRewardInfo(height),
-    getProtocolStatsRecord(height - 1),
+    needsPrevBlock ? getProtocolStatsRecord(height - 1) : Promise.resolve(cachedPrevBlock),
     getTransactionHashesForBlock(height),
   ]);
 
   // At HFv1 start, missing prevBlockData is expected — there's no predecessor
-  if (height <= HF_VERSION_1_HEIGHT + 1) {
+  if (height <= HF_V1_BLOCK_HEIGHT + 1) {
     return { pr, bri, prevBlockData: prevBlockData ?? null, txHashes };
   }
 
@@ -500,26 +689,26 @@ async function fetchTransactions(blockHeight: number, hashes: string[]): Promise
   return txMap;
 }
 
-async function aggregateBlock(height_to_process: number, logProgress = false, recoveryDepth = 0): Promise<boolean> {
+async function aggregateBlock(height_to_process: number, logProgress = false, recoveryDepth = 0, cachedPrevBlock?: ProtocolStats | null): Promise<ProtocolStats | null> {
   if (logProgress) {
     console.log(`\tAggregating block: ${height_to_process}`);
   }
 
-  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process, recoveryDepth);
+  const { pr, bri, prevBlockData, txHashes } = await loadBlockInputs(height_to_process, recoveryDepth, cachedPrevBlock);
 
   if (!pr) {
     console.log("No pricing record found for height: ", height_to_process);
-    return false;
+    return null;
   }
   if (!bri) {
     console.log("No block reward info found for height: ", height_to_process);
-    return false;
+    return null;
   }
 
   // Abort if prevBlockData is missing and recovery failed (post-HFv1)
-  if (!prevBlockData && height_to_process > HF_VERSION_1_HEIGHT + 1) {
+  if (!prevBlockData && height_to_process > getEffectiveStart() + 1) {
     console.error(`[aggregate] ABORT: Cannot aggregate block ${height_to_process} — missing prevBlockData and recovery failed. Height will NOT advance.`);
-    return false;
+    return null;
   }
 
   const transactionsByHash = await fetchTransactions(height_to_process, txHashes);
@@ -549,7 +738,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
         zeph_in_reserve: 0,
         zeph_in_reserve_atoms: undefined as string | undefined,
         zsd_in_yield_reserve: 0,
-        zeph_circ: 1965112.77028345, // circulating supply at HF_VERSION_1_HEIGHT - 1
+        zeph_circ: 0,
         zephusd_circ: 0,
         zephrsv_circ: 0,
         zyield_circ: 0,
@@ -644,17 +833,36 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
 
   const getTxFeeAtoms = (_tx: any) => 0n;
 
-  // We need to reset circulating supply values to the audited amounts on HFv11
+  // At HFv11 the daemon resets ZSD/ZRS/ZYS circ to audited amounts (only coins
+  // explicitly converted via audit txs are counted; unaudited coins are orphaned).
+  // ZEPH is different: the daemon keeps the running total and adds UNAUDITABLE_ZEPH_MINT
+  // (the 1.9M ZEPH minted at block 536000 in vout[2], not captured by processTx).
   if (blockData.block_height === VERSION_2_3_0_HF_V11_BLOCK_HEIGHT + 1) {
-    const audited_zeph_amount = 7_828_285.273529857474;
-    blockData.zeph_circ = audited_zeph_amount + UNAUDITABLE_ZEPH_MINT; // Include post-audit mint
-    blockData.zephusd_circ = 370722.218621489316; // Audited amount at HFv11
-    blockData.zephrsv_circ = 1023512.020210500202; // Audited amount at HFv11
-    blockData.zyield_circ = 185474.354977384066; // Audited amount at HFv11
+    const audit = await getAuditTotals();
+    // ZSD: auto-audited yield reserve + free-floating audited via txs
+    blockData.zephusd_circ = blockData.zsd_in_yield_reserve + (audit.audit_zsd ?? 0);
+    // ZRS: all audited via txs (no secondary reserve)
+    blockData.zephrsv_circ = audit.audit_zrs ?? 0;
+    // ZYS: all audited via txs (no secondary reserve)
+    blockData.zyield_circ = audit.audit_zys ?? 0;
+    // ZEPH: keep running total, just add the unauditable mint
+    blockData.zeph_circ += UNAUDITABLE_ZEPH_MINT;
   }
-  // should instead capture the total_reward! This is so that we don't have redo "saveBlockRewardInfo"
-  blockData.zeph_circ +=
-    (bri?.miner_reward ?? 0) + (bri?.governance_reward ?? 0) + (bri?.reserve_reward ?? 0) + (bri?.yield_reward ?? 0);
+  // Add base_reward (new coins minted this block) to circulating supply.
+  // bri.miner_reward is vout[0] which includes tx fees — fees are transfers, not new coins.
+  // base_reward_atoms is the fee-excluded emission, matching the daemon's already_generated_coins.
+  if (bri?.base_reward_atoms) {
+    blockData.zeph_circ += atomStringToDecimal(bri.base_reward_atoms);
+  } else {
+    blockData.zeph_circ +=
+      (bri?.miner_reward ?? 0) + (bri?.governance_reward ?? 0) + (bri?.reserve_reward ?? 0) + (bri?.yield_reward ?? 0);
+  }
+
+  // Genesis block (block 0): add the 500K ZEPH treasury pre-mine to circulating supply.
+  // This is separate from mining rewards (BlockReward for block 0 is all zeros).
+  if (height_to_process === 0) {
+    blockData.zeph_circ += INITIAL_TREASURY_ZEPH;
+  }
 
   if (block_txs.length !== 0) {
     if (logProgress) {
@@ -777,6 +985,13 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
               console.warn(`[aggregate] ANOMALY: zsd_in_yield_reserve would go negative at height ${height_to_process}: ${prevZsdInYieldReserve} - ${tx.to_amount}`);
             }
             break;
+          case "audit_zeph":
+          case "audit_zsd":
+          case "audit_zrs":
+          case "audit_zys":
+            // Audit txs are 1:1 asset type renames — no economic effect.
+            // Circ and reserve are unchanged; amounts are used at V11 reset.
+            break;
           default:
             console.log(`Unknown conversion type: ${tx.conversion_type}`);
             console.log(tx);
@@ -847,11 +1062,15 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
     for (const err of validationErrors) {
       console.error(`  - ${err}`);
     }
-    return false;
+    return null;
   }
 
-  if (usePostgres()) {
+  // Postgres batch writes are handled by the caller (aggregate loop flushes in batches).
+  // Exception: recovery calls (recoveryDepth > 0) must write immediately since the caller
+  // reads the result back from DB.
+  if (usePostgres() && recoveryDepth > 0) {
     await saveBlockProtocolStats(blockData as ProtocolStats);
+    await setAggregatorHeight(height_to_process);
   }
 
   if (useRedis()) {
@@ -860,8 +1079,8 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
       .hset("protocol_stats", height_to_process.toString(), JSON.stringify(blockData))
       .set("height_aggregator", height_to_process.toString())
       .exec();
+    await setAggregatorHeight(height_to_process);
   }
-  await setAggregatorHeight(height_to_process);
 
   if (WALKTHROUGH_MODE) {
     await verifyReserveDiffs(height_to_process, {
@@ -875,7 +1094,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
     });
   }
 
-  return true;
+  return blockData as ProtocolStats;
 }
 
 interface WalkthroughBlockContext {
@@ -1070,7 +1289,7 @@ async function outputWalkthroughDiffReport() {
 }
 
 async function handleReserveIntegrity(latestHeight: number) {
-  if (!latestHeight || latestHeight < HF_VERSION_1_HEIGHT) {
+  if (!latestHeight || latestHeight < HF_V1_BLOCK_HEIGHT) {
     return;
   }
 
@@ -1269,6 +1488,8 @@ async function aggregateByTimestamp(
     }
 
     const groupedStats = bucketProtocolStatsByWindow(protocolStats, chunkStart, timestampWindow);
+    const aggregatedBatch: Array<{ windowStart: number; windowEnd: number | undefined; data: AggregatedData; pending: boolean }> = [];
+    let lastCompleteWindowEnd: number | undefined;
 
     for (let windowStart = chunkStart; windowStart < chunkEnd; windowStart += timestampWindow) {
     const expectedEnd = windowStart + timestampWindow;
@@ -1624,21 +1845,17 @@ async function aggregateByTimestamp(
         aggregatedData.fees_zephusd_yield += blockData.fees_zephusd_yield;
       });
 
+      // Buffer postgres write for batch flush
+      if (usePostgres()) {
+        aggregatedBatch.push({ windowStart, windowEnd, data: aggregatedData, pending: !windowComplete });
+      }
+
       // Store the aggregated data for the hour
       const zsetKey = windowType === "hourly" ? "protocol_stats_hourly" : "protocol_stats_daily";
       const pendingKey = windowType === "hourly" ? HOURLY_PENDING_KEY : DAILY_PENDING_KEY;
 
-      if (usePostgres()) {
-        await saveAggregatedProtocolStats(
-          windowType === "hourly" ? "hour" : "day",
-          windowStart,
-          windowEnd,
-          aggregatedData,
-          !windowComplete
-        );
-      }
-
       if (windowComplete) {
+        lastCompleteWindowEnd = windowEnd;
         if (useRedis()) {
           const pipeline = redis.pipeline();
           pipeline.zremrangebyscore(zsetKey, windowStart, windowStart);
@@ -1652,7 +1869,7 @@ async function aggregateByTimestamp(
           await pipeline.exec();
         }
 
-        if (windowEnd) {
+        if (windowEnd && useRedis()) {
           if (windowType === "hourly") {
             await setHourlyTimestamp(windowEnd);
             console.log(`Hourly stats aggregated for window starting at ${windowStart}`);
@@ -1678,5 +1895,20 @@ async function aggregateByTimestamp(
       protocolStatsWindow[0];
     }
   }
+
+    // Flush batched postgres writes for this chunk
+    if (usePostgres() && aggregatedBatch.length > 0) {
+      await saveAggregatedProtocolStatsBatch(
+        windowType === "hourly" ? "hour" : "day",
+        aggregatedBatch
+      );
+      if (lastCompleteWindowEnd) {
+        if (windowType === "hourly") {
+          await setHourlyTimestamp(lastCompleteWindowEnd);
+        } else {
+          await setDailyTimestamp(lastCompleteWindowEnd);
+        }
+      }
+    }
   }
 }

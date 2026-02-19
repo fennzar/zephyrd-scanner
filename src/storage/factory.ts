@@ -30,6 +30,26 @@ const pricingStore: PricingStore = {
     }
   },
 
+  async saveBatch(records) {
+    if (records.length === 0) return;
+    if (usePostgres()) {
+      const pg = ensurePostgresStores().pricing;
+      if (pg.saveBatch) {
+        await pg.saveBatch(records);
+      } else {
+        for (const r of records) await pg.save(r);
+      }
+    }
+    if (useRedis()) {
+      const rd = ensureRedisStores().pricing;
+      if (rd.saveBatch) {
+        await rd.saveBatch(records);
+      } else {
+        for (const r of records) await rd.save(r);
+      }
+    }
+  },
+
   async get(blockHeight) {
     if (usePostgres()) {
       const fromPostgres = await ensurePostgresStores().pricing.get(blockHeight);

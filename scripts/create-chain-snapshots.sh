@@ -42,7 +42,8 @@ STOP_DAEMON="$SCRIPT_DIR/stop-test-daemon.sh"
 
 # All available target heights (ascending order for sync efficiency)
 # Includes hardfork boundary heights for comprehensive testing
-ALL_HEIGHTS=(89400 90300 94300 99300 139300 189300 295100 360100 481600 536100)
+# V11 boundary: 536000 (pre-V11), 536001 (V11 fork block), 536002 (V11 reset at block 536001)
+ALL_HEIGHTS=(89400 90300 94300 99300 139300 189300 295100 360100 481600 536000 536001 536002 536100)
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"

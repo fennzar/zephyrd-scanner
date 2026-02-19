@@ -64,7 +64,7 @@ const pricingStore: PricingStore = {
 
   async getLatestHeight() {
     const height = await redis.get("height_prs");
-    return height ? Number(height) || 0 : 0;
+    return height ? Number(height) || -1 : -1;
   },
 };
 

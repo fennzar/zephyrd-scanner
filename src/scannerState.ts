@@ -18,7 +18,7 @@ async function setNumber(key: string, value: number): Promise<void> {
 }
 
 export async function getAggregatorHeight(): Promise<number> {
-  return getNumber("height_aggregator");
+  return getNumber("height_aggregator", -1);
 }
 
 export async function setAggregatorHeight(height: number): Promise<void> {
