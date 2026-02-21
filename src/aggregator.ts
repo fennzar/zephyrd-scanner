@@ -29,7 +29,7 @@ import {
   HOURLY_PENDING_KEY,
   DAILY_PENDING_KEY,
 } from "./utils";
-import { INITIAL_TREASURY_ZEPH, UNAUDITABLE_ZEPH_MINT, HF_V1_BLOCK_HEIGHT } from "./constants";
+import { INITIAL_TREASURY_ZEPH, UNAUDITABLE_ZEPH_MINT, HF_V1_BLOCK_HEIGHT, AUDITED_ZEPH_AT_V11 } from "./constants";
 import { logAggregatedSummary, logReserveDiffReport, logReserveHeights, logReserveSnapshotStatus } from "./logger";
 import { usePostgres, useRedis, getStartBlock } from "./config";
 import {
@@ -833,10 +833,16 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
 
   const getTxFeeAtoms = (_tx: any) => 0n;
 
-  // At HFv11 the daemon resets ZSD/ZRS/ZYS circ to audited amounts (only coins
-  // explicitly converted via audit txs are counted; unaudited coins are orphaned).
-  // ZEPH is different: the daemon keeps the running total and adds UNAUDITABLE_ZEPH_MINT
-  // (the 1.9M ZEPH minted at block 536000 in vout[2], not captured by processTx).
+  // At HFv11 (block 536000) the daemon resets circ values to audited amounts.
+  // ZEPH reset happens at the V11 block itself (before base_reward is added below),
+  // because AUDITED_ZEPH_AT_V11 represents the total through end of block 535999.
+  // This value is ~145K higher than emission-only total due to inflation bug coins
+  // that were audited through during HF8→V11.
+  if (blockData.block_height === VERSION_2_3_0_HF_V11_BLOCK_HEIGHT) {
+    blockData.zeph_circ = AUDITED_ZEPH_AT_V11;
+  }
+  // ZSD/ZRS/ZYS resets and UNAUDITABLE_ZEPH_MINT happen at block 536001
+  // (after block 536000's base_reward and the 1.9M vout[2] mint).
   if (blockData.block_height === VERSION_2_3_0_HF_V11_BLOCK_HEIGHT + 1) {
     const audit = await getAuditTotals();
     // ZSD: auto-audited yield reserve + free-floating audited via txs
@@ -845,7 +851,7 @@ async function aggregateBlock(height_to_process: number, logProgress = false, re
     blockData.zephrsv_circ = audit.audit_zrs ?? 0;
     // ZYS: all audited via txs (no secondary reserve)
     blockData.zyield_circ = audit.audit_zys ?? 0;
-    // ZEPH: keep running total, just add the unauditable mint
+    // ZEPH: add the 1.9M minted at block 536000 vout[2], not captured by processTx
     blockData.zeph_circ += UNAUDITABLE_ZEPH_MINT;
   }
   // Add base_reward (new coins minted this block) to circulating supply.

@@ -123,47 +123,6 @@ tests/
   chain-verify.test.ts
 ```
 
-## Patched Daemon
-
-Chain verification requires a **patched zephyrd** for accurate ZEPH circulating supply comparisons. The stock daemon's `get_circulating_supply` RPC returns the DJED reserve LMDB tally for ZEPH/ZPH, not the true total supply. This makes the ZEPH circ comparison fail at every height.
-
-The patch is on the `fix/circulating-supply-zeph-total` branch in the `../zephyr` repo (stashed):
-
-```sh
-cd ../zephyr
-git checkout fix/circulating-supply-zeph-total
-git stash pop
-```
-
-### What the patch does
-
-It overrides the ZEPH/ZPH entry in the `get_circulating_supply` RPC response to return `already_generated_coins` (the authoritative cumulative emission from coinbase) instead of the DJED tally:
-
-```cpp
-// src/rpc/core_rpc_server.cpp — on_get_circulating_supply()
-
-// Override ZEPH/ZPH value with true total supply from already_generated_coins.
-// The LMDB tallies (V1 "ZEPH" and V2 "ZPH") only track DJED reserve flows,
-// not total ZEPH supply. m_coinbase is the authoritative cumulative emission.
-// This override is intentionally in the RPC handler (not the DB method) so that
-// get_reserve_info — which also reads get_circulating_supply() — still sees the
-// original DJED tally values for its reserve calculations.
-uint64_t current_height = m_core.get_current_blockchain_height();
-if (current_height > 0) {
-  uint64_t coinbase = m_core.get_blockchain_storage().get_db().get_block_already_generated_coins(current_height - 1);
-  for (auto& supply : amounts) {
-    if (supply.first == "ZPH" || supply.first == "ZEPH") {
-      supply.second = std::to_string(coinbase);
-      break;
-    }
-  }
-}
-```
-
-Key design decision: the override is in the RPC handler only, not in the underlying DB method. This means `get_reserve_info` (which internally calls `get_circulating_supply()` at the DB level) still sees the original DJED tally for its reserve ratio calculations — only the external RPC response is corrected.
-
-Without this patch, the ZEPH circ test will show large discrepancies at every height. The other fields (ZSD, ZRS, ZYS, reserve, yield reserve, reserve ratio) are unaffected.
-
 ### Building
 
 ```sh
