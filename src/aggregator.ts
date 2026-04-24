@@ -29,7 +29,7 @@ import {
   HOURLY_PENDING_KEY,
   DAILY_PENDING_KEY,
 } from "./utils";
-import { INITIAL_TREASURY_ZEPH, UNAUDITABLE_ZEPH_MINT, HF_V1_BLOCK_HEIGHT, AUDITED_ZEPH_AT_V11 } from "./constants";
+import { INITIAL_TREASURY_ZEPH, UNAUDITABLE_ZEPH_MINT, HF_V1_BLOCK_HEIGHT, HF_V1_BLOCK_TIMESTAMP, AUDITED_ZEPH_AT_V11 } from "./constants";
 import { logAggregatedSummary, logReserveDiffReport, logReserveHeights, logReserveSnapshotStatus } from "./logger";
 import { usePostgres, useRedis, getStartBlock } from "./config";
 import {
@@ -514,12 +514,16 @@ export async function aggregate() {
   const timestamp_hourly = await getScannerTimestampHourly();
   const timestamp_daily = await getScannerTimestampDaily();
 
-  // On a fresh scan, stored timestamps are 0. Use the effective start block's
-  // timestamp as a floor to avoid iterating billions of empty windows.
+  // On a fresh scan, stored timestamps are 0. Floor the aggregation window at
+  // the HF3 (DJED) activation block's timestamp: pricing records and reserve
+  // ratios only exist from block HF_V1_BLOCK_HEIGHT onward, so earlier daily /
+  // hourly buckets would be all-zero noise. Prefer the live pricing record (in
+  // case it ever drifts) and fall back to the hardcoded constant so we stay
+  // robust when HF_V1's PR isn't in the store yet (mid-scan fresh start).
   let timestampFloor = 0;
   if (timestamp_hourly === 0 || timestamp_daily === 0) {
-    const startPr = await getPricingRecordFromStore(getEffectiveStart());
-    timestampFloor = startPr?.timestamp ?? 0;
+    const hfv1Pr = await getPricingRecordFromStore(HF_V1_BLOCK_HEIGHT);
+    timestampFloor = hfv1Pr?.timestamp ?? HF_V1_BLOCK_TIMESTAMP;
   }
 
   await aggregateByTimestamp(Math.max(timestamp_hourly, timestampFloor), current_pr.timestamp, "hourly");

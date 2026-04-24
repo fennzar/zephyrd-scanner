@@ -76,13 +76,13 @@ export async function upsertHistoricalReturns(data: HistoricalReturns): Promise<
         where: { range: HISTORICAL_KEY_MAP[key as keyof HistoricalReturns] },
         update: {
           returnPct: value.return,
-          zsdAccrued: value.ZSDAccrued,
+          zsdAccrued: value.zsd_accrued,
           effectiveApy: value.effectiveApy,
         },
         create: {
           range: HISTORICAL_KEY_MAP[key as keyof HistoricalReturns],
           returnPct: value.return,
-          zsdAccrued: value.ZSDAccrued,
+          zsdAccrued: value.zsd_accrued,
           effectiveApy: value.effectiveApy,
         },
       })
@@ -96,13 +96,13 @@ export async function fetchHistoricalReturns(): Promise<HistoricalReturns | null
     return null;
   }
   const result: HistoricalReturns = {
-    lastBlock: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
-    oneDay: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
-    oneWeek: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
-    oneMonth: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
-    threeMonths: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
-    oneYear: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
-    allTime: { return: 0, ZSDAccrued: 0, effectiveApy: 0 },
+    lastBlock: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
+    oneDay: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
+    oneWeek: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
+    oneMonth: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
+    threeMonths: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
+    oneYear: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
+    allTime: { return: 0, zsd_accrued: 0, effectiveApy: 0 },
   };
   for (const row of rows) {
     const key = HISTORICAL_KEY_REVERSE_MAP[row.range];
@@ -111,7 +111,7 @@ export async function fetchHistoricalReturns(): Promise<HistoricalReturns | null
     }
     result[key] = {
       return: row.returnPct,
-      ZSDAccrued: row.zsdAccrued,
+      zsd_accrued: row.zsdAccrued,
       effectiveApy: row.effectiveApy,
     };
   }

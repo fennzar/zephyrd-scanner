@@ -26,6 +26,16 @@ import { resetScanner, retallyTotals, rollbackScanner } from "./rollback";
 import redis from "./redis";
 import { useRedis } from "./config";
 import { stores } from "./storage/factory";
+import {
+  resolveInputFieldBlock,
+  resolveInputFieldAggregated,
+  resolveInputConversionType,
+  toCanonicalBlockStatsRows,
+  toCanonicalAggregatedStatsRows,
+  toCanonicalTx,
+  toCanonicalPricing,
+  toCanonicalReserveSnapshot,
+} from "./api-schema";
 
 dotenv.config();
 
@@ -149,11 +159,15 @@ export function createApp() {
     }
 
     try {
-      const result =
-        scale === "block"
-          ? await getBlockProtocolStatsFromRedis(from, to, fields as (keyof ProtocolStats)[])
-          : await getAggregatedProtocolStatsFromRedis(scale, from, to, fields as (keyof AggregatedData)[]);
-      res.status(200).json(result);
+      if (scale === "block") {
+        const resolvedFields = fields.map(resolveInputFieldBlock) as (keyof ProtocolStats)[];
+        const rows = await getBlockProtocolStatsFromRedis(from, to, resolvedFields);
+        res.status(200).json(toCanonicalBlockStatsRows(rows));
+      } else {
+        const resolvedFields = fields.map(resolveInputFieldAggregated) as (keyof AggregatedData)[];
+        const rows = await getAggregatedProtocolStatsFromRedis(scale, from, to, resolvedFields);
+        res.status(200).json(toCanonicalAggregatedStatsRows(rows));
+      }
     } catch (error) {
       console.error("Error retrieving protocol stats:", error);
       res.status(500).send("Internal server error");
@@ -301,7 +315,11 @@ export function createApp() {
 
       const types =
         typesParam && typesParam.trim() !== ""
-          ? typesParam.split(",").map((value) => value.trim()).filter((value) => value.length > 0)
+          ? typesParam
+              .split(",")
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0)
+              .map(resolveInputConversionType)
           : undefined;
 
       let effectiveLimit: number | null;
@@ -346,7 +364,7 @@ export function createApp() {
           result.limit != null && result.offset > 0
             ? Math.max(0, result.offset - result.limit)
             : null,
-        results: result.results,
+        results: result.results.map(toCanonicalTx),
       };
 
       res.status(200).json(responseBody);
@@ -474,7 +492,7 @@ export function createApp() {
         total: result.total,
         limit: result.limit,
         order: result.order,
-        results: result.results,
+        results: result.results.map(toCanonicalPricing),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid request";
@@ -522,7 +540,7 @@ export function createApp() {
         total: result.total,
         limit: result.limit,
         order: result.order,
-        results: result.results,
+        results: result.results.map(toCanonicalReserveSnapshot),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid request";

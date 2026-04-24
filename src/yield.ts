@@ -59,7 +59,7 @@ export type HistoricalReturnKey =
 
 export interface HistoricalReturnEntry {
   return: number;
-  ZSDAccrued: number;
+  zsd_accrued: number;
   effectiveApy: number | null;
 }
 
@@ -262,13 +262,13 @@ export async function determineHistoricalReturns() {
 
 
     const historicalStats: HistoricalReturns = {
-      lastBlock: { return: previousReturn, ZSDAccrued: previousZSDAccrued, effectiveApy: null },
-      oneDay: { return: onedayagoReturn, ZSDAccrued: onedayagoZSDAccrued, effectiveApy: null },
-      oneWeek: { return: oneweekagoReturn, ZSDAccrued: oneweekagoZSDAccrued, effectiveApy: null },
-      oneMonth: { return: onemonthagoReturn, ZSDAccrued: onemonthagoZSDAccrued, effectiveApy: null },
-      threeMonths: { return: threemonthsagoReturn, ZSDAccrued: threemonthsagoZSDAccrued, effectiveApy: null },
-      oneYear: { return: oneyearagoReturn, ZSDAccrued: oneyearagoZSDAccrued, effectiveApy: null },
-      allTime: { return: alltimeReturn, ZSDAccrued: alltimeZSDAccrued, effectiveApy: null }
+      lastBlock: { return: previousReturn, zsd_accrued: previousZSDAccrued, effectiveApy: null },
+      oneDay: { return: onedayagoReturn, zsd_accrued: onedayagoZSDAccrued, effectiveApy: null },
+      oneWeek: { return: oneweekagoReturn, zsd_accrued: oneweekagoZSDAccrued, effectiveApy: null },
+      oneMonth: { return: onemonthagoReturn, zsd_accrued: onemonthagoZSDAccrued, effectiveApy: null },
+      threeMonths: { return: threemonthsagoReturn, zsd_accrued: threemonthsagoZSDAccrued, effectiveApy: null },
+      oneYear: { return: oneyearagoReturn, zsd_accrued: oneyearagoZSDAccrued, effectiveApy: null },
+      allTime: { return: alltimeReturn, zsd_accrued: alltimeZSDAccrued, effectiveApy: null }
     };
 
     (Object.entries(HISTORICAL_TIMEFRAME_BLOCKS) as Array<[
@@ -305,43 +305,43 @@ export async function determineHistoricalReturns() {
       {
         period: "Last block",
         returnPct: historicalStats.lastBlock.return,
-        zsdAccrued: historicalStats.lastBlock.ZSDAccrued,
+        zsdAccrued: historicalStats.lastBlock.zsd_accrued,
         apy: historicalStats.lastBlock.effectiveApy,
       },
       {
         period: "1 Day",
         returnPct: historicalStats.oneDay.return,
-        zsdAccrued: historicalStats.oneDay.ZSDAccrued,
+        zsdAccrued: historicalStats.oneDay.zsd_accrued,
         apy: historicalStats.oneDay.effectiveApy,
       },
       {
         period: "1 Week",
         returnPct: historicalStats.oneWeek.return,
-        zsdAccrued: historicalStats.oneWeek.ZSDAccrued,
+        zsdAccrued: historicalStats.oneWeek.zsd_accrued,
         apy: historicalStats.oneWeek.effectiveApy,
       },
       {
         period: "1 Month",
         returnPct: historicalStats.oneMonth.return,
-        zsdAccrued: historicalStats.oneMonth.ZSDAccrued,
+        zsdAccrued: historicalStats.oneMonth.zsd_accrued,
         apy: historicalStats.oneMonth.effectiveApy,
       },
       {
         period: "3 Months",
         returnPct: historicalStats.threeMonths.return,
-        zsdAccrued: historicalStats.threeMonths.ZSDAccrued,
+        zsdAccrued: historicalStats.threeMonths.zsd_accrued,
         apy: historicalStats.threeMonths.effectiveApy,
       },
       {
         period: "1 Year",
         returnPct: historicalStats.oneYear.return,
-        zsdAccrued: historicalStats.oneYear.ZSDAccrued,
+        zsdAccrued: historicalStats.oneYear.zsd_accrued,
         apy: historicalStats.oneYear.effectiveApy,
       },
       {
         period: "All Time",
         returnPct: historicalStats.allTime.return,
-        zsdAccrued: historicalStats.allTime.ZSDAccrued,
+        zsdAccrued: historicalStats.allTime.zsd_accrued,
         apy: historicalStats.allTime.effectiveApy,
       },
     ]);
@@ -955,13 +955,13 @@ export async function getHistoricalReturnsFromRedis(test = false): Promise<Histo
   if (test) {
     // return dummy historical stats for testing route
     const dummyHistoricalStats: HistoricalReturns = {
-      lastBlock: { return: 0.01, ZSDAccrued: 1, effectiveApy: 0.05 },
-      oneDay: { return: 0.70, ZSDAccrued: 720, effectiveApy: 279.44 },
-      oneWeek: { return: 2.60, ZSDAccrued: 5040, effectiveApy: 197.06 },
-      oneMonth: { return: 3.90, ZSDAccrued: 21600, effectiveApy: 59.52 },
-      threeMonths: { return: 12.50, ZSDAccrued: 64800, effectiveApy: 62.31 },
-      oneYear: { return: 25.60, ZSDAccrued: 262800, effectiveApy: 25.60 },
-      allTime: { return: 55.60, ZSDAccrued: 562800, effectiveApy: 55.60 },
+      lastBlock: { return: 0.01, zsd_accrued: 1, effectiveApy: 0.05 },
+      oneDay: { return: 0.70, zsd_accrued: 720, effectiveApy: 279.44 },
+      oneWeek: { return: 2.60, zsd_accrued: 5040, effectiveApy: 197.06 },
+      oneMonth: { return: 3.90, zsd_accrued: 21600, effectiveApy: 59.52 },
+      threeMonths: { return: 12.50, zsd_accrued: 64800, effectiveApy: 62.31 },
+      oneYear: { return: 25.60, zsd_accrued: 262800, effectiveApy: 25.60 },
+      allTime: { return: 55.60, zsd_accrued: 562800, effectiveApy: 55.60 },
     };
 
     return dummyHistoricalStats;
