@@ -295,45 +295,64 @@ export async function startScanner(): Promise<void> {
 
   await invoke();
 
-  setInterval(invoke, MAIN_SLEEP_MS);
+  mainLoopInterval = setInterval(invoke, MAIN_SLEEP_MS);
 }
 
-process.on("SIGTERM", async () => {
-  console.log("Scanner process received SIGTERM, shutting down gracefully...");
-  await gracefulShutdown();
-});
-
-process.on("SIGINT", async () => {
-  console.log("Scanner process received SIGINT, shutting down gracefully...");
-  await gracefulShutdown();
-});
-
+let mainLoopInterval: NodeJS.Timeout | null = null;
 let isShuttingDown = false;
 
-async function gracefulShutdown(): Promise<void> {
+// After a shutdown signal, give graceful cleanup this long before forcing exit.
+// Covers hangs in server.close / redis.quit / prisma.$disconnect / in-flight cycles.
+const FORCED_EXIT_MS = 5_000;
+
+process.on("SIGTERM", () => {
+  console.log("Scanner process received SIGTERM, shutting down gracefully...");
+  gracefulShutdown();
+});
+
+process.on("SIGINT", () => {
+  console.log("Scanner process received SIGINT, shutting down gracefully...");
+  gracefulShutdown();
+});
+
+function gracefulShutdown(): void {
   if (isShuttingDown) {
     console.log("Shutdown already in progress...");
     return;
   }
   isShuttingDown = true;
 
-  try {
-    // Close Prisma connection to prevent zombie PostgreSQL sessions
-    console.log("Closing Prisma connection...");
-    const { disconnectPrisma } = await import("./db");
-    await disconnectPrisma();
-    console.log("Prisma connection closed.");
-
-    // Close Redis connection
-    console.log("Closing Redis connection...");
-    await redis.quit();
-    console.log("Redis connection closed.");
-  } catch (error) {
-    console.error("Error during graceful shutdown:", error);
+  if (mainLoopInterval) {
+    clearInterval(mainLoopInterval);
+    mainLoopInterval = null;
   }
 
-  console.log("Graceful shutdown complete.");
-  process.exit(0);
+  // Arm a hard deadline before any awaits so a hang in any of the cleanup
+  // steps below can't leave the process wedged indefinitely.
+  const killTimer = setTimeout(() => {
+    console.error(`Shutdown exceeded ${FORCED_EXIT_MS}ms, forcing exit.`);
+    process.exit(1);
+  }, FORCED_EXIT_MS);
+  killTimer.unref();
+
+  (async () => {
+    try {
+      console.log("Closing Prisma connection...");
+      const { disconnectPrisma } = await import("./db");
+      await disconnectPrisma();
+      console.log("Prisma connection closed.");
+
+      console.log("Closing Redis connection...");
+      await redis.quit();
+      console.log("Redis connection closed.");
+    } catch (error) {
+      console.error("Error during graceful shutdown:", error);
+    }
+
+    clearTimeout(killTimer);
+    console.log("Graceful shutdown complete.");
+    process.exit(0);
+  })();
 }
 
 if (require.main === module) {

@@ -45,28 +45,54 @@ function startScannerProcess(): ChildProcess | undefined {
   return child;
 }
 
+// After a shutdown signal, give graceful cleanup this long before forcing exit.
+const FORCED_EXIT_MS = 5_000;
+
 function bootstrap(): BootstrapResult {
   const { server } = startServer();
   const scanner = startScannerProcess();
 
-  const shutdown = async (signal: NodeJS.Signals) => {
+  let isShuttingDown = false;
+
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (isShuttingDown) {
+      console.log(`Shutdown already in progress (${signal} ignored).`);
+      return;
+    }
+    isShuttingDown = true;
+
     console.log(`Received ${signal}. Shutting down Zephyrd Scanner services...`);
+
+    // Hard deadline — any hang below (child process, prisma, server.close)
+    // is terminated so the parent always exits within the window.
+    const killTimer = setTimeout(() => {
+      console.error(`Shutdown exceeded ${FORCED_EXIT_MS}ms, forcing exit.`);
+      process.exit(1);
+    }, FORCED_EXIT_MS);
+    killTimer.unref();
 
     scanner?.kill("SIGTERM");
 
-    try {
-      const { disconnectPrisma } = await import("./db");
-      await disconnectPrisma();
-      console.log("Prisma connection closed.");
-    } catch {}
+    (async () => {
+      try {
+        const { disconnectPrisma } = await import("./db");
+        await disconnectPrisma();
+        console.log("Prisma connection closed.");
+      } catch {}
 
-    if (server) {
-      server.close(() => {
+      if (server) {
+        // Node 18.2+ — forcibly terminate keep-alive sockets so server.close
+        // isn't blocked by idle connections.
+        server.closeAllConnections?.();
+        server.close(() => {
+          clearTimeout(killTimer);
+          process.exit(0);
+        });
+      } else {
+        clearTimeout(killTimer);
         process.exit(0);
-      });
-    } else {
-      process.exit(0);
-    }
+      }
+    })();
   };
 
   process.on("SIGINT", shutdown);
